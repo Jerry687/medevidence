@@ -29,7 +29,7 @@ $composeProjectName = $ProjectName
 if ([string]::IsNullOrWhiteSpace($composeProjectName)) {
     $composeProjectName = "medevidence-smoke-$PID-$([guid]::NewGuid().ToString('N'))"
 }
-$savedEnvironment = @{}
+$savedEnvironment = $null
 $cleanupError = $null
 $cleanupAuthorized = $false
 $started = $false
@@ -44,6 +44,67 @@ function New-RandomPassword {
         $generator.Dispose()
     }
     return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
+}
+
+function Get-ProcessEnvironmentSnapshot {
+    param([string[]]$Names)
+
+    $snapshot = [Collections.Generic.Dictionary[string, object]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($name in $Names) {
+        $snapshot.Add(
+            $name,
+            [pscustomobject]@{
+                Exists = Test-Path -LiteralPath "Env:$name"
+                Value = [Environment]::GetEnvironmentVariable(
+                    $name,
+                    [EnvironmentVariableTarget]::Process
+                )
+            }
+        )
+    }
+    return ,$snapshot
+}
+
+function Restore-ProcessEnvironment {
+    param([Collections.Generic.Dictionary[string, object]]$Snapshot)
+
+    foreach ($name in $Snapshot.Keys) {
+        $original = $Snapshot[$name]
+        $value = if ($original.Exists) {
+            [string]$original.Value
+        }
+        else {
+            [NullString]::Value
+        }
+        [Environment]::SetEnvironmentVariable(
+            $name,
+            $value,
+            [EnvironmentVariableTarget]::Process
+        )
+    }
+}
+
+function Assert-ProcessEnvironmentMatchesSnapshot {
+    param([Collections.Generic.Dictionary[string, object]]$Snapshot)
+
+    foreach ($name in $Snapshot.Keys) {
+        $original = $Snapshot[$name]
+        $actualExists = Test-Path -LiteralPath "Env:$name"
+        if ($actualExists -ne [bool]$original.Exists) {
+            throw "Process environment variable $name existence was not restored."
+        }
+        if ($actualExists) {
+            $actualValue = [Environment]::GetEnvironmentVariable(
+                $name,
+                [EnvironmentVariableTarget]::Process
+            )
+            if ($actualValue -cne [string]$original.Value) {
+                throw "Process environment variable $name value was not restored."
+            }
+        }
+    }
 }
 
 function Get-AvailableLoopbackPort {
@@ -204,13 +265,15 @@ $runtimeEnvironment = @{
     QDRANT_GRPC_PORT = [string]$ports[2]
 }
 
-foreach ($key in $environmentKeys) {
-    $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
-}
+$savedEnvironment = Get-ProcessEnvironmentSnapshot -Names $environmentKeys
 
 try {
     foreach ($key in $environmentKeys) {
-        [Environment]::SetEnvironmentVariable($key, $runtimeEnvironment[$key], "Process")
+        [Environment]::SetEnvironmentVariable(
+            $key,
+            $runtimeEnvironment[$key],
+            [EnvironmentVariableTarget]::Process
+        )
     }
 
     $preExistingContainers = @(Get-ProjectResources -Type container)
@@ -333,9 +396,8 @@ finally {
         $cleanupError = "Unable to complete or verify isolated Docker cleanup."
     }
     finally {
-        foreach ($key in $environmentKeys) {
-            [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], "Process")
-        }
+        Restore-ProcessEnvironment -Snapshot $savedEnvironment
+        Assert-ProcessEnvironmentMatchesSnapshot -Snapshot $savedEnvironment
     }
 
     if ($null -ne $cleanupError) {

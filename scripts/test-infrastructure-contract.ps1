@@ -40,6 +40,70 @@ function New-RandomPassword {
     return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
 }
 
+function Get-ProcessEnvironmentSnapshot {
+    param([string[]]$Names)
+
+    $snapshot = [Collections.Generic.Dictionary[string, object]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($name in $Names) {
+        $snapshot.Add(
+            $name,
+            [pscustomobject]@{
+                Exists = Test-Path -LiteralPath "Env:$name"
+                Value = [Environment]::GetEnvironmentVariable(
+                    $name,
+                    [EnvironmentVariableTarget]::Process
+                )
+            }
+        )
+    }
+    return ,$snapshot
+}
+
+function Restore-ProcessEnvironment {
+    param([Collections.Generic.Dictionary[string, object]]$Snapshot)
+
+    foreach ($name in $Snapshot.Keys) {
+        $original = $Snapshot[$name]
+        $value = if ($original.Exists) {
+            [string]$original.Value
+        }
+        else {
+            [NullString]::Value
+        }
+        [Environment]::SetEnvironmentVariable(
+            $name,
+            $value,
+            [EnvironmentVariableTarget]::Process
+        )
+    }
+}
+
+function Assert-ProcessEnvironmentMatchesSnapshot {
+    param(
+        [Collections.Generic.Dictionary[string, object]]$Snapshot,
+        [string]$Context
+    )
+
+    foreach ($name in $Snapshot.Keys) {
+        $original = $Snapshot[$name]
+        $actualExists = Test-Path -LiteralPath "Env:$name"
+        if ($actualExists -ne [bool]$original.Exists) {
+            throw "$Context did not restore process environment variable $name existence."
+        }
+        if ($actualExists) {
+            $actualValue = [Environment]::GetEnvironmentVariable(
+                $name,
+                [EnvironmentVariableTarget]::Process
+            )
+            if ($actualValue -cne [string]$original.Value) {
+                throw "$Context did not restore process environment variable $name value."
+            }
+        }
+    }
+}
+
 function Set-EnvironmentValue {
     param(
         [string[]]$Lines,
@@ -144,6 +208,7 @@ try {
     $collisionProjectName = "me-collision-$PID-$([guid]::NewGuid().ToString('N'))"
     $collisionVolumeName = "$collisionProjectName-sentinel"
     $collisionVolumeCreated = $false
+    $collisionHarnessEnvironment = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
     try {
         $null = & docker volume create `
             --label "com.docker.compose.project=$collisionProjectName" `
@@ -153,62 +218,127 @@ try {
         }
         $collisionVolumeCreated = $true
 
-        $environmentBeforeCollision = @{}
-        foreach ($key in $requiredKeys) {
-            $environmentBeforeCollision[$key] = [Environment]::GetEnvironmentVariable(
-                $key,
-                "Process"
-            )
-        }
-
-        $collisionRejected = $false
-        try {
-            $null = & $smokeTest -ProjectName $collisionProjectName 2>&1
-        }
-        catch {
-            $collisionRejected = $true
-        }
-        if (-not $collisionRejected) {
-            throw "The smoke test did not reject the colliding project name."
-        }
-
-        $null = & docker volume inspect $collisionVolumeName 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "The smoke test removed the pre-existing collision-test volume."
-        }
-
-        $collisionLabel = "label=com.docker.compose.project=$collisionProjectName"
-        $collisionContainers = @(& docker ps --all --quiet --filter $collisionLabel 2>&1)
-        if ($LASTEXITCODE -ne 0 -or $collisionContainers.Count -ne 0) {
-            throw "The collision regression unexpectedly created a container."
-        }
-        $collisionNetworks = @(& docker network ls --quiet --filter $collisionLabel 2>&1)
-        if ($LASTEXITCODE -ne 0 -or $collisionNetworks.Count -ne 0) {
-            throw "The collision regression unexpectedly created a network."
-        }
-        $collisionVolumes = @(& docker volume ls --quiet --filter $collisionLabel 2>&1)
-        if (
-            $LASTEXITCODE -ne 0 -or
-            $collisionVolumes.Count -ne 1 -or
-            [string]$collisionVolumes[0] -cne $collisionVolumeName
-        ) {
-            throw "The collision-test volume identity changed unexpectedly."
-        }
-
-        foreach ($key in $requiredKeys) {
-            $environmentAfterCollision = [Environment]::GetEnvironmentVariable($key, "Process")
-            if ($environmentAfterCollision -cne $environmentBeforeCollision[$key]) {
-                throw "The collision path did not restore process environment variable $key."
+        $collisionCases = @(
+            @{
+                Name = "collision-resource-survived-no-startup-environment-restored"
+                Variable = $null
+                State = "inherited"
+                Value = $null
+            },
+            @{
+                Name = "collision-postgres-image-absent-restored"
+                Variable = "POSTGRES_IMAGE"
+                State = "absent"
+                Value = $null
+            },
+            @{
+                Name = "collision-postgres-image-sentinel-restored"
+                Variable = "POSTGRES_IMAGE"
+                State = "sentinel"
+                Value = "medevidence-postgres-image-sentinel"
+            },
+            @{
+                Name = "collision-postgres-port-absent-restored"
+                Variable = "POSTGRES_PORT"
+                State = "absent"
+                Value = $null
+            },
+            @{
+                Name = "collision-qdrant-http-port-sentinel-restored"
+                Variable = "QDRANT_HTTP_PORT"
+                State = "sentinel"
+                Value = "medevidence-qdrant-http-port-sentinel"
             }
+        )
+        foreach ($collisionCase in $collisionCases) {
+            Restore-ProcessEnvironment -Snapshot $collisionHarnessEnvironment
+            if ($collisionCase.State -ceq "absent") {
+                [Environment]::SetEnvironmentVariable(
+                    $collisionCase.Variable,
+                    [NullString]::Value,
+                    [EnvironmentVariableTarget]::Process
+                )
+            }
+            elseif ($collisionCase.State -ceq "sentinel") {
+                [Environment]::SetEnvironmentVariable(
+                    $collisionCase.Variable,
+                    $collisionCase.Value,
+                    [EnvironmentVariableTarget]::Process
+                )
+            }
+
+            $environmentBeforeCollision = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
+            if (
+                $collisionCase.State -ceq "absent" -and
+                $environmentBeforeCollision[$collisionCase.Variable].Exists
+            ) {
+                throw "The absent-state collision precondition was not established."
+            }
+            if (
+                $collisionCase.State -ceq "sentinel" -and
+                (
+                    -not $environmentBeforeCollision[$collisionCase.Variable].Exists -or
+                    [string]$environmentBeforeCollision[$collisionCase.Variable].Value -cne
+                        [string]$collisionCase.Value
+                )
+            ) {
+                throw "The sentinel-state collision precondition was not established."
+            }
+
+            $collisionRejected = $false
+            try {
+                $null = & $smokeTest -ProjectName $collisionProjectName 2>&1
+            }
+            catch {
+                $collisionRejected = $true
+            }
+            if (-not $collisionRejected) {
+                throw "The smoke test did not reject the colliding project name."
+            }
+
+            $null = & docker volume inspect $collisionVolumeName 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "The smoke test removed the pre-existing collision-test volume."
+            }
+
+            $collisionLabel = "label=com.docker.compose.project=$collisionProjectName"
+            $collisionContainers = @(& docker ps --all --quiet --filter $collisionLabel 2>&1)
+            if ($LASTEXITCODE -ne 0 -or $collisionContainers.Count -ne 0) {
+                throw "The collision regression unexpectedly created a container."
+            }
+            $collisionNetworks = @(& docker network ls --quiet --filter $collisionLabel 2>&1)
+            if ($LASTEXITCODE -ne 0 -or $collisionNetworks.Count -ne 0) {
+                throw "The collision regression unexpectedly created a network."
+            }
+            $collisionVolumes = @(& docker volume ls --quiet --filter $collisionLabel 2>&1)
+            if (
+                $LASTEXITCODE -ne 0 -or
+                $collisionVolumes.Count -ne 1 -or
+                [string]$collisionVolumes[0] -cne $collisionVolumeName
+            ) {
+                throw "The collision-test volume identity changed unexpectedly."
+            }
+
+            Assert-ProcessEnvironmentMatchesSnapshot `
+                -Snapshot $environmentBeforeCollision `
+                -Context $collisionCase.Name
+            $results.Add("PASS $($collisionCase.Name)")
         }
-        $results.Add("PASS collision-resource-survived-no-startup-environment-restored")
     }
     finally {
-        if ($collisionVolumeCreated) {
-            $null = & docker volume rm $collisionVolumeName 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "Unable to remove the disposable collision-test volume."
+        try {
+            if ($collisionVolumeCreated) {
+                $null = & docker volume rm $collisionVolumeName 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Unable to remove the disposable collision-test volume."
+                }
             }
+        }
+        finally {
+            Restore-ProcessEnvironment -Snapshot $collisionHarnessEnvironment
+            Assert-ProcessEnvironmentMatchesSnapshot `
+                -Snapshot $collisionHarnessEnvironment `
+                -Context "Collision regression harness"
         }
     }
 
