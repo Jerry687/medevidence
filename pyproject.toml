@@ -1,11 +1,33 @@
-# ME-000A must approve exact build-backend and dependency versions before this
-# repository becomes installable. This M0 file contains Python 3.12 tool
-# policy only. Do not add project metadata, dependencies, or a build backend
-# before ME-000A.
+[build-system]
+requires = ["uv_build==0.11.32"]
+build-backend = "uv_build"
+
+[project]
+name = "medevidence"
+version = "0.0.0"
+description = "Traceable drug-safety evidence research system"
+readme = "README.md"
+requires-python = ">=3.12.13,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "coverage==7.15.2",
+    "mypy==2.3.0",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-socket==0.8.0",
+    "ruff==0.15.22",
+]
+
+[tool.uv]
+required-version = "==0.11.32"
+python-preference = "only-managed"
+default-groups = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers --strict-config"
 markers = [
     "live_api: explicit opt-in tests that contact external APIs",
 ]
@@ -13,11 +35,15 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["medevidence"]
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+files = ["src"]
 explicit_package_bases = true
 mypy_path = "src"
 

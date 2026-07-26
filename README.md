@@ -81,16 +81,41 @@ external tracing decisions have separate gates in the PRD.
 Redis, React, GraphRAG, multi-agent workflows, ClinicalTrials.gov, signal
 detection metrics, PHI workflows, and public multi-tenancy are outside V1.
 
+## Windows Python and quality toolchain
+
+ME-000A1 uses uv `0.11.32` as the only Python environment and dependency
+manager. uv installs CPython `3.12.13` and creates the repository-local
+`.venv`; a system Python installation is not used. From Windows PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\quality.ps1
+```
+
+Bootstrap uses the explicit development group:
+
+```powershell
+uv sync --locked --group dev
+```
+
+Networked dependency auditing, containers, environment-contract validation,
+and CI activation are deferred to ME-000A2.
+
 ## Authoritative offline checks
 
-The required command set is identical in `AGENTS.md`, `Makefile`, and the CI
-quality workflow:
+The local ME-000A1 command set is authoritative. ME-000A2 will synchronize the
+Makefile and CI workflow:
 
-```bash
-python -m ruff check .
-python -m ruff format --check .
-python -m mypy src
-python -m pytest tests/unit tests/contract --disable-socket
+```powershell
+uv run --locked --no-sync ruff check .
+uv run --locked --no-sync ruff format --check .
+uv run --locked --no-sync mypy src
+uv run --locked --no-sync pytest `
+  tests/unit tests/contract `
+  --disable-socket `
+  --cov=medevidence `
+  --cov-report=term-missing `
+  --cov-report=xml
 ```
 
 Unit and contract suites use directory-based classification and always disable
