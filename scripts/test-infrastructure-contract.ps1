@@ -25,6 +25,7 @@ $temporaryBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $temporaryRoot = Join-Path $temporaryBase (
     "medevidence-infrastructure-contract-" + [guid]::NewGuid().ToString("N")
 )
+$dockerUnavailablePath = Join-Path $temporaryRoot "docker-unavailable-path"
 $utf8NoBom = New-Object Text.UTF8Encoding($false)
 $results = [Collections.Generic.List[string]]::new()
 
@@ -38,6 +39,49 @@ function New-RandomPassword {
         $generator.Dispose()
     }
     return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
+}
+
+function Resolve-CurrentPowerShellExecutable {
+    if ([string]$PSVersionTable.PSEdition -ceq "Desktop") {
+        $desktopExecutable = Join-Path $PSHOME "powershell.exe"
+        if (-not (Test-Path -LiteralPath $desktopExecutable -PathType Leaf)) {
+            throw "Windows PowerShell executable is unavailable."
+        }
+        return (Resolve-Path -LiteralPath $desktopExecutable).ProviderPath
+    }
+
+    $processExecutable = $null
+    try {
+        $processExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path
+    }
+    catch {
+        $processExecutable = $null
+    }
+    if (
+        -not [string]::IsNullOrWhiteSpace($processExecutable) -and
+        [IO.Path]::IsPathRooted($processExecutable) -and
+        (Test-Path -LiteralPath $processExecutable -PathType Leaf)
+    ) {
+        return (Resolve-Path -LiteralPath $processExecutable).ProviderPath
+    }
+
+    try {
+        $coreCommand = Get-Command pwsh `
+            -CommandType Application `
+            -ErrorAction Stop |
+                Select-Object -First 1
+    }
+    catch {
+        throw "PowerShell Core executable is unavailable."
+    }
+    $coreExecutable = [string]$coreCommand.Source
+    if (
+        -not [IO.Path]::IsPathRooted($coreExecutable) -or
+        -not (Test-Path -LiteralPath $coreExecutable -PathType Leaf)
+    ) {
+        throw "PowerShell Core executable is unavailable."
+    }
+    return (Resolve-Path -LiteralPath $coreExecutable).ProviderPath
 }
 
 if (-not ("MedEvidenceProcessEnvironmentNative" -as [type])) {
@@ -265,20 +309,263 @@ function Get-RunningContainerSet {
     return (@($output | ForEach-Object { $_.ToString() } | Sort-Object) -join "`n")
 }
 
+function Get-ContainerSet {
+    $output = @(& docker ps --all --quiet --no-trunc 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect the complete container set."
+    }
+    return (@($output | ForEach-Object { $_.ToString() } | Sort-Object) -join "`n")
+}
+
+function Get-ImageSet {
+    $output = @(
+        & docker image ls `
+            --no-trunc `
+            --format "{{.ID}}|{{.Repository}}:{{.Tag}}|{{.Digest}}" 2>&1
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect the image set."
+    }
+    return (@($output | ForEach-Object { $_.ToString() } | Sort-Object) -join "`n")
+}
+
+function Get-NetworkSet {
+    $output = @(
+        & docker network ls `
+            --no-trunc `
+            --format "{{.ID}}|{{.Name}}" 2>&1
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect the network set."
+    }
+    return (@($output | ForEach-Object { $_.ToString() } | Sort-Object) -join "`n")
+}
+
+function Get-VolumeSet {
+    $output = @(& docker volume ls --format "{{.Name}}" 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect the volume set."
+    }
+    return (@($output | ForEach-Object { $_.ToString() } | Sort-Object) -join "`n")
+}
+
+function Invoke-ChildPowerShellWithoutDocker {
+    param(
+        [string]$ScriptPath,
+        [string[]]$Arguments
+    )
+
+    $pathEntries = @(
+        [Environment]::GetEnvironmentVariables(
+            [EnvironmentVariableTarget]::Process
+        ).GetEnumerator() | Where-Object {
+            [string]$_.Key -ieq "PATH"
+        }
+    )
+    if ($pathEntries.Count -ne 1) {
+        throw "Unable to identify the process PATH variable."
+    }
+    $pathEnvironmentName = [string]$pathEntries[0].Key
+    $pathSnapshot = Get-ProcessEnvironmentSnapshot -Names @($pathEnvironmentName)
+    try {
+        Set-ProcessEnvironmentValue `
+            -Name $pathEnvironmentName `
+            -Value $dockerUnavailablePath
+        $previousErrorPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $output = @(
+                & $powerShellExecutable `
+                    -NoProfile `
+                    -ExecutionPolicy Bypass `
+                    -File $ScriptPath `
+                    @Arguments 2>&1
+            )
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorPreference
+        }
+    }
+    finally {
+        Restore-ProcessEnvironment -Snapshot $pathSnapshot
+        Assert-ProcessEnvironmentMatchesSnapshot `
+            -Snapshot $pathSnapshot `
+            -Context "Docker-unavailable child process"
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = @($output | ForEach-Object { $_.ToString() })
+    }
+}
+
+function Invoke-ValidatorWithoutDocker {
+    param([string]$ComposeFile)
+
+    return Invoke-ChildPowerShellWithoutDocker `
+        -ScriptPath $composeValidator `
+        -Arguments @(
+            "-EnvFile",
+            $templatePath,
+            "-ComposeFile",
+            $ComposeFile,
+            "-Template"
+        )
+}
+
+function Invoke-SmokeWithoutDocker {
+    param([string]$ComposeFile)
+
+    $projectName = "me-source-order-$PID-$([guid]::NewGuid().ToString('N'))"
+    return Invoke-ChildPowerShellWithoutDocker `
+        -ScriptPath $smokeTest `
+        -Arguments @(
+            "-ComposeFile",
+            $ComposeFile,
+            "-ProjectName",
+            $projectName
+        )
+}
+
+function ConvertTo-NormalizedChildOutput {
+    param([object[]]$Output)
+
+    $ansiEscapePattern = ([string][char]27) + "\[[0-?]*[ -/]*[@-~]"
+    $plainLines = @(
+        foreach ($line in $Output) {
+            $plainLine = [regex]::Replace(
+                [string]$line,
+                $ansiEscapePattern,
+                ""
+            )
+            $plainLine -replace "^\s*\|\s?", ""
+        }
+    )
+    return ((($plainLines -join " ") -replace "\s+", " ").Trim())
+}
+
+function Assert-ValidatorOutputIsSafe {
+    param(
+        [object]$Result,
+        [string]$Context,
+        [string]$Password
+    )
+
+    $text = (@($Result.Output) -join [Environment]::NewLine)
+    if (-not [string]::IsNullOrEmpty($Password) -and $text.Contains($Password)) {
+        throw "$Context printed the PostgreSQL password."
+    }
+    if ($text -cmatch '"services"\s*:') {
+        throw "$Context printed rendered Compose JSON."
+    }
+}
+
+function Assert-DockerComposeRenders {
+    param([string]$ComposeFile)
+
+    $savedEnvironment = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
+    try {
+        foreach ($key in $requiredKeys) {
+            Remove-ProcessEnvironmentVariable -Name $key
+        }
+        $projectName = "medevidence-fixture-" + [guid]::NewGuid().ToString("N")
+        $previousErrorPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $renderedOutput = @(
+                & docker compose `
+                    --project-name $projectName `
+                    --env-file $templatePath `
+                    --file $ComposeFile `
+                    config `
+                    --format json 2>&1
+            )
+            $composeExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorPreference
+        }
+    }
+    finally {
+        Restore-ProcessEnvironment -Snapshot $savedEnvironment
+        Assert-ProcessEnvironmentMatchesSnapshot `
+            -Snapshot $savedEnvironment `
+            -Context "Compose fixture rendering"
+    }
+
+    if ($composeExitCode -ne 0) {
+        throw "A semantic regression fixture is not accepted by Docker Compose."
+    }
+    $renderedJson = ($renderedOutput | ForEach-Object { $_.ToString() }) -join (
+        [Environment]::NewLine
+    )
+    try {
+        $null = $renderedJson | ConvertFrom-Json
+    }
+    catch {
+        throw "A semantic regression fixture did not render valid JSON."
+    }
+    finally {
+        $renderedJson = $null
+        $renderedOutput = $null
+    }
+}
+
+$powerShellExecutable = Resolve-CurrentPowerShellExecutable
+if (
+    -not [IO.Path]::IsPathRooted($powerShellExecutable) -or
+    -not (Test-Path -LiteralPath $powerShellExecutable -PathType Leaf)
+) {
+    throw "The current PowerShell executable path is invalid."
+}
+$powerShellHost = if ([string]$PSVersionTable.PSEdition -ceq "Desktop") {
+    "Windows PowerShell Desktop"
+}
+else {
+    "PowerShell Core"
+}
+$results.Add("PASS current-host-executable-resolved ($powerShellHost)")
+
+$validatorSource = [IO.File]::ReadAllText($composeValidator)
+if (
+    $validatorSource.Contains("Get-Command docker.exe") -or
+    -not $validatorSource.Contains("Get-Command docker ")
+) {
+    throw "Compose validation does not use cross-platform Docker command resolution."
+}
+$results.Add("PASS docker-command-resolution-uses-cross-platform-name")
+
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
+New-Item -ItemType Directory -Path $dockerUnavailablePath | Out-Null
 try {
     $templateLines = [IO.File]::ReadAllLines($templatePath)
     $runtimeLines = Set-EnvironmentValue -Lines $templateLines `
         -Key "POSTGRES_PASSWORD" -Value (New-RandomPassword)
     $runtimePath = Write-EnvironmentCase -Name "valid-runtime" -Lines $runtimeLines
 
+    Assert-Pass "compose-source-only-canonical-without-environment" {
+        & $composeValidator `
+            -EnvFile (Join-Path $temporaryRoot "intentionally-missing.env") `
+            -ComposeFile $composePath `
+            -SourceOnly
+    }
+
     $runningBefore = Get-RunningContainerSet
 
     $collisionProjectName = "me-collision-$PID-$([guid]::NewGuid().ToString('N'))"
     $collisionVolumeName = "$collisionProjectName-sentinel"
     $collisionVolumeCreated = $false
+    $unrelatedEnvironmentKey = "MEDEVIDENCE_INFRASTRUCTURE_CONTRACT_UNRELATED"
     $collisionHarnessEnvironment = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
+    $unrelatedHarnessEnvironment = Get-ProcessEnvironmentSnapshot -Names @(
+        $unrelatedEnvironmentKey
+    )
     try {
+        Set-ProcessEnvironmentValue `
+            -Name $unrelatedEnvironmentKey `
+            -Value "medevidence-unrelated-environment-sentinel"
+        $collisionSnapshotKeys = @($requiredKeys + $unrelatedEnvironmentKey)
         $null = & docker volume create `
             --label "com.docker.compose.project=$collisionProjectName" `
             $collisionVolumeName 2>&1
@@ -317,6 +604,42 @@ try {
                 Variable = "QDRANT_HTTP_PORT"
                 State = "sentinel"
                 Value = "medevidence-qdrant-http-port-sentinel"
+            },
+            @{
+                Name = "collision-postgres-user-empty-restored"
+                Variable = "POSTGRES_USER"
+                State = "empty"
+                Value = ""
+            },
+            @{
+                Name = "collision-postgres-user-absent-restored"
+                Variable = "POSTGRES_USER"
+                State = "absent"
+                Value = $null
+            },
+            @{
+                Name = "collision-postgres-user-sentinel-restored"
+                Variable = "POSTGRES_USER"
+                State = "sentinel"
+                Value = "medevidence-postgres-user-sentinel"
+            },
+            @{
+                Name = "collision-qdrant-image-empty-restored"
+                Variable = "QDRANT_IMAGE"
+                State = "empty"
+                Value = ""
+            },
+            @{
+                Name = "collision-qdrant-grpc-port-absent-restored"
+                Variable = "QDRANT_GRPC_PORT"
+                State = "absent"
+                Value = $null
+            },
+            @{
+                Name = "collision-postgres-password-sentinel-restored"
+                Variable = "POSTGRES_PASSWORD"
+                State = "sentinel"
+                Value = "medevidence-postgres-password-sentinel"
             }
         )
         foreach ($collisionCase in $collisionCases) {
@@ -324,13 +647,14 @@ try {
             if ($collisionCase.State -ceq "absent") {
                 Remove-ProcessEnvironmentVariable -Name $collisionCase.Variable
             }
-            elseif ($collisionCase.State -ceq "sentinel") {
+            elseif (@("empty", "sentinel") -ccontains $collisionCase.State) {
                 Set-ProcessEnvironmentValue `
                     -Name $collisionCase.Variable `
                     -Value $collisionCase.Value
             }
 
-            $environmentBeforeCollision = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
+            $environmentBeforeCollision = Get-ProcessEnvironmentSnapshot `
+                -Names $collisionSnapshotKeys
             if (
                 $collisionCase.State -ceq "absent" -and
                 $environmentBeforeCollision[$collisionCase.Variable].Exists
@@ -338,7 +662,7 @@ try {
                 throw "The absent-state collision precondition was not established."
             }
             if (
-                $collisionCase.State -ceq "sentinel" -and
+                @("empty", "sentinel") -ccontains $collisionCase.State -and
                 (
                     -not $environmentBeforeCollision[$collisionCase.Variable].Exists -or
                     [string]$environmentBeforeCollision[$collisionCase.Variable].Value -cne
@@ -353,6 +677,12 @@ try {
                 $null = & $smokeTest -ProjectName $collisionProjectName 2>&1
             }
             catch {
+                if (
+                    $_.Exception.Message -cne
+                    "The isolated Compose project name unexpectedly already exists."
+                ) {
+                    throw "The smoke test failed before reaching the intended collision check."
+                }
                 $collisionRejected = $true
             }
             if (-not $collisionRejected) {
@@ -387,6 +717,7 @@ try {
                 -Context $collisionCase.Name
             $results.Add("PASS $($collisionCase.Name)")
         }
+        $results.Add("PASS collision-all-eight-and-unrelated-environment-restored")
     }
     finally {
         try {
@@ -398,10 +729,18 @@ try {
             }
         }
         finally {
-            Restore-ProcessEnvironment -Snapshot $collisionHarnessEnvironment
-            Assert-ProcessEnvironmentMatchesSnapshot `
-                -Snapshot $collisionHarnessEnvironment `
-                -Context "Collision regression harness"
+            try {
+                Restore-ProcessEnvironment -Snapshot $collisionHarnessEnvironment
+                Assert-ProcessEnvironmentMatchesSnapshot `
+                    -Snapshot $collisionHarnessEnvironment `
+                    -Context "Collision regression harness"
+            }
+            finally {
+                Restore-ProcessEnvironment -Snapshot $unrelatedHarnessEnvironment
+                Assert-ProcessEnvironmentMatchesSnapshot `
+                    -Snapshot $unrelatedHarnessEnvironment `
+                    -Context "Unrelated environment regression harness"
+            }
         }
     }
 
@@ -615,20 +954,388 @@ try {
     }
 
     $baseCompose = [IO.File]::ReadAllText($composePath).Replace("`r`n", "`n")
+    $templatePasswordLines = @(
+        $templateLines | Where-Object { $_ -cmatch "^POSTGRES_PASSWORD=" }
+    )
+    if ($templatePasswordLines.Count -ne 1) {
+        throw "The Compose ordering fixture cannot identify the template password."
+    }
+    $templatePassword = $templatePasswordLines[0].Substring(
+        "POSTGRES_PASSWORD=".Length
+    )
     $postgresPortMarker = '      - "127.0.0.1:${POSTGRES_PORT:?POSTGRES_PORT is required}:5432"'
     $qdrantHttpPortMarker = '      - "127.0.0.1:${QDRANT_HTTP_PORT:?QDRANT_HTTP_PORT is required}:6333"'
     $qdrantGrpcPortMarker = '      - "127.0.0.1:${QDRANT_GRPC_PORT:?QDRANT_GRPC_PORT is required}:6334"'
+    $postgresServiceMarker = "  postgres:`n    image:"
+    $qdrantServiceMarker = "  qdrant:`n    image:"
+    $postgresEnvironmentMarker = (
+        '      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"'
+    )
     $postgresMarker = "    volumes:`n      - postgres_data:/var/lib/postgresql"
     $qdrantMarker = "    volumes:`n      - qdrant_data:/qdrant/storage"
     $requiredMarkers = @(
         $postgresPortMarker,
         $qdrantHttpPortMarker,
         $qdrantGrpcPortMarker,
+        $postgresServiceMarker,
+        $qdrantServiceMarker,
+        $postgresEnvironmentMarker,
         $postgresMarker,
         $qdrantMarker
     )
     if (@($requiredMarkers | Where-Object { -not $baseCompose.Contains($_) }).Count -ne 0) {
         throw "The Compose fixture markers do not match docker-compose.yml."
+    }
+
+    if (@(Get-ChildItem -LiteralPath $dockerUnavailablePath -Force).Count -ne 0) {
+        throw "The Docker-unavailable PATH fixture must be empty."
+    }
+    $sourceGateError = (
+        "Compose source must contain exactly the name, services, and volumes root " +
+        "properties."
+    )
+    $missingIncludePath = Join-Path $temporaryRoot "missing-include.yml"
+    $missingSecretPath = Join-Path $temporaryRoot "missing-secret.txt"
+    $missingConfigPath = Join-Path $temporaryRoot "missing-config.txt"
+    $sourceOrderingCases = @(
+        @{
+            Name = "missing-include"
+            Content = $baseCompose +
+                "`ninclude:`n  - $([IO.Path]::GetFileName($missingIncludePath))"
+            ReferencedPath = $missingIncludePath
+        },
+        @{
+            Name = "unreferenced-secrets"
+            Content = $baseCompose +
+                "`nsecrets:`n  audit_secret:`n" +
+                "    file: $([IO.Path]::GetFileName($missingSecretPath))"
+            ReferencedPath = $missingSecretPath
+        },
+        @{
+            Name = "unreferenced-configs"
+            Content = $baseCompose +
+                "`nconfigs:`n  audit_config:`n" +
+                "    file: $([IO.Path]::GetFileName($missingConfigPath))"
+            ReferencedPath = $missingConfigPath
+        },
+        @{
+            Name = "root-extension"
+            Content = $baseCompose + "`nx-extra:`n  enabled: true"
+            ReferencedPath = $null
+        },
+        @{
+            Name = "root-version"
+            Content = $baseCompose + "`nversion: `"3.9`""
+            ReferencedPath = $null
+        }
+    )
+    foreach ($sourceOrderingCase in $sourceOrderingCases) {
+        if (
+            $null -ne $sourceOrderingCase.ReferencedPath -and
+            (Test-Path -LiteralPath $sourceOrderingCase.ReferencedPath)
+        ) {
+            throw "A source-order external-file precondition was not established."
+        }
+        $sourceOrderingPath = Write-ComposeCase `
+            -Name "source-order-$($sourceOrderingCase.Name)" `
+            -Content $sourceOrderingCase.Content
+        $containersBeforeSourceGate = Get-ContainerSet
+        $imagesBeforeSourceGate = Get-ImageSet
+        $networksBeforeSourceGate = Get-NetworkSet
+        $volumesBeforeSourceGate = Get-VolumeSet
+        $sourceOrderingResult = Invoke-ValidatorWithoutDocker `
+            -ComposeFile $sourceOrderingPath
+        $sourceOrderingOutput = ConvertTo-NormalizedChildOutput `
+            -Output $sourceOrderingResult.Output
+        if ($sourceOrderingResult.ExitCode -eq 0) {
+            throw "A source-invalid Compose ordering fixture unexpectedly passed."
+        }
+        if (-not $sourceOrderingOutput.Contains($sourceGateError)) {
+            throw "A source-invalid Compose fixture did not return the source-gate error."
+        }
+        if ($sourceOrderingOutput.Contains("Docker command is unavailable.")) {
+            throw "A source-invalid Compose fixture reached Docker command resolution."
+        }
+        if ($sourceOrderingOutput.Contains("CommandNotFoundException")) {
+            throw "A source-invalid Compose fixture attempted unresolved command execution."
+        }
+        Assert-ValidatorOutputIsSafe `
+            -Result $sourceOrderingResult `
+            -Context "source-order-$($sourceOrderingCase.Name)" `
+            -Password $templatePassword
+        if ((Get-ContainerSet) -cne $containersBeforeSourceGate) {
+            throw "A source-invalid Compose fixture changed the container set."
+        }
+        if ((Get-ImageSet) -cne $imagesBeforeSourceGate) {
+            throw "A source-invalid Compose fixture changed the image set."
+        }
+        if ((Get-NetworkSet) -cne $networksBeforeSourceGate) {
+            throw "A source-invalid Compose fixture changed the network set."
+        }
+        if ((Get-VolumeSet) -cne $volumesBeforeSourceGate) {
+            throw "A source-invalid Compose fixture changed the volume set."
+        }
+        if (
+            $null -ne $sourceOrderingCase.ReferencedPath -and
+            (Test-Path -LiteralPath $sourceOrderingCase.ReferencedPath)
+        ) {
+            throw "A forbidden source declaration created or imported its external file."
+        }
+        $results.Add(
+            "PASS source-order-$($sourceOrderingCase.Name) (rejected before Docker)"
+        )
+    }
+
+    $containersBeforeCanonicalControl = Get-ContainerSet
+    $imagesBeforeCanonicalControl = Get-ImageSet
+    $networksBeforeCanonicalControl = Get-NetworkSet
+    $volumesBeforeCanonicalControl = Get-VolumeSet
+    $canonicalWithoutDocker = Invoke-ValidatorWithoutDocker -ComposeFile $composePath
+    $canonicalControlOutput = ConvertTo-NormalizedChildOutput `
+        -Output $canonicalWithoutDocker.Output
+    if ($canonicalWithoutDocker.ExitCode -eq 0) {
+        throw "Canonical Compose unexpectedly passed without Docker."
+    }
+    if ($canonicalControlOutput.Contains($sourceGateError)) {
+        throw "Canonical Compose unexpectedly failed the source gate."
+    }
+    if (-not $canonicalControlOutput.Contains("Docker command is unavailable.")) {
+        throw "Canonical Compose did not reach Docker command resolution."
+    }
+    if ($canonicalControlOutput.Contains("CommandNotFoundException")) {
+        throw "Canonical Compose used unresolved Docker command execution."
+    }
+    Assert-ValidatorOutputIsSafe `
+        -Result $canonicalWithoutDocker `
+        -Context "source-order-canonical-docker-unavailable-control" `
+        -Password $templatePassword
+    if ((Get-ContainerSet) -cne $containersBeforeCanonicalControl) {
+        throw "The canonical Docker-unavailable control changed the container set."
+    }
+    if ((Get-ImageSet) -cne $imagesBeforeCanonicalControl) {
+        throw "The canonical Docker-unavailable control changed the image set."
+    }
+    if ((Get-NetworkSet) -cne $networksBeforeCanonicalControl) {
+        throw "The canonical Docker-unavailable control changed the network set."
+    }
+    if ((Get-VolumeSet) -cne $volumesBeforeCanonicalControl) {
+        throw "The canonical Docker-unavailable control changed the volume set."
+    }
+    $results.Add("PASS source-order-canonical-docker-unavailable-control")
+
+    foreach ($sourceOrderingCase in $sourceOrderingCases) {
+        if (
+            $null -ne $sourceOrderingCase.ReferencedPath -and
+            (Test-Path -LiteralPath $sourceOrderingCase.ReferencedPath)
+        ) {
+            throw "A smoke source-order external-file precondition was not established."
+        }
+        $smokeSourceOrderingPath = Write-ComposeCase `
+            -Name "smoke-source-order-$($sourceOrderingCase.Name)" `
+            -Content $sourceOrderingCase.Content
+        $containersBeforeSmokeSourceGate = Get-ContainerSet
+        $imagesBeforeSmokeSourceGate = Get-ImageSet
+        $networksBeforeSmokeSourceGate = Get-NetworkSet
+        $volumesBeforeSmokeSourceGate = Get-VolumeSet
+        $smokeSourceOrderingResult = Invoke-SmokeWithoutDocker `
+            -ComposeFile $smokeSourceOrderingPath
+        $smokeSourceOrderingOutput = ConvertTo-NormalizedChildOutput `
+            -Output $smokeSourceOrderingResult.Output
+        if ($smokeSourceOrderingResult.ExitCode -eq 0) {
+            throw "A source-invalid smoke ordering fixture unexpectedly passed."
+        }
+        if (-not $smokeSourceOrderingOutput.Contains($sourceGateError)) {
+            throw "A source-invalid smoke fixture did not return the source-gate error."
+        }
+        if ($smokeSourceOrderingOutput.Contains("Docker command is unavailable.")) {
+            throw "A source-invalid smoke fixture reached Docker command resolution."
+        }
+        if ($smokeSourceOrderingOutput.Contains("CommandNotFoundException")) {
+            throw "A source-invalid smoke fixture attempted unresolved command execution."
+        }
+        Assert-ValidatorOutputIsSafe `
+            -Result $smokeSourceOrderingResult `
+            -Context "smoke-source-order-$($sourceOrderingCase.Name)" `
+            -Password $templatePassword
+        if ((Get-ContainerSet) -cne $containersBeforeSmokeSourceGate) {
+            throw "A source-invalid smoke fixture changed the container set."
+        }
+        if ((Get-ImageSet) -cne $imagesBeforeSmokeSourceGate) {
+            throw "A source-invalid smoke fixture changed the image set."
+        }
+        if ((Get-NetworkSet) -cne $networksBeforeSmokeSourceGate) {
+            throw "A source-invalid smoke fixture changed the network set."
+        }
+        if ((Get-VolumeSet) -cne $volumesBeforeSmokeSourceGate) {
+            throw "A source-invalid smoke fixture changed the volume set."
+        }
+        if (
+            $null -ne $sourceOrderingCase.ReferencedPath -and
+            (Test-Path -LiteralPath $sourceOrderingCase.ReferencedPath)
+        ) {
+            throw "A forbidden smoke source declaration accessed its external file."
+        }
+        $results.Add(
+            "PASS smoke-source-order-$($sourceOrderingCase.Name) " +
+            "(rejected before Docker)"
+        )
+    }
+
+    $containersBeforeCanonicalSmokeControl = Get-ContainerSet
+    $imagesBeforeCanonicalSmokeControl = Get-ImageSet
+    $networksBeforeCanonicalSmokeControl = Get-NetworkSet
+    $volumesBeforeCanonicalSmokeControl = Get-VolumeSet
+    $canonicalSmokeWithoutDocker = Invoke-SmokeWithoutDocker -ComposeFile $composePath
+    $canonicalSmokeControlOutput = ConvertTo-NormalizedChildOutput `
+        -Output $canonicalSmokeWithoutDocker.Output
+    if ($canonicalSmokeWithoutDocker.ExitCode -eq 0) {
+        throw "Canonical smoke unexpectedly passed without Docker."
+    }
+    if ($canonicalSmokeControlOutput.Contains($sourceGateError)) {
+        throw "Canonical smoke unexpectedly failed the source gate."
+    }
+    if (-not $canonicalSmokeControlOutput.Contains("Docker command is unavailable.")) {
+        throw "Canonical smoke did not reach Docker command resolution."
+    }
+    if ($canonicalSmokeControlOutput.Contains("CommandNotFoundException")) {
+        throw "Canonical smoke used unresolved Docker command execution."
+    }
+    Assert-ValidatorOutputIsSafe `
+        -Result $canonicalSmokeWithoutDocker `
+        -Context "smoke-source-order-canonical-docker-unavailable-control" `
+        -Password $templatePassword
+    if ((Get-ContainerSet) -cne $containersBeforeCanonicalSmokeControl) {
+        throw "The canonical Docker-unavailable smoke control changed the container set."
+    }
+    if ((Get-ImageSet) -cne $imagesBeforeCanonicalSmokeControl) {
+        throw "The canonical Docker-unavailable smoke control changed the image set."
+    }
+    if ((Get-NetworkSet) -cne $networksBeforeCanonicalSmokeControl) {
+        throw "The canonical Docker-unavailable smoke control changed the network set."
+    }
+    if ((Get-VolumeSet) -cne $volumesBeforeCanonicalSmokeControl) {
+        throw "The canonical Docker-unavailable smoke control changed the volume set."
+    }
+    $results.Add("PASS smoke-source-order-canonical-docker-unavailable-control")
+
+    $serviceSemanticCases = @(
+        @{
+            Name = "compose-qdrant-restart"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    restart: always`n    image:"
+            )
+        },
+        @{
+            Name = "compose-postgres-command"
+            Content = $baseCompose.Replace(
+                $postgresServiceMarker,
+                '  postgres:' + "`n" + '    command: ["postgres", "--help"]' + "`n" +
+                    "    image:"
+            )
+        },
+        @{
+            Name = "compose-qdrant-entrypoint"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                '  qdrant:' + "`n" + '    entrypoint: ["/bin/sh", "-c"]' + "`n" +
+                    "    image:"
+            )
+        },
+        @{
+            Name = "compose-postgres-cap-add"
+            Content = $baseCompose.Replace(
+                $postgresServiceMarker,
+                "  postgres:`n    cap_add: [NET_ADMIN]`n    image:"
+            )
+        },
+        @{
+            Name = "compose-qdrant-cap-drop"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    cap_drop: [ALL]`n    image:"
+            )
+        },
+        @{
+            Name = "compose-postgres-user"
+            Content = $baseCompose.Replace(
+                $postgresServiceMarker,
+                '  postgres:' + "`n" + '    user: "1000:1000"' + "`n" + "    image:"
+            )
+        },
+        @{
+            Name = "compose-qdrant-security-opt"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    security_opt: [no-new-privileges:true]`n    image:"
+            )
+        },
+        @{
+            Name = "compose-postgres-extra-environment"
+            Content = $baseCompose.Replace(
+                $postgresEnvironmentMarker,
+                $postgresEnvironmentMarker + "`n      PGDATA: /unexpected-postgres-data"
+            )
+        },
+        @{
+            Name = "compose-qdrant-environment"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    environment:`n      QDRANT__LOG_LEVEL: INFO`n    image:"
+            )
+        },
+        @{
+            Name = "compose-qdrant-labels"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    labels:`n      medevidence.audit: `"true`"`n    image:"
+            )
+        },
+        @{
+            Name = "compose-qdrant-depends-on"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    depends_on: [postgres]`n    image:"
+            )
+        },
+        @{
+            Name = "compose-qdrant-profiles"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    profiles: [audit]`n    image:"
+            )
+        },
+        @{
+            Name = "compose-qdrant-additional-network"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    networks: [default, audit_extra]`n    image:"
+            ) + "`nnetworks:`n  audit_extra:"
+        },
+        @{
+            Name = "compose-additional-root-configs"
+            Content = $baseCompose.Replace(
+                $qdrantServiceMarker,
+                "  qdrant:`n    configs: [audit_config]`n    image:"
+            ) + "`nconfigs:`n  audit_config:`n    content: audit"
+        },
+        @{
+            Name = "compose-additional-root-secrets"
+            Content = $baseCompose +
+                "`nsecrets:`n  audit_secret:`n    external: true"
+        }
+    )
+    foreach ($serviceSemanticCase in $serviceSemanticCases) {
+        $serviceSemanticCasePath = Write-ComposeCase `
+            -Name $serviceSemanticCase.Name `
+            -Content $serviceSemanticCase.Content
+        Assert-DockerComposeRenders -ComposeFile $serviceSemanticCasePath
+        Assert-Fail $serviceSemanticCase.Name {
+            & $composeValidator `
+                -EnvFile $templatePath `
+                -ComposeFile $serviceSemanticCasePath `
+                -Template
+        }
     }
 
     $portAndMountCases = @(

@@ -2,14 +2,41 @@
 param(
     # Intended for deterministic safety tests. Normal invocations omit this value.
     [ValidatePattern("^[a-z0-9][a-z0-9_-]{0,62}$")]
-    [string]$ProjectName
+    [string]$ProjectName,
+    [string]$ComposeFile = "docker-compose.yml"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$composePath = Join-Path $repositoryRoot "docker-compose.yml"
+$composeCandidate = $ComposeFile
+if (-not [IO.Path]::IsPathRooted($composeCandidate)) {
+    $composeCandidate = Join-Path $repositoryRoot $composeCandidate
+}
+if (-not (Test-Path -LiteralPath $composeCandidate -PathType Leaf)) {
+    throw "Required file does not exist: $ComposeFile"
+}
+$composePath = (Resolve-Path -LiteralPath $composeCandidate).ProviderPath
+$composeValidator = Join-Path $PSScriptRoot "validate-compose.ps1"
+& $composeValidator -ComposeFile $composePath -SourceOnly | Out-Null
+try {
+    $dockerCommand = Get-Command docker `
+        -CommandType Application `
+        -ErrorAction Stop |
+            Select-Object -First 1
+}
+catch {
+    throw "Docker command is unavailable."
+}
+$dockerExecutable = [string]$dockerCommand.Source
+if (
+    -not [IO.Path]::IsPathRooted($dockerExecutable) -or
+    -not (Test-Path -LiteralPath $dockerExecutable -PathType Leaf)
+) {
+    throw "Docker command is unavailable."
+}
+
 $templatePath = Join-Path $repositoryRoot ".env.example"
 $approvedPostgresImage = "docker.io/library/postgres:18.4-bookworm@" +
     "sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
@@ -46,6 +73,46 @@ function New-RandomPassword {
     return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
 }
 
+if (-not ("MedEvidenceProcessEnvironmentNative" -as [type])) {
+    $null = Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+
+public static class MedEvidenceProcessEnvironmentNative
+{
+    [DllImport(
+        "kernel32.dll",
+        CharSet = CharSet.Unicode,
+        EntryPoint = "SetEnvironmentVariableW",
+        SetLastError = true
+    )]
+    public static extern bool SetWindowsVariable(string name, string value);
+
+    [DllImport("libc", EntryPoint = "setenv", SetLastError = true)]
+    public static extern int SetUnixVariable(string name, string value, int overwrite);
+}
+'@
+}
+
+function Get-ProcessEnvironmentEntry {
+    param([string]$Name)
+
+    $processEnvironment = [Environment]::GetEnvironmentVariables(
+        [EnvironmentVariableTarget]::Process
+    )
+    foreach ($entry in $processEnvironment.GetEnumerator()) {
+        if ([string]$entry.Key -ceq $Name) {
+            return [pscustomobject]@{
+                Exists = $true
+                Value = [string]$entry.Value
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Exists = $false
+        Value = $null
+    }
+}
+
 function Get-ProcessEnvironmentSnapshot {
     param([string[]]$Names)
 
@@ -53,18 +120,58 @@ function Get-ProcessEnvironmentSnapshot {
         [StringComparer]::Ordinal
     )
     foreach ($name in $Names) {
-        $snapshot.Add(
-            $name,
-            [pscustomobject]@{
-                Exists = Test-Path -LiteralPath "Env:$name"
-                Value = [Environment]::GetEnvironmentVariable(
-                    $name,
-                    [EnvironmentVariableTarget]::Process
-                )
-            }
-        )
+        $snapshot.Add($name, (Get-ProcessEnvironmentEntry -Name $name))
     }
     return ,$snapshot
+}
+
+function Remove-ProcessEnvironmentVariable {
+    param([string]$Name)
+
+    Remove-Item -LiteralPath "Env:$Name" -Force -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable(
+        $Name,
+        [NullString]::Value,
+        [EnvironmentVariableTarget]::Process
+    )
+    $actual = Get-ProcessEnvironmentEntry -Name $Name
+    if ($actual.Exists) {
+        throw "Unable to remove process environment variable $Name."
+    }
+}
+
+function Set-ProcessEnvironmentValue {
+    param(
+        [string]$Name,
+        [string]$Value
+    )
+
+    [Environment]::SetEnvironmentVariable(
+        $Name,
+        $Value,
+        [EnvironmentVariableTarget]::Process
+    )
+    $actual = Get-ProcessEnvironmentEntry -Name $Name
+    if (
+        $Value.Length -eq 0 -and
+        (-not $actual.Exists -or [string]$actual.Value -cne "")
+    ) {
+        $succeeded = if (
+            [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+        ) {
+            [MedEvidenceProcessEnvironmentNative]::SetWindowsVariable($Name, "")
+        }
+        else {
+            [MedEvidenceProcessEnvironmentNative]::SetUnixVariable($Name, "", 1) -eq 0
+        }
+        if (-not $succeeded) {
+            throw "Unable to set an empty process environment variable $Name."
+        }
+        $actual = Get-ProcessEnvironmentEntry -Name $Name
+    }
+    if (-not $actual.Exists -or [string]$actual.Value -cne $Value) {
+        throw "Unable to restore process environment variable $Name."
+    }
 }
 
 function Restore-ProcessEnvironment {
@@ -72,17 +179,12 @@ function Restore-ProcessEnvironment {
 
     foreach ($name in $Snapshot.Keys) {
         $original = $Snapshot[$name]
-        $value = if ($original.Exists) {
-            [string]$original.Value
+        if ($original.Exists) {
+            Set-ProcessEnvironmentValue -Name $name -Value ([string]$original.Value)
         }
         else {
-            [NullString]::Value
+            Remove-ProcessEnvironmentVariable -Name $name
         }
-        [Environment]::SetEnvironmentVariable(
-            $name,
-            $value,
-            [EnvironmentVariableTarget]::Process
-        )
     }
 }
 
@@ -91,19 +193,42 @@ function Assert-ProcessEnvironmentMatchesSnapshot {
 
     foreach ($name in $Snapshot.Keys) {
         $original = $Snapshot[$name]
-        $actualExists = Test-Path -LiteralPath "Env:$name"
-        if ($actualExists -ne [bool]$original.Exists) {
+        $actual = Get-ProcessEnvironmentEntry -Name $name
+        if ($actual.Exists -ne [bool]$original.Exists) {
             throw "Process environment variable $name existence was not restored."
         }
-        if ($actualExists) {
-            $actualValue = [Environment]::GetEnvironmentVariable(
-                $name,
-                [EnvironmentVariableTarget]::Process
-            )
-            if ($actualValue -cne [string]$original.Value) {
-                throw "Process environment variable $name value was not restored."
-            }
+        if ($actual.Exists -and [string]$actual.Value -cne [string]$original.Value) {
+            throw "Process environment variable $name value was not restored."
         }
+    }
+}
+
+function Set-RuntimeEnvironment {
+    param([hashtable]$Values)
+
+    foreach ($key in $environmentKeys) {
+        Set-ProcessEnvironmentValue `
+            -Name $key `
+            -Value ([string]$Values[$key])
+    }
+}
+
+function Assert-RuntimeEnvironmentContainsExactKeys {
+    $processEnvironment = [Environment]::GetEnvironmentVariables(
+        [EnvironmentVariableTarget]::Process
+    )
+    $actualKeys = @(
+        $processEnvironment.Keys |
+            ForEach-Object { [string]$_ } |
+            Where-Object { $_ -cin $environmentKeys } |
+            Sort-Object
+    )
+    $expectedKeys = @($environmentKeys | Sort-Object)
+    if (
+        $actualKeys.Count -ne $expectedKeys.Count -or
+        ($actualKeys -join "`n") -cne ($expectedKeys -join "`n")
+    ) {
+        throw "Runtime infrastructure environment does not contain the exact approved keys."
     }
 }
 
@@ -139,14 +264,14 @@ function Invoke-Compose {
         "--file", $composePath
     )
     if ($Capture) {
-        $output = @(& docker @baseArguments @Arguments 2>&1)
+        $output = @(& $dockerExecutable @baseArguments @Arguments 2>&1)
         if ($LASTEXITCODE -ne 0) {
             throw "Docker Compose command failed."
         }
         return @($output | ForEach-Object { $_.ToString() })
     }
 
-    & docker @baseArguments @Arguments
+    & $dockerExecutable @baseArguments @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "Docker Compose command failed."
     }
@@ -157,9 +282,15 @@ function Get-ProjectResources {
 
     $label = "label=com.docker.compose.project=$composeProjectName"
     switch ($Type) {
-        "container" { $output = @(& docker ps --all --quiet --filter $label 2>&1) }
-        "network" { $output = @(& docker network ls --quiet --filter $label 2>&1) }
-        "volume" { $output = @(& docker volume ls --quiet --filter $label 2>&1) }
+        "container" {
+            $output = @(& $dockerExecutable ps --all --quiet --filter $label 2>&1)
+        }
+        "network" {
+            $output = @(& $dockerExecutable network ls --quiet --filter $label 2>&1)
+        }
+        "volume" {
+            $output = @(& $dockerExecutable volume ls --quiet --filter $label 2>&1)
+        }
     }
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to inspect project-labelled $Type resources."
@@ -170,15 +301,15 @@ function Get-ProjectResources {
 function Remove-ProjectResources {
     $containers = @(Get-ProjectResources -Type container)
     if ($containers.Count -gt 0) {
-        $null = & docker rm --force @containers 2>&1
+        $null = & $dockerExecutable rm --force @containers 2>&1
     }
     $networks = @(Get-ProjectResources -Type network)
     if ($networks.Count -gt 0) {
-        $null = & docker network rm @networks 2>&1
+        $null = & $dockerExecutable network rm @networks 2>&1
     }
     $volumes = @(Get-ProjectResources -Type volume)
     if ($volumes.Count -gt 0) {
-        $null = & docker volume rm --force @volumes 2>&1
+        $null = & $dockerExecutable volume rm --force @volumes 2>&1
     }
 }
 
@@ -199,7 +330,9 @@ function Assert-ContainerImage {
         [string]$Service
     )
 
-    $configuredImage = @(& docker inspect --format "{{.Config.Image}}" $ContainerId 2>&1)
+    $configuredImage = @(
+        & $dockerExecutable inspect --format "{{.Config.Image}}" $ContainerId 2>&1
+    )
     if ($LASTEXITCODE -ne 0 -or $configuredImage.Count -ne 1) {
         throw "Unable to inspect the $Service container image."
     }
@@ -207,12 +340,13 @@ function Assert-ContainerImage {
         throw "The $Service container does not use the approved image digest."
     }
 
-    $imageId = @(& docker inspect --format "{{.Image}}" $ContainerId 2>&1)
+    $imageId = @(& $dockerExecutable inspect --format "{{.Image}}" $ContainerId 2>&1)
     if ($LASTEXITCODE -ne 0 -or $imageId.Count -ne 1) {
         throw "Unable to inspect the $Service container image identity."
     }
     $repoDigestOutput = @(
-        & docker image inspect --format "{{json .RepoDigests}}" $imageId[0] 2>&1
+        & $dockerExecutable image inspect `
+            --format "{{json .RepoDigests}}" $imageId[0] 2>&1
     )
     if ($LASTEXITCODE -ne 0 -or $repoDigestOutput.Count -ne 1) {
         throw "Unable to inspect the $Service repository digests."
@@ -231,7 +365,10 @@ function Assert-PortBindings {
         [hashtable]$Expected
     )
 
-    $output = @(& docker inspect --format "{{json .NetworkSettings.Ports}}" $ContainerId 2>&1)
+    $output = @(
+        & $dockerExecutable inspect `
+            --format "{{json .NetworkSettings.Ports}}" $ContainerId 2>&1
+    )
     if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
         throw "Unable to inspect container port bindings."
     }
@@ -268,14 +405,6 @@ $runtimeEnvironment = @{
 $savedEnvironment = Get-ProcessEnvironmentSnapshot -Names $environmentKeys
 
 try {
-    foreach ($key in $environmentKeys) {
-        [Environment]::SetEnvironmentVariable(
-            $key,
-            $runtimeEnvironment[$key],
-            [EnvironmentVariableTarget]::Process
-        )
-    }
-
     $preExistingContainers = @(Get-ProjectResources -Type container)
     $preExistingNetworks = @(Get-ProjectResources -Type network)
     $preExistingVolumes = @(Get-ProjectResources -Type volume)
@@ -288,6 +417,17 @@ try {
     }
 
     $cleanupAuthorized = $true
+    Set-RuntimeEnvironment -Values $runtimeEnvironment
+    Assert-RuntimeEnvironmentContainsExactKeys
+
+    & $composeValidator `
+        -EnvFile $templatePath `
+        -ComposeFile $composePath `
+        -Template | Out-Null
+
+    Write-Output "Validating isolated Compose runtime configuration."
+    Invoke-Compose -Arguments @("config", "--quiet")
+
     Write-Output "Starting isolated Compose project $composeProjectName."
     Invoke-Compose -Arguments @("up", "-d", "--wait", "--wait-timeout", "180")
     $started = $true
@@ -305,7 +445,8 @@ try {
         ) -Capture
     )
     $qdrantHealth = @(
-        & docker inspect --format "{{.State.Health.Status}}" $qdrantContainer 2>&1
+        & $dockerExecutable inspect `
+            --format "{{.State.Health.Status}}" $qdrantContainer 2>&1
     )
     if ($LASTEXITCODE -ne 0 -or $qdrantHealth.Count -ne 1 -or $qdrantHealth[0] -cne "healthy") {
         throw "The required Qdrant Bash health check did not succeed."
@@ -366,7 +507,7 @@ finally {
             $previousErrorPreference = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                & docker compose `
+                & $dockerExecutable compose `
                     --project-name $composeProjectName `
                     --env-file $templatePath `
                     --file $composePath `

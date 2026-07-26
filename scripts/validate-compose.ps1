@@ -2,7 +2,8 @@
 param(
     [string]$EnvFile = ".env",
     [string]$ComposeFile = "docker-compose.yml",
-    [switch]$Template
+    [switch]$Template,
+    [switch]$SourceOnly
 )
 
 Set-StrictMode -Version Latest
@@ -20,26 +21,6 @@ $environmentKeys = @(
     "QDRANT_HTTP_PORT",
     "QDRANT_GRPC_PORT"
 )
-
-if (-not ("MedEvidenceProcessEnvironmentNative" -as [type])) {
-    $null = Add-Type -TypeDefinition @'
-using System.Runtime.InteropServices;
-
-public static class MedEvidenceProcessEnvironmentNative
-{
-    [DllImport(
-        "kernel32.dll",
-        CharSet = CharSet.Unicode,
-        EntryPoint = "SetEnvironmentVariableW",
-        SetLastError = true
-    )]
-    public static extern bool SetWindowsVariable(string name, string value);
-
-    [DllImport("libc", EntryPoint = "setenv", SetLastError = true)]
-    public static extern int SetUnixVariable(string name, string value, int overwrite);
-}
-'@
-}
 
 function Get-ProcessEnvironmentEntry {
     param([string]$Name)
@@ -203,6 +184,26 @@ function Get-SourceTopLevelVolumeKeys {
         }
     }
     Assert-Contract $foundVolumes "Compose must define a top-level volumes block."
+    return @($keys)
+}
+
+function Get-SourceTopLevelKeys {
+    param([string]$Path)
+
+    $keys = [Collections.Generic.List[string]]::new()
+    foreach ($line in [IO.File]::ReadAllLines($Path)) {
+        if ($line.Trim().Length -eq 0 -or $line.TrimStart().StartsWith("#")) {
+            continue
+        }
+        if ($line -cmatch "^\s") {
+            continue
+        }
+        if ($line -cmatch "^(?<key>[A-Za-z0-9._-]+):") {
+            $keys.Add($Matches["key"])
+            continue
+        }
+        throw "Compose source contains an unsupported top-level construct."
+    }
     return @($keys)
 }
 
@@ -544,42 +545,16 @@ function Assert-ExactVolumeDefinition {
     Assert-Contract ($null -ne $volumeProperty) "Compose volume $Key is missing."
     $definition = $volumeProperty.Value
     Assert-Contract ($null -ne $definition) "Compose volume $Key must have a rendered definition."
-
-    $allowedProperties = @("name", "driver", "driver_opts", "external")
-    $unexpectedProperties = @(
-        $definition.PSObject.Properties.Name | Where-Object {
-            $_ -cnotin $allowedProperties
-        }
-    )
-    Assert-Contract (
-        $unexpectedProperties.Count -eq 0
-    ) "Compose volume $Key contains an unexpected definition property."
+    Assert-ExactPropertySet `
+        -Object $definition `
+        -ExpectedProperties @("name") `
+        -Context "Compose volume $Key definition"
 
     $nameProperty = Get-OptionalProperty -Object $definition -Name "name"
     Assert-Contract (
         $null -ne $nameProperty -and
         [string]$nameProperty.Value -ceq "${ProjectName}_$Key"
     ) "Compose volume $Key must use its project-scoped generated name."
-
-    $externalProperty = Get-OptionalProperty -Object $definition -Name "external"
-    Assert-Contract (
-        $null -eq $externalProperty -or -not [bool]$externalProperty.Value
-    ) "Compose volume $Key must not be external."
-
-    $driverProperty = Get-OptionalProperty -Object $definition -Name "driver"
-    Assert-Contract (
-        $null -eq $driverProperty -or
-        [string]::IsNullOrWhiteSpace([string]$driverProperty.Value) -or
-        [string]$driverProperty.Value -ceq "local"
-    ) "Compose volume $Key must use the default local driver."
-
-    $driverOptionsProperty = Get-OptionalProperty -Object $definition -Name "driver_opts"
-    if ($null -ne $driverOptionsProperty -and $null -ne $driverOptionsProperty.Value) {
-        $driverOptions = @($driverOptionsProperty.Value.PSObject.Properties)
-        Assert-Contract (
-            $driverOptions.Count -eq 0
-        ) "Compose volume $Key must not define driver options."
-    }
 }
 
 function Assert-ExactHealthCheck {
@@ -590,22 +565,16 @@ function Assert-ExactHealthCheck {
     )
 
     Assert-Contract ($null -ne $HealthCheck) "$ServiceName health check is missing."
-    $allowedProperties = @(
+    Assert-ExactPropertySet `
+        -Object $HealthCheck `
+        -ExpectedProperties @(
         "test",
         "interval",
         "timeout",
         "retries",
-        "start_period",
-        "disable"
-    )
-    $unexpectedProperties = @(
-        $HealthCheck.PSObject.Properties.Name | Where-Object {
-            $_ -cnotin $allowedProperties
-        }
-    )
-    Assert-Contract (
-        $unexpectedProperties.Count -eq 0
-    ) "$ServiceName health check contains an unexpected property."
+        "start_period"
+    ) `
+        -Context "$ServiceName health check"
 
     $actualTest = @($HealthCheck.test)
     Assert-Contract (
@@ -613,11 +582,6 @@ function Assert-ExactHealthCheck {
         (($actualTest | ForEach-Object { [string]$_ }) -join "`n") -ceq
             ($ExpectedTest -join "`n")
     ) "$ServiceName health check command does not match the approved contract."
-
-    $disabledProperty = Get-OptionalProperty -Object $HealthCheck -Name "disable"
-    Assert-Contract (
-        $null -eq $disabledProperty -or -not [bool]$disabledProperty.Value
-    ) "$ServiceName health check must not be disabled."
 
     foreach ($requiredProperty in @("interval", "timeout", "retries", "start_period")) {
         Assert-Contract (
@@ -645,28 +609,116 @@ function Assert-ExactHealthCheck {
     ) "$ServiceName health check start_period must be exactly 10 seconds."
 }
 
-$resolvedEnvFile = Resolve-RepositoryPath -Path $EnvFile
 $resolvedComposePath = Resolve-RepositoryPath -Path $ComposeFile
+$canonicalComposePath = Resolve-RepositoryPath -Path (
+    Join-Path $repositoryRoot "docker-compose.yml"
+)
+
+$approvedSourceRootKeys = @(
+    Get-SourceTopLevelKeys -Path $canonicalComposePath |
+        Sort-Object
+)
+Assert-Contract (
+    $approvedSourceRootKeys.Count -eq 3 -and
+    ($approvedSourceRootKeys -join ",") -ceq "name,services,volumes"
+) (
+    "Canonical repository Compose source must contain exactly the name, services, " +
+    "and volumes root properties."
+)
+$sourceRootKeys = @(
+    Get-SourceTopLevelKeys -Path $resolvedComposePath |
+        Sort-Object
+)
+Assert-Contract (
+    $sourceRootKeys.Count -eq $approvedSourceRootKeys.Count -and
+    ($sourceRootKeys -join "`n") -ceq ($approvedSourceRootKeys -join "`n")
+) "Compose source must contain exactly the name, services, and volumes root properties."
+
+$approvedSourceVolumeNames = @(
+    Get-SourceTopLevelVolumeKeys -Path $canonicalComposePath |
+        Sort-Object
+)
+Assert-Contract (
+    $approvedSourceVolumeNames.Count -eq 2 -and
+    ($approvedSourceVolumeNames -join ",") -ceq "postgres_data,qdrant_data"
+) (
+    "Canonical repository Compose source must contain exactly the postgres_data " +
+    "and qdrant_data volume keys."
+)
+$sourceVolumeNames = @(
+    Get-SourceTopLevelVolumeKeys -Path $resolvedComposePath |
+        Sort-Object
+)
+Assert-Contract (
+    $sourceVolumeNames.Count -eq $approvedSourceVolumeNames.Count -and
+    ($sourceVolumeNames -join "`n") -ceq ($approvedSourceVolumeNames -join "`n")
+) "Compose source must contain exactly the postgres_data and qdrant_data volume keys."
+
+if ($SourceOnly) {
+    Write-Output (
+        "Compose source contract valid: root=name,services,volumes; " +
+        "volumes=postgres_data,qdrant_data."
+    )
+    return
+}
+
+if (-not ("MedEvidenceProcessEnvironmentNative" -as [type])) {
+    $null = Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+
+public static class MedEvidenceProcessEnvironmentNative
+{
+    [DllImport(
+        "kernel32.dll",
+        CharSet = CharSet.Unicode,
+        EntryPoint = "SetEnvironmentVariableW",
+        SetLastError = true
+    )]
+    public static extern bool SetWindowsVariable(string name, string value);
+
+    [DllImport("libc", EntryPoint = "setenv", SetLastError = true)]
+    public static extern int SetUnixVariable(string name, string value, int overwrite);
+}
+'@
+}
+
+$resolvedEnvFile = Resolve-RepositoryPath -Path $EnvFile
+$validatorArguments = @{ EnvFile = $resolvedEnvFile }
+if ($Template) {
+    $validatorArguments["Template"] = $true
+}
+& $environmentValidator @validatorArguments | Out-Null
+$expected = Read-ValidatedEnvironment -Path $resolvedEnvFile
+
 $savedEnvironment = Get-ProcessEnvironmentSnapshot -Names $environmentKeys
 try {
-    $validatorArguments = @{ EnvFile = $resolvedEnvFile }
-    if ($Template) {
-        $validatorArguments["Template"] = $true
-    }
-    & $environmentValidator @validatorArguments | Out-Null
-    $expected = Read-ValidatedEnvironment -Path $resolvedEnvFile
-
-    $dockerCommand = Get-Command docker -ErrorAction Stop
     $validationProjectName = "medevidence-validation-" + [guid]::NewGuid().ToString("N")
     foreach ($key in $environmentKeys) {
         Remove-ProcessEnvironmentVariable -Name $key
+    }
+
+    try {
+        $dockerCommand = Get-Command docker `
+            -CommandType Application `
+            -ErrorAction Stop |
+                Select-Object -First 1
+    }
+    catch {
+        throw "Docker command is unavailable."
+    }
+    $dockerExecutable = [string]$dockerCommand.Source
+    if (
+        -not [IO.Path]::IsPathRooted($dockerExecutable) -or
+        -not (Test-Path -LiteralPath $dockerExecutable -PathType Leaf)
+    ) {
+        throw "Docker command is unavailable."
     }
 
     $previousErrorPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
         $composeOutput = @(
-            & $dockerCommand.Source compose `
+            & $dockerExecutable compose `
                 --project-name $validationProjectName `
                 --env-file $resolvedEnvFile `
                 --file $resolvedComposePath `
@@ -700,28 +752,52 @@ finally {
 }
 
 $serviceNames = @($configuration.services.PSObject.Properties.Name | Sort-Object)
+Assert-ExactPropertySet `
+    -Object $configuration `
+    -ExpectedProperties @("name", "networks", "services", "volumes") `
+    -Context "Rendered Compose root"
+Assert-ExactPropertySet `
+    -Object $configuration.services `
+    -ExpectedProperties @("postgres", "qdrant") `
+    -Context "Rendered Compose services"
 Assert-Contract (
     ($serviceNames.Count -eq 2) -and
     (($serviceNames -join ",") -ceq "postgres,qdrant")
 ) "Compose must contain exactly the postgres and qdrant services."
 
 $volumeNames = @($configuration.volumes.PSObject.Properties.Name | Sort-Object)
+Assert-ExactPropertySet `
+    -Object $configuration.volumes `
+    -ExpectedProperties @("postgres_data", "qdrant_data") `
+    -Context "Rendered Compose volumes"
 Assert-Contract (
     ($volumeNames.Count -eq 2) -and
     (($volumeNames -join ",") -ceq "postgres_data,qdrant_data")
 ) "Compose must contain exactly the postgres_data and qdrant_data volumes."
-$sourceVolumeNames = @(Get-SourceTopLevelVolumeKeys -Path $resolvedComposePath | Sort-Object)
-Assert-Contract (
-    ($sourceVolumeNames.Count -eq 2) -and
-    (($sourceVolumeNames -join ",") -ceq "postgres_data,qdrant_data")
-) "Compose source must contain exactly the postgres_data and qdrant_data volume keys."
-
 $projectNameProperty = Get-OptionalProperty -Object $configuration -Name "name"
 Assert-Contract (
     $null -ne $projectNameProperty -and
     [string]$projectNameProperty.Value -ceq $validationProjectName
 ) "Rendered Compose project name does not match the isolated validation project."
 $projectName = [string]$projectNameProperty.Value
+$networksProperty = Get-OptionalProperty -Object $configuration -Name "networks"
+Assert-Contract ($null -ne $networksProperty) "Rendered Compose networks are missing."
+Assert-ExactPropertySet `
+    -Object $networksProperty.Value `
+    -ExpectedProperties @("default") `
+    -Context "Rendered Compose networks"
+$defaultNetwork = $networksProperty.Value.default
+Assert-ExactPropertySet `
+    -Object $defaultNetwork `
+    -ExpectedProperties @("ipam", "name") `
+    -Context "Rendered Compose default network"
+Assert-Contract (
+    [string]$defaultNetwork.name -ceq "${projectName}_default"
+) "Rendered Compose default network must use its project-scoped generated name."
+Assert-ExactPropertySet `
+    -Object $defaultNetwork.ipam `
+    -ExpectedProperties @() `
+    -Context "Rendered Compose default network IPAM"
 Assert-ExactVolumeDefinition `
     -Volumes $configuration.volumes `
     -Key "postgres_data" `
@@ -733,6 +809,60 @@ Assert-ExactVolumeDefinition `
 
 $postgres = $configuration.services.postgres
 $qdrant = $configuration.services.qdrant
+Assert-ExactPropertySet `
+    -Object $postgres `
+    -ExpectedProperties @(
+        "command",
+        "entrypoint",
+        "environment",
+        "healthcheck",
+        "image",
+        "networks",
+        "ports",
+        "volumes"
+    ) `
+    -Context "Rendered PostgreSQL service"
+Assert-ExactPropertySet `
+    -Object $qdrant `
+    -ExpectedProperties @(
+        "command",
+        "entrypoint",
+        "healthcheck",
+        "image",
+        "networks",
+        "ports",
+        "volumes"
+    ) `
+    -Context "Rendered Qdrant service"
+foreach ($serviceEntry in @(
+    @{ Name = "PostgreSQL"; Service = $postgres },
+    @{ Name = "Qdrant"; Service = $qdrant }
+)) {
+    Assert-Contract (
+        $null -eq $serviceEntry.Service.command
+    ) "$($serviceEntry.Name) command must use the approved image default."
+    Assert-Contract (
+        $null -eq $serviceEntry.Service.entrypoint
+    ) "$($serviceEntry.Name) entrypoint must use the approved image default."
+    Assert-ExactPropertySet `
+        -Object $serviceEntry.Service.networks `
+        -ExpectedProperties @("default") `
+        -Context "$($serviceEntry.Name) service networks"
+    $defaultServiceNetwork = $serviceEntry.Service.networks.PSObject.Properties["default"]
+    Assert-Contract (
+        $null -ne $defaultServiceNetwork -and
+        $null -eq $defaultServiceNetwork.Value
+    ) "$($serviceEntry.Name) must use only the unmodified default network."
+}
+Assert-ExactPropertySet `
+    -Object $postgres.environment `
+    -ExpectedProperties @("POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_USER") `
+    -Context "Rendered PostgreSQL environment"
+foreach ($key in @("POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_USER")) {
+    Assert-Contract (
+        [string]$postgres.environment.PSObject.Properties[$key].Value -ceq $expected[$key]
+    ) "Rendered PostgreSQL environment variable $key does not match the validated environment."
+}
 Assert-Contract (
     [string]$postgres.image -ceq $expected["POSTGRES_IMAGE"]
 ) "Rendered PostgreSQL image does not match the validated environment."
