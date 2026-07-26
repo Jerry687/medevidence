@@ -210,9 +210,10 @@ uv run --locked --no-sync pytest `
   --cov-report=xml
 ```
 
-ME-000A2 must synchronize these four commands in the Makefile quality target
-and CI quality workflow before ME-000A completion. Also run relevant
-integration, end-to-end, or evaluation checks for the changed component.
+The optional Makefile `quality` target and the CI `windows-quality` job
+delegate to these same four commands. Windows setup, local validation, and CI
+do not require Make. Also run relevant integration, end-to-end, or evaluation
+checks for the changed component.
 
 If a command is unavailable, not yet applicable, or fails, report the exact
 command, outcome, and reason. Never claim that a check passed without executing

@@ -2,30 +2,35 @@ name: medevidence
 
 services:
   postgres:
-    image: "${POSTGRES_IMAGE:?Set POSTGRES_IMAGE after ME-000A}"
+    image: "${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}"
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-medevidence}
-      POSTGRES_USER: ${POSTGRES_USER:-medevidence}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is required}"
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:?POSTGRES_PORT is required}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-    restart: unless-stopped
+      retries: 20
+      start_period: 10s
 
   qdrant:
-    image: "${QDRANT_IMAGE:?Set QDRANT_IMAGE after ME-000A}"
+    image: "${QDRANT_IMAGE:?QDRANT_IMAGE is required}"
     ports:
-      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
-      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+      - "127.0.0.1:${QDRANT_HTTP_PORT:?QDRANT_HTTP_PORT is required}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:?QDRANT_GRPC_PORT is required}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", ":> /dev/tcp/127.0.0.1/6333"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
 volumes:
   postgres_data:

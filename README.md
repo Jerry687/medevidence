@@ -98,13 +98,14 @@ Bootstrap uses the explicit development group:
 uv sync --locked --group dev
 ```
 
-Networked dependency auditing, containers, environment-contract validation,
-and CI activation are deferred to ME-000A2.
+Networked dependency auditing remains deferred until a production dependency
+exists. ME-000A2 adds the approved container, environment-validation, and CI
+contracts described below.
 
 ## Authoritative offline checks
 
-The local ME-000A1 command set is authoritative. ME-000A2 will synchronize the
-Makefile and CI workflow:
+The local ME-000A1 command set remains authoritative. The optional Makefile
+`quality` target and the Windows CI job delegate to the same commands:
 
 ```powershell
 uv run --locked --no-sync ruff check .
@@ -119,15 +120,66 @@ uv run --locked --no-sync pytest `
 ```
 
 Unit and contract suites use directory-based classification and always disable
-network sockets. Live API tests are explicitly opt-in. The CI file is a
-disabled policy template during M0; `ME-000A` must approve and pin the runner,
-actions, build backend, dependencies, and tool versions before activation.
+network sockets. Live API tests are explicitly opt-in.
 
-## Local infrastructure skeleton
+## Local infrastructure
 
-`docker-compose.yml` contains PostgreSQL and Qdrant only. Their image values
-are intentionally unset until `ME-000A`; Compose execution is expected to fail
-closed until approved image versions are supplied in a local `.env`.
+`docker-compose.yml` contains exactly PostgreSQL 18.4 and Qdrant 1.18.3.
+Both images are digest-pinned, all published ports bind to `127.0.0.1`, and
+both data stores use Docker-managed named volumes. PostgreSQL 18 data is mounted
+at `/var/lib/postgresql`; Qdrant uses its unprivileged image and stores its
+rebuildable index under `/qdrant/storage`.
+
+Validate the committed template and all negative infrastructure-contract cases
+without starting or pulling containers:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\validate-environment.ps1 -EnvFile .\.env.example -Template
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\validate-compose.ps1 -EnvFile .\.env.example -Template
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\test-infrastructure-contract.ps1
+```
+
+For persistent local infrastructure, copy the template, replace its password,
+validate the real environment in strict mode, and then start Compose:
+
+```powershell
+Copy-Item .\.env.example .\.env
+# Edit only .env and replace POSTGRES_PASSWORD.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\validate-environment.ps1 -EnvFile .\.env
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\validate-compose.ps1 -EnvFile .\.env
+docker compose --env-file .\.env up -d --wait
+docker compose --env-file .\.env down
+```
+
+The isolated smoke test creates a random in-memory password and temporary
+loopback ports, verifies exact service versions, image digests, health, and
+bindings, and removes its containers, network, and volumes:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\smoke-compose.ps1
+```
+
+Makefile targets are optional conveniences. Windows setup, validation, smoke
+testing, and CI never require Make.
+
+## Continuous integration
+
+The required workflow contains exactly two jobs:
+
+- `windows-quality` on `windows-2025` synchronizes the locked development
+  environment and runs the four authoritative checks with `UV_OFFLINE=1`.
+- `compose-config` on `ubuntu-24.04` runs the persistent infrastructure
+  contract without starting containers or pulling images.
+
+Both jobs have explicit timeouts, read-only repository permissions, concurrency
+cancellation, and full-SHA action pins. Networked dependency auditing is not a
+required PR job and remains deferred until a production dependency exists.
 
 ## Design and governance documents
 
