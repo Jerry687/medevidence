@@ -40,6 +40,46 @@ function New-RandomPassword {
     return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
 }
 
+if (-not ("MedEvidenceProcessEnvironmentNative" -as [type])) {
+    $null = Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+
+public static class MedEvidenceProcessEnvironmentNative
+{
+    [DllImport(
+        "kernel32.dll",
+        CharSet = CharSet.Unicode,
+        EntryPoint = "SetEnvironmentVariableW",
+        SetLastError = true
+    )]
+    public static extern bool SetWindowsVariable(string name, string value);
+
+    [DllImport("libc", EntryPoint = "setenv", SetLastError = true)]
+    public static extern int SetUnixVariable(string name, string value, int overwrite);
+}
+'@
+}
+
+function Get-ProcessEnvironmentEntry {
+    param([string]$Name)
+
+    $processEnvironment = [Environment]::GetEnvironmentVariables(
+        [EnvironmentVariableTarget]::Process
+    )
+    foreach ($entry in $processEnvironment.GetEnumerator()) {
+        if ([string]$entry.Key -ceq $Name) {
+            return [pscustomobject]@{
+                Exists = $true
+                Value = [string]$entry.Value
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Exists = $false
+        Value = $null
+    }
+}
+
 function Get-ProcessEnvironmentSnapshot {
     param([string[]]$Names)
 
@@ -47,18 +87,58 @@ function Get-ProcessEnvironmentSnapshot {
         [StringComparer]::Ordinal
     )
     foreach ($name in $Names) {
-        $snapshot.Add(
-            $name,
-            [pscustomobject]@{
-                Exists = Test-Path -LiteralPath "Env:$name"
-                Value = [Environment]::GetEnvironmentVariable(
-                    $name,
-                    [EnvironmentVariableTarget]::Process
-                )
-            }
-        )
+        $snapshot.Add($name, (Get-ProcessEnvironmentEntry -Name $name))
     }
     return ,$snapshot
+}
+
+function Remove-ProcessEnvironmentVariable {
+    param([string]$Name)
+
+    Remove-Item -LiteralPath "Env:$Name" -Force -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable(
+        $Name,
+        [NullString]::Value,
+        [EnvironmentVariableTarget]::Process
+    )
+    $actual = Get-ProcessEnvironmentEntry -Name $Name
+    if ($actual.Exists) {
+        throw "Unable to remove process environment variable $Name."
+    }
+}
+
+function Set-ProcessEnvironmentValue {
+    param(
+        [string]$Name,
+        [string]$Value
+    )
+
+    [Environment]::SetEnvironmentVariable(
+        $Name,
+        $Value,
+        [EnvironmentVariableTarget]::Process
+    )
+    $actual = Get-ProcessEnvironmentEntry -Name $Name
+    if (
+        $Value.Length -eq 0 -and
+        (-not $actual.Exists -or [string]$actual.Value -cne "")
+    ) {
+        $succeeded = if (
+            [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+        ) {
+            [MedEvidenceProcessEnvironmentNative]::SetWindowsVariable($Name, "")
+        }
+        else {
+            [MedEvidenceProcessEnvironmentNative]::SetUnixVariable($Name, "", 1) -eq 0
+        }
+        if (-not $succeeded) {
+            throw "Unable to set an empty process environment variable $Name."
+        }
+        $actual = Get-ProcessEnvironmentEntry -Name $Name
+    }
+    if (-not $actual.Exists -or [string]$actual.Value -cne $Value) {
+        throw "Unable to restore process environment variable $Name."
+    }
 }
 
 function Restore-ProcessEnvironment {
@@ -66,17 +146,12 @@ function Restore-ProcessEnvironment {
 
     foreach ($name in $Snapshot.Keys) {
         $original = $Snapshot[$name]
-        $value = if ($original.Exists) {
-            [string]$original.Value
+        if ($original.Exists) {
+            Set-ProcessEnvironmentValue -Name $name -Value ([string]$original.Value)
         }
         else {
-            [NullString]::Value
+            Remove-ProcessEnvironmentVariable -Name $name
         }
-        [Environment]::SetEnvironmentVariable(
-            $name,
-            $value,
-            [EnvironmentVariableTarget]::Process
-        )
     }
 }
 
@@ -88,18 +163,12 @@ function Assert-ProcessEnvironmentMatchesSnapshot {
 
     foreach ($name in $Snapshot.Keys) {
         $original = $Snapshot[$name]
-        $actualExists = Test-Path -LiteralPath "Env:$name"
-        if ($actualExists -ne [bool]$original.Exists) {
+        $actual = Get-ProcessEnvironmentEntry -Name $name
+        if ($actual.Exists -ne [bool]$original.Exists) {
             throw "$Context did not restore process environment variable $name existence."
         }
-        if ($actualExists) {
-            $actualValue = [Environment]::GetEnvironmentVariable(
-                $name,
-                [EnvironmentVariableTarget]::Process
-            )
-            if ($actualValue -cne [string]$original.Value) {
-                throw "$Context did not restore process environment variable $name value."
-            }
+        if ($actual.Exists -and [string]$actual.Value -cne [string]$original.Value) {
+            throw "$Context did not restore process environment variable $name value."
         }
     }
 }
@@ -253,18 +322,12 @@ try {
         foreach ($collisionCase in $collisionCases) {
             Restore-ProcessEnvironment -Snapshot $collisionHarnessEnvironment
             if ($collisionCase.State -ceq "absent") {
-                [Environment]::SetEnvironmentVariable(
-                    $collisionCase.Variable,
-                    [NullString]::Value,
-                    [EnvironmentVariableTarget]::Process
-                )
+                Remove-ProcessEnvironmentVariable -Name $collisionCase.Variable
             }
             elseif ($collisionCase.State -ceq "sentinel") {
-                [Environment]::SetEnvironmentVariable(
-                    $collisionCase.Variable,
-                    $collisionCase.Value,
-                    [EnvironmentVariableTarget]::Process
-                )
+                Set-ProcessEnvironmentValue `
+                    -Name $collisionCase.Variable `
+                    -Value $collisionCase.Value
             }
 
             $environmentBeforeCollision = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
@@ -436,6 +499,119 @@ try {
     }
     Assert-Pass "compose-runtime-configuration-only" {
         & $composeValidator -EnvFile $runtimePath
+    }
+
+    $composeEnvironmentHarness = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
+    try {
+        $composeEnvironmentCases = @(
+            @{
+                Name = "compose-postgres-image-absent-restored"
+                Variable = "POSTGRES_IMAGE"
+                State = "absent"
+                Value = $null
+            },
+            @{
+                Name = "compose-postgres-image-sentinel-restored"
+                Variable = "POSTGRES_IMAGE"
+                State = "sentinel"
+                Value = "medevidence-compose-postgres-image-sentinel"
+            },
+            @{
+                Name = "compose-postgres-port-absent-restored"
+                Variable = "POSTGRES_PORT"
+                State = "absent"
+                Value = $null
+            },
+            @{
+                Name = "compose-qdrant-http-port-sentinel-restored"
+                Variable = "QDRANT_HTTP_PORT"
+                State = "sentinel"
+                Value = "medevidence-compose-qdrant-http-port-sentinel"
+            },
+            @{
+                Name = "compose-qdrant-grpc-port-empty-restored"
+                Variable = "QDRANT_GRPC_PORT"
+                State = "empty"
+                Value = ""
+            }
+        )
+        foreach ($composeEnvironmentCase in $composeEnvironmentCases) {
+            Restore-ProcessEnvironment -Snapshot $composeEnvironmentHarness
+            if ($composeEnvironmentCase.State -ceq "absent") {
+                Remove-ProcessEnvironmentVariable -Name $composeEnvironmentCase.Variable
+            }
+            else {
+                Set-ProcessEnvironmentValue `
+                    -Name $composeEnvironmentCase.Variable `
+                    -Value $composeEnvironmentCase.Value
+            }
+
+            $environmentBeforeCompose = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
+            if (
+                $composeEnvironmentCase.State -ceq "absent" -and
+                $environmentBeforeCompose[$composeEnvironmentCase.Variable].Exists
+            ) {
+                throw "The absent-state Compose precondition was not established."
+            }
+            if (
+                $composeEnvironmentCase.State -cne "absent" -and
+                (
+                    -not $environmentBeforeCompose[$composeEnvironmentCase.Variable].Exists -or
+                    [string]$environmentBeforeCompose[$composeEnvironmentCase.Variable].Value -cne
+                        [string]$composeEnvironmentCase.Value
+                )
+            ) {
+                throw "The present-state Compose precondition was not established."
+            }
+
+            try {
+                $null = & $composeValidator -EnvFile $templatePath -Template 2>&1
+            }
+            catch {
+                throw "Compose environment restoration case unexpectedly failed."
+            }
+            Assert-ProcessEnvironmentMatchesSnapshot `
+                -Snapshot $environmentBeforeCompose `
+                -Context $composeEnvironmentCase.Name
+            $results.Add("PASS $($composeEnvironmentCase.Name)")
+        }
+
+        Restore-ProcessEnvironment -Snapshot $composeEnvironmentHarness
+        Remove-ProcessEnvironmentVariable -Name "POSTGRES_IMAGE"
+        Set-ProcessEnvironmentValue `
+            -Name "POSTGRES_DB" `
+            -Value "medevidence-compose-failure-sentinel"
+        Set-ProcessEnvironmentValue -Name "POSTGRES_USER" -Value ""
+        Set-ProcessEnvironmentValue `
+            -Name "QDRANT_GRPC_PORT" `
+            -Value "medevidence-compose-failure-port-sentinel"
+        $environmentBeforeForcedFailure = Get-ProcessEnvironmentSnapshot -Names $requiredKeys
+        $forcedFailurePath = Write-ComposeCase `
+            -Name "compose-forced-render-failure" `
+            -Content "services:`n  postgres: ["
+        $forcedFailureRejected = $false
+        try {
+            $null = & $composeValidator `
+                -EnvFile $templatePath `
+                -ComposeFile $forcedFailurePath `
+                -Template 2>&1
+        }
+        catch {
+            $forcedFailureRejected = $true
+        }
+        if (-not $forcedFailureRejected) {
+            throw "The forced Compose failure unexpectedly passed."
+        }
+        Assert-ProcessEnvironmentMatchesSnapshot `
+            -Snapshot $environmentBeforeForcedFailure `
+            -Context "compose-forced-failure-environment-restored"
+        $results.Add("PASS compose-forced-failure-environment-restored")
+    }
+    finally {
+        Restore-ProcessEnvironment -Snapshot $composeEnvironmentHarness
+        Assert-ProcessEnvironmentMatchesSnapshot `
+            -Snapshot $composeEnvironmentHarness `
+            -Context "Compose environment regression harness"
     }
 
     $baseCompose = [IO.File]::ReadAllText($composePath).Replace("`r`n", "`n")

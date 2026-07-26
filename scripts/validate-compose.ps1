@@ -21,6 +21,136 @@ $environmentKeys = @(
     "QDRANT_GRPC_PORT"
 )
 
+if (-not ("MedEvidenceProcessEnvironmentNative" -as [type])) {
+    $null = Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+
+public static class MedEvidenceProcessEnvironmentNative
+{
+    [DllImport(
+        "kernel32.dll",
+        CharSet = CharSet.Unicode,
+        EntryPoint = "SetEnvironmentVariableW",
+        SetLastError = true
+    )]
+    public static extern bool SetWindowsVariable(string name, string value);
+
+    [DllImport("libc", EntryPoint = "setenv", SetLastError = true)]
+    public static extern int SetUnixVariable(string name, string value, int overwrite);
+}
+'@
+}
+
+function Get-ProcessEnvironmentEntry {
+    param([string]$Name)
+
+    $processEnvironment = [Environment]::GetEnvironmentVariables(
+        [EnvironmentVariableTarget]::Process
+    )
+    foreach ($entry in $processEnvironment.GetEnumerator()) {
+        if ([string]$entry.Key -ceq $Name) {
+            return [pscustomobject]@{
+                Exists = $true
+                Value = [string]$entry.Value
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Exists = $false
+        Value = $null
+    }
+}
+
+function Get-ProcessEnvironmentSnapshot {
+    param([string[]]$Names)
+
+    $snapshot = [Collections.Generic.Dictionary[string, object]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($name in $Names) {
+        $snapshot.Add($name, (Get-ProcessEnvironmentEntry -Name $name))
+    }
+    return ,$snapshot
+}
+
+function Remove-ProcessEnvironmentVariable {
+    param([string]$Name)
+
+    Remove-Item -LiteralPath "Env:$Name" -Force -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable(
+        $Name,
+        [NullString]::Value,
+        [EnvironmentVariableTarget]::Process
+    )
+    $actual = Get-ProcessEnvironmentEntry -Name $Name
+    if ($actual.Exists) {
+        throw "Unable to remove process environment variable $Name."
+    }
+}
+
+function Set-ProcessEnvironmentValue {
+    param(
+        [string]$Name,
+        [string]$Value
+    )
+
+    [Environment]::SetEnvironmentVariable(
+        $Name,
+        $Value,
+        [EnvironmentVariableTarget]::Process
+    )
+    $actual = Get-ProcessEnvironmentEntry -Name $Name
+    if (
+        $Value.Length -eq 0 -and
+        (-not $actual.Exists -or [string]$actual.Value -cne "")
+    ) {
+        $succeeded = if (
+            [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+        ) {
+            [MedEvidenceProcessEnvironmentNative]::SetWindowsVariable($Name, "")
+        }
+        else {
+            [MedEvidenceProcessEnvironmentNative]::SetUnixVariable($Name, "", 1) -eq 0
+        }
+        if (-not $succeeded) {
+            throw "Unable to set an empty process environment variable $Name."
+        }
+        $actual = Get-ProcessEnvironmentEntry -Name $Name
+    }
+    if (-not $actual.Exists -or [string]$actual.Value -cne $Value) {
+        throw "Unable to restore process environment variable $Name."
+    }
+}
+
+function Restore-ProcessEnvironment {
+    param([Collections.Generic.Dictionary[string, object]]$Snapshot)
+
+    foreach ($name in $Snapshot.Keys) {
+        $original = $Snapshot[$name]
+        if ($original.Exists) {
+            Set-ProcessEnvironmentValue -Name $name -Value ([string]$original.Value)
+        }
+        else {
+            Remove-ProcessEnvironmentVariable -Name $name
+        }
+    }
+}
+
+function Assert-ProcessEnvironmentMatchesSnapshot {
+    param([Collections.Generic.Dictionary[string, object]]$Snapshot)
+
+    foreach ($name in $Snapshot.Keys) {
+        $original = $Snapshot[$name]
+        $actual = Get-ProcessEnvironmentEntry -Name $name
+        if ($actual.Exists -ne [bool]$original.Exists) {
+            throw "Process environment variable $name existence was not restored."
+        }
+        if ($actual.Exists -and [string]$actual.Value -cne [string]$original.Value) {
+            throw "Process environment variable $name value was not restored."
+        }
+    }
+}
+
 function Resolve-RepositoryPath {
     param([string]$Path)
 
@@ -516,22 +646,21 @@ function Assert-ExactHealthCheck {
 
 $resolvedEnvFile = Resolve-RepositoryPath -Path $EnvFile
 $resolvedComposePath = Resolve-RepositoryPath -Path $ComposeFile
-$validatorArguments = @{ EnvFile = $resolvedEnvFile }
-if ($Template) {
-    $validatorArguments["Template"] = $true
-}
-& $environmentValidator @validatorArguments | Out-Null
-$expected = Read-ValidatedEnvironment -Path $resolvedEnvFile
-
-$dockerCommand = Get-Command docker -ErrorAction Stop
-$validationProjectName = "medevidence-validation-" + [guid]::NewGuid().ToString("N")
-$savedEnvironment = @{}
-foreach ($key in $environmentKeys) {
-    $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
-    [Environment]::SetEnvironmentVariable($key, $null, "Process")
-}
-
+$savedEnvironment = Get-ProcessEnvironmentSnapshot -Names $environmentKeys
 try {
+    $validatorArguments = @{ EnvFile = $resolvedEnvFile }
+    if ($Template) {
+        $validatorArguments["Template"] = $true
+    }
+    & $environmentValidator @validatorArguments | Out-Null
+    $expected = Read-ValidatedEnvironment -Path $resolvedEnvFile
+
+    $dockerCommand = Get-Command docker -ErrorAction Stop
+    $validationProjectName = "medevidence-validation-" + [guid]::NewGuid().ToString("N")
+    foreach ($key in $environmentKeys) {
+        Remove-ProcessEnvironmentVariable -Name $key
+    }
+
     $previousErrorPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
@@ -550,9 +679,8 @@ try {
     }
 }
 finally {
-    foreach ($key in $environmentKeys) {
-        [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], "Process")
-    }
+    Restore-ProcessEnvironment -Snapshot $savedEnvironment
+    Assert-ProcessEnvironmentMatchesSnapshot -Snapshot $savedEnvironment
 }
 
 if ($composeExitCode -ne 0) {
