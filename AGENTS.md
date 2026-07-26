@@ -199,14 +199,20 @@ Before reporting completion of an implementation task, run from the repository
 root:
 
 ```text
-python -m ruff check .
-python -m ruff format --check .
-python -m mypy src
-python -m pytest tests/unit tests/contract --disable-socket
+uv run --locked --no-sync ruff check .
+uv run --locked --no-sync ruff format --check .
+uv run --locked --no-sync mypy src
+uv run --locked --no-sync pytest `
+  tests/unit tests/contract `
+  --disable-socket `
+  --cov=medevidence `
+  --cov-report=term-missing `
+  --cov-report=xml
 ```
 
-These four commands must appear unchanged in the Makefile quality target and CI
-quality workflow. Also run relevant integration, end-to-end, or evaluation
+The optional Makefile `quality` target and the CI `windows-quality` job
+delegate to these same four commands. Windows setup, local validation, and CI
+do not require Make. Also run relevant integration, end-to-end, or evaluation
 checks for the changed component.
 
 If a command is unavailable, not yet applicable, or fails, report the exact

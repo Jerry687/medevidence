@@ -6,18 +6,66 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  offline-quality:
-    # Policy template only. ME-000A must approve action, tool, dependency, and
-    # runner versions before this executable workflow is activated.
-    if: ${{ false }}
-    runs-on: ubuntu-latest
+  windows-quality:
+    runs-on: windows-2025
+    timeout-minutes: 20
     steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install approved uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          python-version: "3.12.13"
+          enable-cache: false
+      - name: Synchronize locked development environment
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
       - name: Ruff lint
-        run: python -m ruff check .
+        shell: powershell
+        env:
+          UV_OFFLINE: "1"
+        run: uv run --locked --no-sync ruff check .
       - name: Ruff format check
-        run: python -m ruff format --check .
+        shell: powershell
+        env:
+          UV_OFFLINE: "1"
+        run: uv run --locked --no-sync ruff format --check .
       - name: Mypy
-        run: python -m mypy src
+        shell: powershell
+        env:
+          UV_OFFLINE: "1"
+        run: uv run --locked --no-sync mypy src
       - name: Offline unit and contract tests
-        run: python -m pytest tests/unit tests/contract --disable-socket
+        shell: powershell
+        env:
+          UV_OFFLINE: "1"
+        run: |
+          uv run --locked --no-sync pytest `
+            tests/unit tests/contract `
+            --disable-socket `
+            --cov=medevidence `
+            --cov-report=term-missing `
+            --cov-report=xml
+
+  compose-config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate infrastructure contract without containers
+        shell: pwsh
+        run: ./scripts/test-infrastructure-contract.ps1
