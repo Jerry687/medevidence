@@ -44,10 +44,11 @@ Start with `ADR-001`. Do not renumber accepted records.
 
 ## Owner-accepted V1 records
 
-These decisions are accepted by the Project Owner. Overall M0 approval remains
-conditional and does not become effective until remediation receives an
-independent re-review PASS. The independent reviewer validates consistency and
-is not the approving authority.
+These decisions were accepted by the Project Owner for M0. The original M0
+audit FAIL and conditional approval remain preserved in their historical
+records; the frozen remediation later received an unconditional independent
+PASS and M0 became effective. The independent reviewer validates consistency
+and is not the approving authority.
 
 - [ADR-001: V1 reference domain](ADR-001-v1-reference-domain.md)
 - [ADR-002: Source semantics](ADR-002-source-semantics.md)
@@ -60,3 +61,22 @@ is not the approving authority.
 
 Any change to an accepted decision requires a new ADR that supersedes it. Do
 not edit history to make a prior decision appear different.
+
+## Owner-accepted M1A governance record
+
+- [ADR-009: M1A PubMed vertical-slice contracts and dependency gate](ADR-009-m1a-pubmed-vertical-slice-contracts.md)
+  - Status: Accepted by Project Owner; effective for the post-merge M1A
+    sequence
+  - Authorization package:
+    [M1A-001A-OWNER-AUTHORIZATION-001](../reviews/M1A-001A-OWNER-AUTHORIZATION-001.md)
+  - Independent governance review:
+    [M1A-001A-INDEPENDENT-REVIEW-001](../reviews/M1A-001A-INDEPENDENT-REVIEW-001.md)
+  - Effect: After this exact governance candidate is merged into `main`, only
+    `M1A-001B` may begin from the resulting approved baseline
+
+ADR-009 approves the bounded M1A sequence, source-neutral PubMed contracts,
+exact citation and snapshot semantics, synchronous PostgreSQL persistence,
+draft-only FastAPI transport, `M1A-LIVE-RETENTION-v1`, and exact direct
+dependency pins. The live query itself remains separately unauthorized, no
+standalone ASGI server is approved, and no implementation, installation, or
+lock-file change may occur on the unmerged governance branch.
