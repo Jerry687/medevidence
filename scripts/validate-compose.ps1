@@ -507,16 +507,17 @@ function ConvertTo-DurationNanoseconds {
         (($matches | ForEach-Object { $_.Value }) -join "") -ceq $text
     ) "Compose health check $Field has an unsupported duration representation."
 
-    $unitFactors = @{
-        "ns" = [decimal]1
-        "us" = [decimal]1000
-        "µs" = [decimal]1000
-        "μs" = [decimal]1000
-        "ms" = [decimal]1000000
-        "s" = [decimal]1000000000
-        "m" = [decimal]60000000000
-        "h" = [decimal]3600000000000
-    }
+    $unitFactors = [Collections.Generic.Dictionary[string, decimal]]::new(
+        [StringComparer]::Ordinal
+    )
+    $unitFactors.Add("ns", [decimal]1)
+    $unitFactors.Add("us", [decimal]1000)
+    $unitFactors.Add("µs", [decimal]1000)
+    $unitFactors.Add("μs", [decimal]1000)
+    $unitFactors.Add("ms", [decimal]1000000)
+    $unitFactors.Add("s", [decimal]1000000000)
+    $unitFactors.Add("m", [decimal]60000000000)
+    $unitFactors.Add("h", [decimal]3600000000000)
     [decimal]$total = 0
     foreach ($match in $matches) {
         $number = [decimal]::Parse(
