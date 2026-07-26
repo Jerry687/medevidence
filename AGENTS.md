@@ -13,9 +13,48 @@ treatment, dosage, or individualized medical advice.
 
 ## Current phase
 
-The repository is in Phase 0: engineering skeleton and design documentation.
-Do not add business logic until its scope and required architecture decisions
-are approved.
+Phase 0, decision gate `ME-000A`, and the `M1A-001A` governance decision are
+complete and approved. The effective authorization is recorded in
+`docs/reviews/M1A-001A-OWNER-AUTHORIZATION-001.md`.
+
+The governance package must be merged into `main` before implementation
+authority begins. On this unmerged governance branch, do not install production
+dependencies, change a lock file, or add business implementation. After merge,
+only `M1A-001B` may begin from the resulting approved `main` baseline.
+`M1A-002` through `M1A-005` remain unauthorized until each preceding focused
+work item is approved and merged.
+
+Authorized M1A work is limited to this sequential work-item decomposition:
+
+1. `M1A-001A` - decision and dependency gate;
+2. `M1A-001B` - source-neutral domain contracts;
+3. `M1A-002` - bounded PubMed connector;
+4. `M1A-003A` - immutable snapshots and manifests;
+5. `M1A-003B` - PostgreSQL snapshot metadata;
+6. `M1A-004` - PubMed tools, claims, citations, and draft report;
+7. `M1A-005` - FastAPI and M1A acceptance evidence.
+
+Each later work item requires a separate branch and focused Draft PR from the
+latest approved `main` baseline. A monolithic M1A implementation PR is not
+authorized.
+
+M1A remains limited to typed source-neutral contracts; PubMed search and record
+retrieval; deterministic offline fixtures; immutable raw snapshots and
+manifests; PostgreSQL snapshot metadata; stable PubMed application tools;
+deterministic minimal claims with exact abstract-span citations; structured
+non-exportable draft reports; FastAPI transport; and one separately opt-in,
+bounded live PubMed smoke query. The retention policy
+`M1A-LIVE-RETENTION-v1` is approved, but no live PubMed execution is authorized
+until the Project Owner separately approves the exact query,
+client-identification values, execution time, and final command.
+
+DailyMed, FAERS/openFDA, CADEC implementation, Qdrant, lexical or dense
+retrieval, RRF, reranking, LangGraph, LLM integration, `ME-000B`, Streamlit,
+MCP, export, HITL, external tracing, and unrelated refactoring remain
+prohibited until their later gates are explicitly approved. `ME-000B` remains
+deferred because M1A claim construction is deterministic and extractive, not
+model-generated. No standalone ASGI server dependency is authorized for M1A;
+`M1A-005` may use an in-process ASGI test client.
 
 ## Instruction precedence
 

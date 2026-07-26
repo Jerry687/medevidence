@@ -7,16 +7,31 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**M0 consistency remediation — design and repository controls only.**
+**M1A-001A governance approved and effective — merge pending.**
 
-The repository contains approved V1 design documents, architecture decisions,
-configuration skeletons, and empty implementation packages. It intentionally
-contains no connector, domain, retrieval, LangGraph, LLM, FastAPI business,
-Streamlit page, or MCP tool implementation.
+M0 and `ME-000A` are complete and approved. The approved baselines are:
 
-The original independent M0 review returned **FAIL**. Remediation is recorded
-under `docs/reviews/`; M0 approval is not effective until an independent
-re-review returns PASS.
+- M0 tag: `m0-approved-v1`;
+- ME-000A audited implementation:
+  `c6384c766d0e65240ba617d9b78f17dd7f500260`;
+- ME-000A `main` merge commit:
+  `540420d437ff7306f4c53dc784ccf8ec5ced9e1d`; and
+- ME-000A tag: `me-000a-approved-v1`.
+
+The original independent M0 review returned **FAIL**. The frozen remediation
+later received an unconditional independent **PASS**, and the Project Owner
+approved M0. Those historical records remain unchanged under `docs/reviews/`.
+
+Implemented infrastructure currently consists of the approved Python and uv
+baseline, locked development-quality tools, Windows validation scripts,
+loopback-only PostgreSQL and Qdrant Compose infrastructure, infrastructure
+contract and smoke-test scripts, and the two-job CI foundation.
+
+No PubMed connector, source-neutral domain model, ingestion workflow,
+persistence adapter, application tool, claim/citation builder, report service,
+or FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA, CADEC,
+retrieval, LangGraph, LLM, Streamlit, MCP, export, and HITL capabilities also
+remain planned rather than implemented.
 
 ## Formal V1 reference domain
 
@@ -73,13 +88,50 @@ The approved capability set is Python 3.12, Pydantic, HTTPX, Tenacity,
 FastAPI, SQLAlchemy, Alembic, PostgreSQL, Qdrant, LangGraph, Streamlit, pytest,
 pytest-socket, Ruff, mypy, structured logging, and foundational OpenTelemetry.
 
-Exact dependency, container, and GitHub Action versions are not selected during
-M0. Decision gate `ME-000A` must complete before dependency installation or
-container execution. Model-provider, retrieval-model/configuration, and
-external tracing decisions have separate gates in the PRD.
+Exact dependency, container, and GitHub Action versions were not selected
+during M0. `ME-000A` subsequently approved the repository, development-tool,
+container, and GitHub Action baselines. ADR-009 Revision 2 now approves the
+exact M1A direct dependency pins, but they are not installed or locked. Each
+pin may be added only in its first requiring focused work item after this
+governance package is merged.
+Model-provider, retrieval-model/configuration, and external tracing decisions
+remain behind their separate gates in the PRD.
 
 Redis, React, GraphRAG, multi-agent workflows, ClinicalTrials.gov, signal
 detection metrics, PHI workflows, and public multi-tenancy are outside V1.
+
+## Approved bounded M1A sequence
+
+M1A is the approved first business vertical slice and is limited to:
+
+- typed source-neutral domain contracts;
+- bounded PubMed search and record retrieval;
+- deterministic offline fixtures;
+- immutable raw snapshots and canonical manifests;
+- PostgreSQL snapshot metadata;
+- stable PubMed tools;
+- deterministic attributed extracts with exact abstract-span citations;
+- a structured, non-exportable `draft` report;
+- FastAPI transport; and
+- one separately opt-in, one-page/one-record live PubMed smoke query.
+
+The required sequence is `M1A-001A`, `M1A-001B`, `M1A-002`, `M1A-003A`,
+`M1A-003B`, `M1A-004`, then `M1A-005`. Each implementation work item requires
+its own branch and focused Draft PR from the latest approved `main`; a
+monolithic M1A implementation PR is not authorized.
+
+ADR-009 Revision 2 and the owner-authorization package are approved and
+effective. The exact governance candidate must be reviewed, intentionally
+committed, and merged before implementation authority begins. After merge,
+only `M1A-001B` may begin; no production dependency installation, lock-file
+change, or business code is authorized on this governance branch.
+
+The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
+execution remains unauthorized until the Project Owner separately approves the
+exact query, NCBI client-identification values, execution time, and final
+acceptance command. Default CI remains offline. No standalone ASGI server
+dependency is authorized for M1A; `M1A-005` may use an in-process ASGI test
+client.
 
 ## Windows Python and quality toolchain
 
@@ -190,5 +242,5 @@ required PR job and remains deferred until a production dependency exists.
 - [Security and medical-safety policy](docs/SECURITY.md)
 - [V1 traceability matrix](docs/TRACEABILITY_MATRIX.md)
 - [Architecture decisions](docs/decisions/README.md)
-- [M0 review and approval records](docs/reviews/)
+- [Review, approval, and authorization records](docs/reviews/)
 - [Interview narrative](docs/INTERVIEW_NOTES.md)
