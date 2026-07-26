@@ -1,0 +1,23 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  offline-quality:
+    # Policy template only. ME-000A must approve action, tool, dependency, and
+    # runner versions before this executable workflow is activated.
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ruff lint
+        run: python -m ruff check .
+      - name: Ruff format check
+        run: python -m ruff format --check .
+      - name: Mypy
+        run: python -m mypy src
+      - name: Offline unit and contract tests
+        run: python -m pytest tests/unit tests/contract --disable-socket

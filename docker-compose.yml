@@ -1,0 +1,32 @@
+name: medevidence
+
+services:
+  postgres:
+    image: "${POSTGRES_IMAGE:?Set POSTGRES_IMAGE after ME-000A}"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-medevidence}
+      POSTGRES_USER: ${POSTGRES_USER:-medevidence}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  qdrant:
+    image: "${QDRANT_IMAGE:?Set QDRANT_IMAGE after ME-000A}"
+    ports:
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
