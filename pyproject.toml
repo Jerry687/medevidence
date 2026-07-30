@@ -8,12 +8,15 @@ version = "0.0.0"
 description = "Traceable drug-safety evidence research system"
 readme = "README.md"
 requires-python = ">=3.12.13,<3.13"
-dependencies = []
+dependencies = [
+    "pydantic==2.13.4",
+]
 
 [dependency-groups]
 dev = [
     "coverage==7.15.2",
     "mypy==2.3.0",
+    "pip-audit==2.10.1",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-socket==0.8.0",
