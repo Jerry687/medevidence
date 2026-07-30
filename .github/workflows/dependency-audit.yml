@@ -28,10 +28,18 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 20
     steps:
-      - name: Check out repository
+      - name: Check out pull-request head
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Check out non-pull-request commit
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
       - name: Install approved uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -41,10 +49,29 @@ jobs:
       - name: Synchronize the complete locked environment
         shell: powershell
         run: uv sync --locked --all-groups
-      - name: Audit the complete locked dependency graph
+      - name: Audit the pull-request dependency graph
+        if: github.event_name == 'pull_request'
         shell: powershell
+        env:
+          MEDEV_EVIDENCE_BRANCH: ${{ github.head_ref }}
+          MEDEV_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha }}
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass `
             -File .\scripts\dependency-audit.ps1 `
             -Mode Audit `
-            -OutputDirectory (Join-Path $env:RUNNER_TEMP "medevidence-dependency-audit")
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP "medevidence-dependency-audit") `
+            -LogicalBranch $env:MEDEV_EVIDENCE_BRANCH `
+            -ExpectedCommit $env:MEDEV_EVIDENCE_COMMIT
+      - name: Audit the non-pull-request dependency graph
+        if: github.event_name != 'pull_request'
+        shell: powershell
+        env:
+          MEDEV_EVIDENCE_BRANCH: ${{ github.ref_name }}
+          MEDEV_EVIDENCE_COMMIT: ${{ github.sha }}
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File .\scripts\dependency-audit.ps1 `
+            -Mode Audit `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP "medevidence-dependency-audit") `
+            -LogicalBranch $env:MEDEV_EVIDENCE_BRANCH `
+            -ExpectedCommit $env:MEDEV_EVIDENCE_COMMIT

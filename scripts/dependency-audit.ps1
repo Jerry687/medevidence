@@ -11,7 +11,11 @@ param(
 
     [string]$PreservedAuditEvidencePath,
 
-    [string]$AcquisitionRecordPath
+    [string]$AcquisitionRecordPath,
+
+    [string]$LogicalBranch,
+
+    [string]$ExpectedCommit
 )
 
 Set-StrictMode -Version Latest
@@ -183,6 +187,193 @@ function Get-TextSha256 {
         (($hashBytes | ForEach-Object { $_.ToString("x2") }) -join "")
     )
 }
+
+function Assert-ValidLogicalBranch {
+    param(
+        [AllowNull()]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "Dependency evidence requires a named Git branch."
+    }
+    if ($Value -cne $Value.Trim()) {
+        throw "Dependency evidence branch must not contain surrounding whitespace."
+    }
+    foreach ($character in $Value.ToCharArray()) {
+        if ([char]::IsControl($character)) {
+            throw "Dependency evidence branch must not contain control characters."
+        }
+    }
+    if ([regex]::IsMatch($Value, "^[0-9a-fA-F]{40}$")) {
+        throw "Dependency evidence branch must not be a commit SHA."
+    }
+    if (
+        [regex]::IsMatch(
+            $Value,
+            "^(?i:(?:refs/)?pull/[1-9][0-9]*/(?:merge|head)|" +
+            "[1-9][0-9]*/(?:merge|head))$"
+        )
+    ) {
+        throw "Dependency evidence branch must not be a synthetic pull-request ref."
+    }
+    if ([regex]::IsMatch($Value, "^(?i:HEAD|detached|unknown)$")) {
+        throw "Dependency evidence branch uses a reserved identity."
+    }
+    if ([regex]::IsMatch($Value, "^(?i:refs/)")) {
+        throw "Dependency evidence branch must be a short branch name, not a full ref."
+    }
+    try {
+        Invoke-CheckedCapture -Command "git" -Arguments @(
+            "-C", $repositoryRoot, "check-ref-format", "--branch", $Value
+        ) | Out-Null
+    }
+    catch {
+        throw "Dependency evidence branch is not a valid Git branch name."
+    }
+    return $Value
+}
+
+function Get-CanonicalWindowsPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).Replace(
+        [System.IO.Path]::AltDirectorySeparatorChar,
+        [System.IO.Path]::DirectorySeparatorChar
+    )
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if ($fullPath.Length -gt $pathRoot.Length) {
+        return $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    }
+    return $fullPath
+}
+
+function Assert-RepositoryRootBinding {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$IntendedRepositoryRoot
+    )
+
+    $canonicalIntendedRoot = Get-CanonicalWindowsPath `
+        -Path $IntendedRepositoryRoot
+    try {
+        $reportedTopLevel = (
+            Invoke-CheckedCapture -Command "git" -Arguments @(
+                "-C", $canonicalIntendedRoot, "rev-parse", "--show-toplevel"
+            )
+        ).Trim()
+    }
+    catch {
+        throw "The intended repository root is not an active Git worktree."
+    }
+    $canonicalTopLevel = Get-CanonicalWindowsPath -Path $reportedTopLevel
+    if (
+        -not $canonicalIntendedRoot.Equals(
+            $canonicalTopLevel,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw (
+            "Git top-level mismatch: intended repository root " +
+            "'$canonicalIntendedRoot' resolved to '$canonicalTopLevel'."
+        )
+    }
+    return $canonicalIntendedRoot
+}
+
+function Assert-ValidExpectedCommit {
+    param(
+        [AllowNull()]
+        [string]$Value
+    )
+
+    if (
+        [string]::IsNullOrWhiteSpace($Value) -or
+        -not [regex]::IsMatch($Value, "^[0-9a-fA-F]{40}$")
+    ) {
+        throw "Expected candidate commit must be exactly 40 hexadecimal characters."
+    }
+    return $Value.ToLowerInvariant()
+}
+
+function Resolve-CandidateGitIdentity {
+    param(
+        [AllowNull()]
+        [string]$ExplicitLogicalBranch,
+
+        [bool]$HasExplicitLogicalBranch,
+
+        [AllowNull()]
+        [string]$ExplicitExpectedCommit,
+
+        [bool]$HasExplicitExpectedCommit
+    )
+
+    $isGitHubActions = $env:GITHUB_ACTIONS -ceq "true"
+    Assert-RepositoryRootBinding `
+        -IntendedRepositoryRoot $repositoryRoot | Out-Null
+
+    if ($HasExplicitLogicalBranch) {
+        $resolvedLogicalBranch = $ExplicitLogicalBranch
+    }
+    elseif ($isGitHubActions) {
+        $resolvedLogicalBranch = $env:MEDEV_EVIDENCE_BRANCH
+    }
+    else {
+        $resolvedLogicalBranch = (
+            Invoke-CheckedCapture -Command "git" -Arguments @(
+                "-C", $repositoryRoot, "branch", "--show-current"
+            )
+        ).Trim()
+    }
+    $resolvedLogicalBranch = Assert-ValidLogicalBranch `
+        -Value $resolvedLogicalBranch
+
+    try {
+        $actualHead = (
+            Invoke-CheckedCapture -Command "git" -Arguments @(
+                "-C", $repositoryRoot, "rev-parse", "HEAD"
+            )
+        ).Trim()
+    }
+    catch {
+        throw "Candidate commit cannot be resolved from repository HEAD."
+    }
+    $actualHead = Assert-ValidExpectedCommit -Value $actualHead
+
+    if ($HasExplicitExpectedCommit) {
+        $resolvedExpectedCommit = Assert-ValidExpectedCommit `
+            -Value $ExplicitExpectedCommit
+    }
+    elseif ($isGitHubActions) {
+        $resolvedExpectedCommit = Assert-ValidExpectedCommit `
+            -Value $env:MEDEV_EVIDENCE_COMMIT
+    }
+    else {
+        $resolvedExpectedCommit = $actualHead
+    }
+
+    if ($actualHead -cne $resolvedExpectedCommit) {
+        throw (
+            "Candidate commit mismatch: checked out HEAD $actualHead does not " +
+            "equal expected commit $resolvedExpectedCommit."
+        )
+    }
+
+    return [ordered]@{
+        logical_branch = $resolvedLogicalBranch
+        candidate_commit = $actualHead
+    }
+}
+
+$gitIdentity = Resolve-CandidateGitIdentity `
+    -ExplicitLogicalBranch $LogicalBranch `
+    -HasExplicitLogicalBranch $PSBoundParameters.ContainsKey("LogicalBranch") `
+    -ExplicitExpectedCommit $ExpectedCommit `
+    -HasExplicitExpectedCommit $PSBoundParameters.ContainsKey("ExpectedCommit")
 
 $priorOffline = $env:UV_OFFLINE
 if ($Mode -eq "Inventory" -or $ReconcileOnly -or $usingPreservedAuditEvidence) {
@@ -903,18 +1094,6 @@ if __name__ == "__main__":
         }
     }
 
-    $baselineHead = (
-        Invoke-CheckedCapture -Command "git" -Arguments @("rev-parse", "HEAD")
-    ).Trim()
-    $branch = (
-        Invoke-CheckedCapture -Command "git" -Arguments @(
-            "branch", "--show-current"
-        )
-    ).Trim()
-    if (-not $branch) {
-        throw "Dependency evidence requires a named Git branch."
-    }
-
     $candidateFileHashes = @(
         foreach ($candidatePath in ($candidatePaths | Sort-Object)) {
             $absolutePath = Join-Path $repositoryRoot (
@@ -1122,8 +1301,8 @@ if __name__ == "__main__":
         mode = $Mode
         overall_outcome = "pass"
         advisory_status = $advisoryStatus
-        baseline_head = $baselineHead
-        branch = $branch
+        logical_branch = $gitIdentity.logical_branch
+        candidate_commit = $gitIdentity.candidate_commit
         generated_at_utc = [DateTimeOffset]::UtcNow.ToString(
             "yyyy-MM-ddTHH:mm:ss.fffZ"
         )
@@ -1170,7 +1349,8 @@ if __name__ == "__main__":
             "- uv: ``$actualUvVersion``",
             "- Python: ``$($pythonVersion.Trim())``",
             "- pip-audit: ``$actualPipAuditVersion``",
-            "- Baseline: ``$baselineHead``",
+            "- Logical branch: ``$($gitIdentity.logical_branch)``",
+            "- Candidate commit: ``$($gitIdentity.candidate_commit)``",
             "- Candidate file set: ``$candidateFileSetIdentity``",
             "- Evidence manifest SHA-256: ``$manifestHash``"
         ) -join "`n"
