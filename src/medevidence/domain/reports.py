@@ -264,9 +264,19 @@ class ResearchReport(DurableModel):
         if len(plan_by_source) != len(self.source_plan):
             raise ValueError("source plan entries must be unique by source")
         if set(plan_by_source) != set(self.scope.selected_sources):
-            raise ValueError("source plan must represent every scope-selected source")
-        if any(entry.planning_status is not PlanningStatus.SELECTED for entry in self.source_plan):
-            raise ValueError("scope-selected sources require selected plan entries")
+            raise ValueError(
+                "every in-scope source requires exactly one plan entry and "
+                "out-of-scope plan entries are forbidden"
+            )
+        if any(
+            entry.planning_status
+            not in {
+                PlanningStatus.SELECTED,
+                PlanningStatus.SKIPPED_BY_POLICY,
+            }
+            for entry in self.source_plan
+        ):
+            raise ValueError("in-scope plan entries must be selected or skipped_by_policy")
 
         outcomes_by_source = {outcome.source: outcome for outcome in self.source_outcomes}
         if len(outcomes_by_source) != len(self.source_outcomes):

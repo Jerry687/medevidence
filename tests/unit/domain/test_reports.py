@@ -50,7 +50,10 @@ from medevidence.domain import (
 NOW = datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
 
 
-def scope() -> ResearchScope:
+def scope(
+    *,
+    selected_sources: tuple[SourceType, ...] = (SourceType.PUBMED,),
+) -> ResearchScope:
     return ResearchScope.create(
         drugs=(DrugConcept(concept_id="drug:test", preferred_term="test drug"),),
         adverse_reactions=(
@@ -60,7 +63,7 @@ def scope() -> ResearchScope:
             ),
         ),
         date_range=None,
-        selected_sources=(SourceType.PUBMED,),
+        selected_sources=selected_sources,
         comparison_intent=ComparisonIntent.SUMMARIZE,
         query_bounds=QueryBounds(
             max_query_characters=512,
@@ -960,12 +963,12 @@ def test_ps10_domain_report_round_trip_preserves_status_identity_and_warnings() 
     )
 
 
-def test_report_rejects_missing_status_warning_and_unselected_outcome() -> None:
+def test_report_rejects_missing_status_warning() -> None:
     record, citation, claim = citation_and_claim(
         PublicationStatusValue.CURRENT_OR_NO_KNOWN_NOTICE,
         ClaimUseContext.AFFIRMATIVE_SUPPORT,
     )
-    source_warnings, claim_warnings = warning_rows(record, claim)
+    _, claim_warnings = warning_rows(record, claim)
     data = {
         "scope": scope(),
         "source_plan": (
@@ -986,21 +989,178 @@ def test_report_rejects_missing_status_warning_and_unselected_outcome() -> None:
     with pytest.raises(ValidationError, match="evidence-derived publications"):
         ResearchReport.create(**data)
 
-    data["source_status_warnings"] = source_warnings
-    data["source_plan"] = (
-        SourcePlanEntry(
-            source=SourceType.PUBMED,
-            planning_status=PlanningStatus.SELECTED,
+
+def test_report_accepts_mixed_selected_and_skipped_by_policy_sources() -> None:
+    mixed_scope = scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC))
+    selected = outcome(result=ResultStatus.NO_MATCH)
+    report = ResearchReport.create(
+        scope=mixed_scope,
+        source_plan=(
+            SourcePlanEntry(
+                source=SourceType.PUBMED,
+                planning_status=PlanningStatus.SELECTED,
+            ),
+            SourcePlanEntry(
+                source=SourceType.CADEC,
+                planning_status=PlanningStatus.SKIPPED_BY_POLICY,
+                reason_code=SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED,
+                reason="CADEC execution is not authorized in M1A.",
+            ),
         ),
-        SourcePlanEntry(
-            source=SourceType.CADEC,
-            planning_status=PlanningStatus.SKIPPED_BY_POLICY,
-            reason_code=SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED,
-            reason="Not authorized in M1A.",
-        ),
+        source_outcomes=(selected,),
+        publications=(),
+        claims=(),
+        citations=(),
+        source_status_warnings=(),
+        claim_status_warnings=(),
+        coverage_limitations=(),
+        retrieval_as_of=NOW,
     )
-    with pytest.raises(ValidationError):
-        ResearchReport.create(**data)
+
+    assert tuple(entry.source for entry in report.source_plan) == (
+        SourceType.CADEC,
+        SourceType.PUBMED,
+    )
+    assert report.source_plan[0].planning_status is PlanningStatus.SKIPPED_BY_POLICY
+    assert report.source_plan[0].reason_code is SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED
+    assert report.source_outcomes == (selected,)
+
+
+def test_report_rejects_missing_in_scope_plan_entry() -> None:
+    with pytest.raises(ValidationError, match="exactly one plan entry"):
+        ResearchReport.create(
+            scope=scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC)),
+            source_plan=(
+                SourcePlanEntry(
+                    source=SourceType.PUBMED,
+                    planning_status=PlanningStatus.SELECTED,
+                ),
+            ),
+            source_outcomes=(),
+            publications=(),
+            claims=(),
+            citations=(),
+            source_status_warnings=(),
+            claim_status_warnings=(),
+            coverage_limitations=(),
+            retrieval_as_of=NOW,
+        )
+
+
+def test_report_rejects_duplicate_in_scope_plan_entry() -> None:
+    with pytest.raises(ValidationError, match="unique by source"):
+        ResearchReport.create(
+            scope=scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC)),
+            source_plan=(
+                SourcePlanEntry(
+                    source=SourceType.CADEC,
+                    planning_status=PlanningStatus.SKIPPED_BY_POLICY,
+                    reason_code=SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED,
+                    reason="CADEC execution is not authorized in M1A.",
+                ),
+                SourcePlanEntry(
+                    source=SourceType.PUBMED,
+                    planning_status=PlanningStatus.SELECTED,
+                ),
+                SourcePlanEntry(
+                    source=SourceType.PUBMED,
+                    planning_status=PlanningStatus.SELECTED,
+                ),
+            ),
+            source_outcomes=(),
+            publications=(),
+            claims=(),
+            citations=(),
+            source_status_warnings=(),
+            claim_status_warnings=(),
+            coverage_limitations=(),
+            retrieval_as_of=NOW,
+        )
+
+
+def test_report_rejects_fabricated_outcome_for_skipped_source() -> None:
+    with pytest.raises(ValidationError, match="only to selected plan entries"):
+        ResearchReport.create(
+            scope=scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC)),
+            source_plan=(
+                SourcePlanEntry(
+                    source=SourceType.CADEC,
+                    planning_status=PlanningStatus.SKIPPED_BY_POLICY,
+                    reason_code=SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED,
+                    reason="CADEC execution is not authorized in M1A.",
+                ),
+                SourcePlanEntry(
+                    source=SourceType.PUBMED,
+                    planning_status=PlanningStatus.SELECTED,
+                ),
+            ),
+            source_outcomes=(
+                outcome(source=SourceType.CADEC, result=ResultStatus.NO_MATCH),
+                outcome(result=ResultStatus.NO_MATCH),
+            ),
+            publications=(),
+            claims=(),
+            citations=(),
+            source_status_warnings=(),
+            claim_status_warnings=(),
+            coverage_limitations=(),
+            retrieval_as_of=NOW,
+        )
+
+
+def test_report_rejects_in_scope_not_applicable_plan_entry() -> None:
+    mixed_scope = scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC))
+    with pytest.raises(ValidationError, match="selected or skipped_by_policy"):
+        ResearchReport.create(
+            scope=mixed_scope,
+            source_plan=(
+                SourcePlanEntry(
+                    source=SourceType.CADEC,
+                    planning_status=PlanningStatus.SKIPPED_NOT_APPLICABLE,
+                    reason_code=SourcePlanReasonCode.NOT_APPLICABLE_TO_SCOPE,
+                    reason="CADEC does not apply.",
+                ),
+                SourcePlanEntry(
+                    source=SourceType.PUBMED,
+                    planning_status=PlanningStatus.SELECTED,
+                ),
+            ),
+            source_outcomes=(),
+            publications=(),
+            claims=(),
+            citations=(),
+            source_status_warnings=(),
+            claim_status_warnings=(),
+            coverage_limitations=(),
+            retrieval_as_of=NOW,
+        )
+
+
+def test_report_rejects_out_of_scope_plan_entry() -> None:
+    with pytest.raises(ValidationError, match="exactly one plan entry"):
+        ResearchReport.create(
+            scope=scope(),
+            source_plan=(
+                SourcePlanEntry(
+                    source=SourceType.PUBMED,
+                    planning_status=PlanningStatus.SELECTED,
+                ),
+                SourcePlanEntry(
+                    source=SourceType.CADEC,
+                    planning_status=PlanningStatus.SKIPPED_BY_POLICY,
+                    reason_code=SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED,
+                    reason="CADEC execution is not authorized in M1A.",
+                ),
+            ),
+            source_outcomes=(),
+            publications=(),
+            claims=(),
+            citations=(),
+            source_status_warnings=(),
+            claim_status_warnings=(),
+            coverage_limitations=(),
+            retrieval_as_of=NOW,
+        )
 
 
 def test_claim_and_report_forbid_extras_and_are_frozen() -> None:

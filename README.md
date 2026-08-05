@@ -7,7 +7,7 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**M1A-001A governance approved and effective — merge pending.**
+**M1A-001B source-neutral domain contracts are merged.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -16,22 +16,25 @@ M0 and `ME-000A` are complete and approved. The approved baselines are:
   `c6384c766d0e65240ba617d9b78f17dd7f500260`;
 - ME-000A `main` merge commit:
   `540420d437ff7306f4c53dc784ccf8ec5ced9e1d`; and
-- ME-000A tag: `me-000a-approved-v1`.
+- ME-000A tag: `me-000a-approved-v1`; and
+- M1A-001B `main` merge commit:
+  `0bf3d58d7411fffa1873a6f2adab8ee73c23ce88`.
 
 The original independent M0 review returned **FAIL**. The frozen remediation
 later received an unconditional independent **PASS**, and the Project Owner
 approved M0. Those historical records remain unchanged under `docs/reviews/`.
 
-Implemented infrastructure currently consists of the approved Python and uv
-baseline, locked development-quality tools, Windows validation scripts,
-loopback-only PostgreSQL and Qdrant Compose infrastructure, infrastructure
-contract and smoke-test scripts, and the two-job CI foundation.
+Implemented work consists of the approved Python and uv baseline, locked
+development-quality tools, Windows validation scripts, loopback-only
+PostgreSQL and Qdrant Compose infrastructure contracts, the two-job CI
+foundation, and strict source-neutral M1A domain contracts for research scope,
+planning/outcomes, provenance, publications/status, claims, citations, and
+draft reports.
 
-No PubMed connector, source-neutral domain model, ingestion workflow,
-persistence adapter, application tool, claim/citation builder, report service,
-or FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA, CADEC,
-retrieval, LangGraph, LLM, Streamlit, MCP, export, and HITL capabilities also
-remain planned rather than implemented.
+No PubMed connector, ingestion workflow, persistence adapter, application
+tool, report service, or FastAPI business endpoint exists yet. DailyMed,
+FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP, export, and
+HITL capabilities also remain planned rather than implemented.
 
 ## Formal V1 reference domain
 
@@ -90,10 +93,10 @@ pytest-socket, Ruff, mypy, structured logging, and foundational OpenTelemetry.
 
 Exact dependency, container, and GitHub Action versions were not selected
 during M0. `ME-000A` subsequently approved the repository, development-tool,
-container, and GitHub Action baselines. ADR-009 Revision 2 now approves the
-exact M1A direct dependency pins, but they are not installed or locked. Each
-pin may be added only in its first requiring focused work item after this
-governance package is merged.
+container, and GitHub Action baselines. ADR-009 Revision 2 approves the exact
+M1A direct dependency pins. M1A-001B added and locked
+`pydantic==2.13.4` plus the development-only `pip-audit==2.10.1`; later pins
+remain absent until their first requiring focused work item.
 Model-provider, retrieval-model/configuration, and external tracing decisions
 remain behind their separate gates in the PRD.
 
@@ -121,10 +124,9 @@ its own branch and focused Draft PR from the latest approved `main`; a
 monolithic M1A implementation PR is not authorized.
 
 ADR-009 Revision 2 and the owner-authorization package are approved and
-effective. The exact governance candidate must be reviewed, intentionally
-committed, and merged before implementation authority begins. After merge,
-only `M1A-001B` may begin; no production dependency installation, lock-file
-change, or business code is authorized on this governance branch.
+effective. The governance package and M1A-001B implementation have been
+reviewed and merged. M1A-002 is the next bounded work item; later M1A items
+remain sequentially gated.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the
@@ -150,9 +152,10 @@ Bootstrap uses the explicit development group:
 uv sync --locked --group dev
 ```
 
-Networked dependency auditing remains deferred until a production dependency
-exists. ME-000A2 adds the approved container, environment-validation, and CI
-contracts described below.
+Networked dependency auditing is implemented in the separate, path-filtered
+`dependency-audit` workflow. It remains outside the authoritative offline
+quality command set. ME-000A2 adds the approved container,
+environment-validation, and CI contracts described below.
 
 ## Authoritative offline checks
 
@@ -230,8 +233,10 @@ The required workflow contains exactly two jobs:
   contract without starting containers or pulling images.
 
 Both jobs have explicit timeouts, read-only repository permissions, concurrency
-cancellation, and full-SHA action pins. Networked dependency auditing is not a
-required PR job and remains deferred until a production dependency exists.
+cancellation, and full-SHA action pins. A separate path-filtered
+`dependency-audit` workflow audits the locked Python dependency graph when its
+metadata or audit implementation changes, after relevant pushes to `main`, or
+by manual dispatch.
 
 ## Design and governance documents
 

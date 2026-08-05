@@ -93,6 +93,6 @@ Use future-tense or design language until a reproducible artifact exists.
 
 ## 8. Honest current description
 
-Current status: engineering architecture and evaluation plan established;
-business implementation and empirical results not yet completed.
-
+Current status: engineering architecture, evaluation plan, and source-neutral
+M1A domain contracts established; source connectors and empirical results are
+not yet completed.
