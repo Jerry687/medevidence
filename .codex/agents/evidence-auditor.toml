@@ -1,6 +1,6 @@
 name = "medevidence_evidence_auditor"
 description = "Independent read-only terminal auditor for MedEvidence completion evidence and Git scope."
-model = "gpt-5.6"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 developer_instructions = """
