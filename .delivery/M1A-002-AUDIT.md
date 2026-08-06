@@ -4,12 +4,13 @@ Updated: `2026-08-05`
 
 This phase-local snapshot binds the deterministic final-audit helper to the
 M1A-002 candidate remediated under the Owner-authorized fourth B-017 cycle.
-The candidate is based on local M1A-001B commit
-`8f1405f334b2f5c3b52d16e9b1f95cc6c800ae06`. The repeated independent
-terminal security audit returned unconditional PASS. This is a pre-commit
-snapshot with decision `READY_TO_COMMIT`: the exact M1A-002 commit, final
-commit identity, post-commit clean worktree, full completion, and final handoff
-do not yet exist.
+The implementation is committed locally as
+`02550d7c674540430e1c11edb1edd9c091593f7b`, with parent local M1A-001B commit
+`8f1405f334b2f5c3b52d16e9b1f95cc6c800ae06`. The repeated independent terminal
+security audit returned unconditional PASS; the independently audited committed
+tree matched the staged candidate and post-commit verification is PASS. The
+candidate is ready for Owner integration review, but is not pushed, merged into
+`main`, or part of the approved baseline.
 
 | Item | Status | Evidence |
 |---|---|---|
@@ -27,8 +28,11 @@ do not yet exist.
 | B-017 fourth-cycle readiness | DONE | Original reproduction rejects invalid UTF-8; policy and full `MockTransport` regressions prove `%FF` is not followed and only one request occurs |
 | Repeated independent terminal security audit | DONE | Exact six-path fourth-cycle hashes and 19-path M1A-002 scope verified; semantic malformed/equivalence matrices, focused 178, full 339, Ruff, format, MyPy, lock, manifest, and phase audit PASS; no P0/P1/P2 finding |
 | Prior evidence-only terminal rebind | DONE | Correctly found B-018: P4 and the latest handoff claimed completion before the exact commit and clean-tree conditions existed |
-| B-018 evidence-state correction | DONE | P4 is limited to the completed pre-commit evidence gate; the handoff is `READY_TO_COMMIT` and does not claim a commit, final SHA, clean worktree, full completion, or final handoff |
-| Current pre-commit decision | READY_TO_COMMIT | An independent read-only rebind of the full 19-path candidate is required immediately before any authorized staging |
+| B-018 evidence-state correction | DONE | Historical pre-commit evidence was correctly bounded; it is superseded by the committed implementation and PASS post-commit verification recorded below |
+| Local implementation commit | DONE | `02550d7c674540430e1c11edb1edd9c091593f7b`, parent `8f1405f334b2f5c3b52d16e9b1f95cc6c800ae06` |
+| Committed-candidate identity | DONE | Independently audited committed tree matched the staged candidate |
+| Post-commit verification | DONE | PASS |
+| Current delivery decision | READY_FOR_OWNER_INTEGRATION_REVIEW | Local-only candidate; not pushed, not merged into `main`, and not part of the approved baseline |
 | Offline and Git boundary | DONE | All source behavior used `httpx.MockTransport`; default suite used `--disable-socket`; no live PubMed/NCBI request and no remote Git operation occurred |
 | Scope, secrets, and status documentation | DONE | No later M1A implementation, live response, credential, secret, cache, or temporary evidence artifact is included; README, interview notes, SPEC, and STATE describe the implemented boundary |
 
@@ -64,9 +68,10 @@ request, and proves the redirect was not followed. A non-persistent boundary
 smoke also rejected malformed `%`, `%G0`, and overlong `%C0%AF` while retaining
 the existing acceptance of valid query-pair reordering.
 
-## B-018 correction
+## B-018 correction (historical pre-commit state)
 
-B-018 was limited to terminal evidence semantics: the ledger had marked the
+B-018 was limited to terminal evidence semantics: before the implementation
+commit, the ledger had marked the
 commit work and handoff complete while HEAD still identified M1A-001B, all 19
 M1A-002 paths remained uncommitted, and the Git index was empty. The corrected
 model treats P4 as the completed pre-commit evidence gate and reports
@@ -75,6 +80,16 @@ commit identity, post-commit verification, full work-item completion, or the
 final handoff has occurred.
 
 The source, tests, dependency evidence, and B-017 terminal security PASS remain
-unchanged. The Owner-authorized next gate is an independent read-only rebind of
-the exact 19-path candidate. Staging and the single local M1A-002 commit are
-permitted only if that rebind returns PASS.
+unchanged. The pre-commit rebind, staging, local implementation commit, and
+post-commit verification are complete. The next step is Owner integration
+review; no push, merge, or baseline-approval claim is made here.
+
+## Post-commit delivery status
+
+The implementation commit is local only:
+`02550d7c674540430e1c11edb1edd9c091593f7b` with parent
+`8f1405f334b2f5c3b52d16e9b1f95cc6c800ae06`. It has not been pushed, merged
+into `main`, or included in the approved baseline. Live NCBI/TLS behavior
+remains intentionally unverified. This evidence-finalization record does not
+assert that its own commit is remotely published or merged, and it does not
+need a self-referential commit hash.
