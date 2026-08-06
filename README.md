@@ -7,7 +7,8 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**M1A-002 bounded PubMed connector candidate is implemented and offline-tested.**
+**M1A-002 bounded PubMed connector is locally integrated into the approved
+`main` baseline and retains its historical offline validation evidence.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -18,7 +19,9 @@ M0 and `ME-000A` are complete and approved. The approved baselines are:
   `540420d437ff7306f4c53dc784ccf8ec5ced9e1d`; and
 - ME-000A tag: `me-000a-approved-v1`; and
 - M1A-001B `main` merge commit:
-  `0bf3d58d7411fffa1873a6f2adab8ee73c23ce88`.
+  `0bf3d58d7411fffa1873a6f2adab8ee73c23ce88`; and
+- M1A-002 approved local `main` identity:
+  `4f39ed3d27438e69a4a5a30ff6be499d247541c1`.
 
 The original independent M0 review returned **FAIL**. The frozen remediation
 later received an unconditional independent **PASS**, and the Project Owner
@@ -29,9 +32,9 @@ development-quality tools, Windows validation scripts, loopback-only
 PostgreSQL and Qdrant Compose infrastructure contracts, the two-job CI
 foundation, and strict source-neutral M1A domain contracts for research scope,
 planning/outcomes, provenance, publications/status, claims, citations, and
-draft reports. The current focused branch also contains a synchronous bounded
-PubMed ESearch/EFetch connector with hardened XML parsing and deterministic
-offline HTTP transport contracts.
+draft reports. The approved local `main` baseline also contains a synchronous
+bounded PubMed ESearch/EFetch connector with hardened XML parsing and
+deterministic offline HTTP transport contracts.
 
 No ingestion workflow, snapshot persistence adapter, application tool, report
 service, or FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA,
@@ -129,8 +132,11 @@ monolithic M1A implementation PR is not authorized.
 
 ADR-009 Revision 2 and the owner-authorization package are approved and
 effective. The governance package and M1A-001B implementation have been
-reviewed and merged. The current M1A-002 candidate is limited to the bounded
-connector and its offline evidence. No later M1A work item has begun.
+reviewed and merged. M1A-002 is locally integrated into the approved `main`
+baseline and is limited to the bounded connector plus its historical offline
+evidence. Live NCBI/TLS behavior remains intentionally unverified. `M1A-003A`
+onward has not been implemented or authorized by this
+baseline-reconciliation phase.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the

@@ -1,14 +1,15 @@
-# Delivery state: M1A-002 bounded PubMed connector finalization
+# Delivery state: M1A-002 approved-main baseline reconciliation
 
-Updated: `2026-08-05`
+Updated: `2026-08-06`
 Repository: `D:\Projects\medevidence`
-Branch: `codex/m1a-002-product-finalization`
+Branch: `docs/m1a-002-baseline-reconciliation`
+Current status: `M1A-002_LOCALLY_INTEGRATED_IN_APPROVED_MAIN`
 
 ## Goal
 
-Finalize the tracked post-commit delivery evidence for the verified, bounded
-M1A-002 PubMed connector without live API, remote Git, merge, or baseline
-approval claims.
+Reconcile the active repository status to the Owner-approved local `main`
+baseline containing the verified, bounded M1A-002 PubMed connector while
+preserving its historical pre-integration evidence.
 
 ## Work items
 
@@ -18,6 +19,7 @@ approval claims.
 | P2 | R10 | Terminal audit and local M1A-001B commit | DONE | main | Audit PASS, exact commit created, post-commit tree clean | Commit `8f1405f334b2f5c3b52d16e9b1f95cc6c800ae06`; post-commit tree clean | Independent terminal audit PASS |
 | P3 | R4-R9 | Add approved dependencies and implement bounded PubMed connector/parser | DONE | main | Full Owner test matrix and terminal security audit pass offline | B-017 reproduction fixed; focused 178 and full 339 pass offline | Independent terminal security re-audit PASS |
 | P4 | R10 | Dependency/evidence audit, local implementation commit, and post-commit verification | DONE | main | Required source, security, test, type, lint, dependency, scope, candidate, commit, and post-commit evidence PASS | Implementation committed locally as `02550d7c674540430e1c11edb1edd9c091593f7b`; independently audited committed tree matched staged candidate; post-commit verification PASS | Independent terminal security re-audit PASS; ready for Owner integration review |
+| P5 | R10 | Reconcile M1A-002 integration status to the approved local `main` baseline | VERIFYING | main | Independent re-review and terminal audit PASS, followed by the exact authorized four-path local commit and fast-forward-only integration | Candidate records exact ancestry and scope without rewriting historical evidence; at run start local `main` and cached `origin/main` resolved to `4f39ed3d27438e69a4a5a30ff6be499d247541c1` | Independent re-review and terminal audit pending; [reconciliation record](M1A-002-INTEGRATION-RECONCILIATION.md) and [Project Owner integration approval](../docs/reviews/M1A-002-OWNER-INTEGRATION-APPROVAL-001.md) |
 
 Valid statuses: `PENDING`, `IN_PROGRESS`, `VERIFYING`, `FIXING`, `BLOCKED`,
 `DONE`.
@@ -184,37 +186,46 @@ Remote operations: none
   query and command remain Owner-gated.
 - The final dependency evidence is an external temporary artifact; its manifest
   and candidate identity are recorded here, but the artifact is not committed.
-- Live TLS/NCBI behavior remains intentionally unverified.
-- M1A-002 is committed locally at
-  `02550d7c674540430e1c11edb1edd9c091593f7b` (parent
-  `8f1405f334b2f5c3b52d16e9b1f95cc6c800ae06`), but it is not pushed, merged
-  into `main`, or part of the approved baseline.
-- This evidence-finalization record does not require a self-referential hash
-  and does not claim that its own commit is merged or remotely published.
+- M1A-002 is locally integrated into the approved `main` baseline at
+  `4f39ed3d27438e69a4a5a30ff6be499d247541c1`; alignment with
+  `refs/remotes/origin/main` is based only on the cached tracking ref and is
+  not live remote verification.
+- The historical evidence-finalization record remains valid for its
+  pre-integration state and is superseded only for current-baseline status.
+- Engineering harness commits after the evidence-finalization commit are not
+  M1A product functionality.
+- `M1A-003A` onward remains unimplemented and is not authorized by this
+  reconciliation.
 
 ## Current step
 
-`READY_FOR_OWNER_INTEGRATION_REVIEW - M1A-002 implementation is committed locally at
-02550d7c674540430e1c11edb1edd9c091593f7b; B-017 and B-018 are resolved;
-post-commit verification is PASS; candidate is ready for Owner integration
-review.`
+`M1A-002_LOCALLY_INTEGRATED_IN_APPROVED_MAIN remains the confirmed baseline
+fact: 02550d7c674540430e1c11edb1edd9c091593f7b and
+2918f3ed80336aeb349e82d34f2833367641befd are ancestors of approved local main
+4f39ed3d27438e69a4a5a30ff6be499d247541c1. The four-file reconciliation
+candidate is VERIFYING; independent re-review and terminal audit are pending,
+and no reconciliation commit or fast-forward integration has occurred.`
 
 ## Next step
 
-Owner integration review. M1A-002 remains local-only: do not push, merge into
-`main`, or treat it as part of the approved baseline without separate Owner
-authorization. Live NCBI/TLS behavior remains intentionally unverified.
+Run independent re-review and terminal evidence audit. Only if both return
+PASS, stage exactly the four authorized paths, create the already-authorized
+local commit with subject
+`docs(delivery): reconcile M1A-002 approved baseline`, verify it, confirm local
+`main` still equals `4f39ed3d27438e69a4a5a30ff6be499d247541c1`,
+switch to `main`, and fast-forward only from
+`docs/m1a-002-baseline-reconciliation`. Do not begin `M1A-003A` or later work.
 
 ## Latest handoff
 
 ```text
-Task: M1A-002 evidence finalization
-Status: READY_FOR_OWNER_INTEGRATION_REVIEW
-Confirmed facts: M1A-002 implementation committed locally at 02550d7c674540430e1c11edb1edd9c091593f7b with parent 8f1405f334b2f5c3b52d16e9b1f95cc6c800ae06; B-017 and B-018 are resolved; independently audited committed tree matched staged candidate; post-commit verification PASS
-Paths and symbols: implementation candidate identities and dependency manifest remain as recorded in this ledger and M1A-002-AUDIT.md
-Commands and results: focused 178 PASS; full 339 PASS at 87%; refreshed dependency audit, repeated terminal security audit, and post-commit verification PASS
-Findings: candidate is ready for Owner integration review
-Assumptions and unknowns: not pushed; not merged into main; not part of the approved baseline; live NCBI/TLS behavior intentionally unverified
-Files modified in this correction: only STATE.md and M1A-002-AUDIT.md
-Recommended next action: Owner integration review; no remote Git or merge action is authorized
+Task: M1A-002 approved-main baseline reconciliation
+Status: RECONCILIATION_VERIFYING; M1A-002_LOCALLY_INTEGRATED_IN_APPROVED_MAIN remains a separate confirmed baseline fact
+Confirmed facts: at run start HEAD, local main, and cached origin/main resolved to 4f39ed3d27438e69a4a5a30ff6be499d247541c1; 8f1405f334b2f5c3b52d16e9b1f95cc6c800ae06, 02550d7c674540430e1c11edb1edd9c091593f7b, and 2918f3ed80336aeb349e82d34f2833367641befd are ancestors; B-017 and B-018 remain resolved historical facts
+Paths and symbols: current integration approval and reconciliation records plus active STATE and README status only; historical M1A-002-AUDIT.md unchanged
+Commands and results: read-only Git identity and ancestry checks PASS; historical focused 178 and full 339 at 87% were not rerun by this documentation node
+Findings: four-file candidate awaits independent re-review and terminal audit; no reconciliation commit or fast-forward integration exists; historical pre-integration evidence remains valid and is superseded only for current-baseline status; harness commits are engineering tooling, not M1A product functionality
+Assumptions and unknowns: cached origin/main was not refreshed; no remote-state claim; live NCBI/TLS behavior intentionally unverified
+Files modified in this reconciliation: docs/reviews/M1A-002-OWNER-INTEGRATION-APPROVAL-001.md, .delivery/M1A-002-INTEGRATION-RECONCILIATION.md, .delivery/STATE.md, and README.md
+Recommended next action: independent re-review and terminal audit, then on PASS execute the already-authorized exact four-path commit and fast-forward-only local integration flow; do not begin M1A-003A or later work
 ```
