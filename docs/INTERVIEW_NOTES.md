@@ -93,6 +93,7 @@ Use future-tense or design language until a reproducible artifact exists.
 
 ## 8. Honest current description
 
-Current status: engineering architecture, evaluation plan, and source-neutral
-M1A domain contracts established; source connectors and empirical results are
-not yet completed.
+Current status: engineering architecture, evaluation plan, source-neutral M1A
+domain contracts, and a bounded offline-tested PubMed connector established;
+live-source acceptance, persistence, application tools, APIs, and empirical
+results are not yet completed.

@@ -39,7 +39,14 @@ $hasAcquisitionRecord = (
 $candidatePaths = @(
     ".github/workflows/dependency-audit.yml",
     "pyproject.toml",
+    "README.md",
     "scripts/dependency-audit.ps1",
+    "docs/INTERVIEW_NOTES.md",
+    "src/medevidence/connectors/__init__.py",
+    "src/medevidence/connectors/pubmed/__init__.py",
+    "src/medevidence/connectors/pubmed/client.py",
+    "src/medevidence/connectors/pubmed/parsing.py",
+    "src/medevidence/connectors/pubmed/policy.py",
     "src/medevidence/domain/__init__.py",
     "src/medevidence/domain/claims.py",
     "src/medevidence/domain/identifiers.py",
@@ -52,7 +59,13 @@ $candidatePaths = @(
     "tests/unit/domain/test_reports.py",
     "tests/unit/domain/test_scope.py",
     "tests/unit/domain/test_source_outcomes.py",
+    "tests/unit/connectors/test_pubmed_parsing.py",
+    "tests/unit/connectors/test_pubmed_policy.py",
     "tests/unit/test_dependency_boundaries.py",
+    "tests/contract/connectors/test_pubmed_connector.py",
+    "tests/contract/test_offline_network.py",
+    "tests/fixtures/pubmed/valid_fetch.xml",
+    "tests/fixtures/pubmed/valid_search.xml",
     "uv.lock"
 )
 

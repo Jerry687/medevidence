@@ -6,6 +6,9 @@ Updated: `2026-08-05`
 
 - Complete Owner task: session attachment `pasted-text.txt`, SHA-256
   `9778d890a62c35c54db9b2241ebea7ddfd665992ca18b6e2b28688128e71bb7a`
+- Owner B-017 authorization: one fourth remediation cycle limited to strict
+  redirect-query percent/UTF-8 decoding, two offline regressions, evidence
+  refresh, terminal re-audit, and commit only on PASS
 - Repository instructions: `AGENTS.md` and
   `src/medevidence/connectors/AGENTS.md`
 - Governing product and safety records: `docs/PRD.md`,
@@ -36,9 +39,9 @@ host and the ESearch/EFetch path prefix without making an API request.
 | R1 | A report accepts an in-scope mixture of executable and currently non-executable sources only when every `ResearchScope.selected_sources` member has exactly one plan entry. Missing, duplicate, and out-of-scope entries are rejected. | Owner frozen M1A-001B decision | Must |
 | R2 | An in-scope source may be `selected` or `skipped_by_policy`. A skipped source remains visible with a machine-readable and human-readable reason and can never have a fabricated `SourceOutcome`. | Owner frozen M1A-001B decision | Must |
 | R3 | Selected, unattempted, executed, completed, failed, partial, and skipped states remain distinct. Existing bounds, provenance, outcome-triple, canonical-order, identity, and source-neutrality invariants remain strict. | Owner frozen M1A-001B decision; ADR-007/009 | Must |
-| R4 | PubMed HTTP behavior is synchronous, explicit, transport-injected, HTTPS-only, fixed-origin/fixed-path constrained, and manually validates every redirect hop and final URL. It rejects arbitrary URLs, wildcard hosts, lookalikes, suffix confusion, userinfo, non-HTTPS, and unapproved ports/paths. | Owner M1A-002 network policy; Security Sections 5-6 | Must |
+| R4 | PubMed HTTP behavior is synchronous, explicit, transport-injected, HTTPS-only, fixed-origin/fixed-path constrained, and manually validates every redirect hop and final URL. It rejects arbitrary URLs, wildcard hosts, lookalikes, suffix confusion, userinfo, non-HTTPS, and unapproved ports/paths. Redirect query components require valid percent escapes and strict UTF-8 decoding before exact pair comparison; malformed encoding fails before another request. | Owner M1A-002 network policy and B-017 authorization; Security Sections 5-6 | Must |
 | R5 | Search and fetch have finite configuration for query length, page size, pages, records, payload bytes, connect/read/write/pool timeout, total deadline, attempts, exponential backoff, bounded jitter, maximum delay, `Retry-After`, and redirects. No connector cache exists in M1A-002. | Owner bounded-behavior list; root/connector instructions | Must |
-| R6 | Search/fetch distinguish complete matches, exhaustive empty success, bounded truncation, successful partial parsing, failed partial retrieval, and unavailable failure. Stable first-seen PMID deduplication and earlier-page retention are deterministic. Incomplete coverage never becomes `no_match`. | Owner classification and partial-result requirements; source-outcome contract | Must |
+| R6 | Search/fetch distinguish complete matches, exhaustive empty success, bounded truncation, successful partial parsing, failed partial retrieval, and unavailable failure. Search-result PMID deduplication is stable-first-seen; conflicting duplicate fetch records fail closed across the whole operation. Earlier-page retention remains deterministic unless a later duplicate invalidates the same PMID. Incomplete coverage never becomes `no_match`. | Owner classification and partial-result requirements; source-outcome contract | Must |
 | R7 | Connector-local typed failures distinguish rate limit, ordinary client error, eligible retryable server error, retry exhaustion, other server error, timeout, transport failure, invalid XML, semantically incomplete XML, payload overflow, redirect rejection, and internal contract violation. Only HTTP 429 and explicitly eligible 5xx responses retry. | Owner classification/retry requirements | Must |
 | R8 | Untrusted PubMed XML is parsed with the approved lightweight hardened parser. Invalid XML, semantically incomplete documents, and malformed individual records remain distinct; valid records from a partially malformed response are retained with partial coverage. | ADR-009 dependency/parser decision; Owner XML requirements | Must |
 | R9 | All automated tests use `httpx.MockTransport`, run with sockets disabled, and prove there is no implicit path from an injected/mock connector to a real transport. No live PubMed/NCBI API call occurs. | Owner offline policy; V1-NFR-004 | Must |
@@ -49,9 +52,9 @@ host and the ESearch/EFetch path prefix without making an API request.
 | ID | Input or action | Expected output or state | Error and boundary behavior |
 |---|---|---|---|
 | R1-R3 | A scope containing PubMed and CADEC, with PubMed selected and CADEC skipped by policy | Immutable draft report retains both plan entries and only the PubMed outcome | Missing/duplicate entries and any CADEC outcome fail validation |
-| R4 | A fixed ESearch/EFetch request through an injected transport | Request URL is exact-origin HTTPS with an approved path | Any redirect or final URL outside the exact origin/path policy fails before another request |
+| R4 | A fixed ESearch/EFetch request through an injected transport | Request URL is exact-origin HTTPS with an approved path and a strictly decoded, preserved query | Any redirect or final URL outside the exact origin/path policy, with a changed query, malformed percent escape, or invalid UTF-8 fails before another request |
 | R5-R7 | A bounded search/fetch under success, 429, eligible 5xx, 4xx, timeout, or transport failure | Finite calls, delays, payload, pages, records, and typed terminal result | Retry budget/deadline exhaustion is explicit; ordinary 4xx is never retried |
-| R6 | A later page/batch fails after earlier valid records | Earlier records remain and the terminal outcome is failed/partial, never complete | Zero retained results are indeterminate; retained results remain partial matches |
+| R6 | A later page/batch fails after earlier valid records | Earlier records remain and the terminal outcome is failed/partial, never complete | Zero retained results are indeterminate; retained results remain partial matches; a later duplicate of an earlier PMID evicts the conflicted record and reports partial/indeterminate |
 | R8 | XML bytes are valid, invalid, incomplete, or contain malformed records | Deterministic typed parse result or failure | DTD/entities and syntactically invalid XML fail closed; mixed valid/malformed records are partial |
 | R9 | Default unit/contract command with `--disable-socket` | All tests pass with `MockTransport`; zero live calls | Constructor requires a transport and has no implicit real-network default |
 
@@ -106,7 +109,7 @@ initial failure -> failed unavailable indeterminate
 | Requirement | Existing/provided evidence | Additional verification required |
 |---|---|---|
 | R1-R3 | Domain outcome/provenance/report suites; current mixed-plan rejection reproduces the defect | Positive mixed selected/skipped report; missing plan; duplicate plan; out-of-scope plan; skipped-not-applicable in-scope; fabricated skipped outcome |
-| R4 | Generic socket-blocking contract only | Allowed same-origin redirect; cross-origin/downgrade/path/port/userinfo/trailing-dot/lookalike/suffix rejection; final URL check |
+| R4 | Generic socket-blocking contract only | Allowed same-origin redirect; cross-origin/downgrade/path/port/userinfo/trailing-dot/lookalike/suffix rejection; final URL check; policy and full-transport invalid-UTF-8 redirect regressions |
 | R5 | Domain numeric bound tests only | Exact/min/max configuration; page/record/payload/deadline/attempt/delay/redirect enforcement |
 | R6 | Domain terminal-triple and limitation tests | One/multi-page, empty, both truncations, duplicates, inconsistent counts, later-page partial, fetch partial/missing records |
 | R7 | Source-neutral failure tests only | 429 with/without `Retry-After`, eligible 5xx recovery/exhaustion, ordinary 4xx, timeout, connection failure, internal contract error |
@@ -154,8 +157,9 @@ in tests.
 |---|---|---|
 | The new Owner task supersedes the old inter-item branch/merge gate for this task only | It explicitly orders M1A-002 after the local remediation commit and authorizes one feature branch/two commits | Preserve separate commits; do not push/merge |
 | Exact NCBI host is `eutils.ncbi.nlm.nih.gov` | First-party NCBI E-utilities Quick Start documents the shared base URL | Fixed constant plus exact-origin tests |
-| Stable first-seen deduplication | Preserves upstream order and does not fabricate records | Cross-page duplicate tests |
+| Stable-first-seen search deduplication plus fail-closed fetch conflicts | Search keeps deterministic upstream order; duplicate whole fetch records cannot hide conflicting publication status, even across batches | Search duplicate tests and same-response/cross-batch current-versus-retracted fetch tests |
 | Same exact host and approved ESearch/EFetch paths are the only redirect targets | Smallest SSRF-safe interpretation of the Owner policy | Redirect/path/lookalike tests |
+| Redirect queries use strict form-style decoding without Unicode normalization | Validates every percent escape, percent-decodes to bytes, requires strict UTF-8, and preserves pair multiplicity while retaining existing order-insensitive comparison | B-017 policy and one-request `MockTransport` regressions |
 | Retryable 5xx set is 500, 502, 503, and 504 | Conventional transient set; narrow and reversible | Retry/no-retry request-count tests |
 | Numeric defaults live in connector configuration and remain within existing domain maxima | No durable domain-schema change is needed | Configuration boundary tests and exact `SourceOutcome.configured_bounds` |
 | Package resolution/install for the approved exact pins is authorized as a normal implementation step | The task authorizes dependency and lock changes required by M1A-002 | Record exact graph change and audit; stop if an unapproved dependency appears |

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic deterministic MedEvidence M1A-002 fixture v1; contains no live data. -->
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE">
+      <PMID Version="1">111</PMID>
+      <Article>
+        <Journal>
+          <JournalIssue>
+            <PubDate>
+              <Year>2025</Year>
+              <Month>Aug</Month>
+              <Day>04</Day>
+            </PubDate>
+          </JournalIssue>
+          <Title>Journal of Exact Evidence</Title>
+        </Journal>
+        <ArticleTitle>Safety of <i>example drug</i> in adults</ArticleTitle>
+        <Abstract>
+          <AbstractText Label="BACKGROUND" NlmCategory="BACKGROUND">First  exact section.</AbstractText>
+          <AbstractText Label="RESULTS" NlmCategory="RESULTS">Second section.</AbstractText>
+        </Abstract>
+        <AuthorList>
+          <Author ValidYN="Y">
+            <LastName>Smith</LastName>
+            <ForeName>Ada</ForeName>
+            <Initials>A</Initials>
+          </Author>
+          <Author ValidYN="Y">
+            <CollectiveName>Evidence Study Group</CollectiveName>
+          </Author>
+        </AuthorList>
+        <Language>eng</Language>
+        <PublicationTypeList>
+          <PublicationType UI="D016428">Journal Article</PublicationType>
+          <PublicationType UI="D017418">Randomized Controlled Trial</PublicationType>
+        </PublicationTypeList>
+      </Article>
+      <CommentsCorrectionsList>
+        <CommentsCorrections RefType="RetractionIn">
+          <RefSource>Example Journal. 2026.</RefSource>
+          <PMID Version="1">999</PMID>
+          <Note>Publisher notice</Note>
+        </CommentsCorrections>
+      </CommentsCorrectionsList>
+    </MedlineCitation>
+    <PubmedData>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">111</ArticleId>
+        <ArticleId IdType="doi">10.1000/example</ArticleId>
+        <ArticleId IdType="pmc">PMC111</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+</PubmedArticleSet>

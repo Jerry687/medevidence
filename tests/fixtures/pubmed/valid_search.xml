@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic deterministic MedEvidence M1A-002 fixture v1; contains no live data. -->
+<eSearchResult>
+  <Count>3</Count>
+  <RetMax>2</RetMax>
+  <RetStart>0</RetStart>
+  <IdList>
+    <Id>111</Id>
+    <Id>222</Id>
+  </IdList>
+</eSearchResult>

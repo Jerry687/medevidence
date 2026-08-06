@@ -7,7 +7,7 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**M1A-001B source-neutral domain contracts are merged.**
+**M1A-002 bounded PubMed connector candidate is implemented and offline-tested.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -29,12 +29,14 @@ development-quality tools, Windows validation scripts, loopback-only
 PostgreSQL and Qdrant Compose infrastructure contracts, the two-job CI
 foundation, and strict source-neutral M1A domain contracts for research scope,
 planning/outcomes, provenance, publications/status, claims, citations, and
-draft reports.
+draft reports. The current focused branch also contains a synchronous bounded
+PubMed ESearch/EFetch connector with hardened XML parsing and deterministic
+offline HTTP transport contracts.
 
-No PubMed connector, ingestion workflow, persistence adapter, application
-tool, report service, or FastAPI business endpoint exists yet. DailyMed,
-FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP, export, and
-HITL capabilities also remain planned rather than implemented.
+No ingestion workflow, snapshot persistence adapter, application tool, report
+service, or FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA,
+CADEC, retrieval, LangGraph, LLM, Streamlit, MCP, export, and HITL capabilities
+also remain planned rather than implemented.
 
 ## Formal V1 reference domain
 
@@ -95,8 +97,10 @@ Exact dependency, container, and GitHub Action versions were not selected
 during M0. `ME-000A` subsequently approved the repository, development-tool,
 container, and GitHub Action baselines. ADR-009 Revision 2 approves the exact
 M1A direct dependency pins. M1A-001B added and locked
-`pydantic==2.13.4` plus the development-only `pip-audit==2.10.1`; later pins
-remain absent until their first requiring focused work item.
+`pydantic==2.13.4` plus the development-only `pip-audit==2.10.1`. M1A-002 adds
+the approved `httpx==0.28.1` and `defusedxml==0.7.1` production pins. It uses a
+small explicit retry loop, so the approved optional Tenacity pin is not added.
+Later pins remain absent until their first requiring focused work item.
 Model-provider, retrieval-model/configuration, and external tracing decisions
 remain behind their separate gates in the PRD.
 
@@ -125,8 +129,8 @@ monolithic M1A implementation PR is not authorized.
 
 ADR-009 Revision 2 and the owner-authorization package are approved and
 effective. The governance package and M1A-001B implementation have been
-reviewed and merged. M1A-002 is the next bounded work item; later M1A items
-remain sequentially gated.
+reviewed and merged. The current M1A-002 candidate is limited to the bounded
+connector and its offline evidence. No later M1A work item has begun.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the
@@ -134,6 +138,25 @@ exact query, NCBI client-identification values, execution time, and final
 acceptance command. Default CI remains offline. No standalone ASGI server
 dependency is authorized for M1A; `M1A-005` may use an in-process ASGI test
 client.
+
+## Bounded PubMed connector
+
+M1A-002 uses the exact HTTPS origin
+`https://eutils.ncbi.nlm.nih.gov` and only the approved ESearch and EFetch
+paths. The general connector constructor requires an injected HTTPX transport;
+it never creates a real transport by default. Automated tests use
+`httpx.MockTransport` with sockets disabled.
+
+The connector enforces finite query, page, record, cumulative-payload,
+connect/read/write/pool timeout, total-deadline, retry/backoff,
+`Retry-After`, and redirect limits. It validates every request, redirect, and
+final response URL against the exact origin and path, safely parses untrusted
+XML through `defusedxml`, preserves verified earlier results after a later
+failure, and exposes typed connector and source-neutral terminal outcomes.
+
+The explicitly named production factory requires a client email and is not
+used by the default test or validation path. Live PubMed execution remains
+unauthorized under the separate Owner gate above.
 
 ## Windows Python and quality toolchain
 
