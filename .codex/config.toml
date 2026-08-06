@@ -4,3 +4,19 @@ max_concurrent_threads_per_session = 4
 default_subagent_model = "gpt-5.6-terra"
 default_subagent_reasoning_effort = "medium"
 interrupt_message = true
+
+[agents.medevidence_explorer]
+description = "Read-only MedEvidence explorer for bounded repository mapping before implementation."
+config_file = "./agents/explorer.toml"
+
+[agents.medevidence_implementer]
+description = "Bounded MedEvidence implementation agent for one Owner-approved write node."
+config_file = "./agents/implementer.toml"
+
+[agents.medevidence_reviewer]
+description = "Independent read-only reviewer for MedEvidence requirements, diffs, safety, and evidence."
+config_file = "./agents/reviewer.toml"
+
+[agents.medevidence_evidence_auditor]
+description = "Independent read-only terminal auditor for MedEvidence completion evidence and Git scope."
+config_file = "./agents/evidence-auditor.toml"
