@@ -10,10 +10,11 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 **M1A-002 is locally integrated into the approved `main` baseline. M1A-003A
 immutable snapshot/manifest work is locally committed at
 `c3d724b2097c8df1249b217f610a78291039edbb` on
-`feat/m1a-003a-snapshot-manifests`. PR `#4` is in cycle-4 remediation for a
-Windows LF-checkout portability defect. Fresh local validation passes; review,
-commit, push, and hosted CI rerun remain pending. It is not merged or approved
-on `main`.**
+`feat/m1a-003a-snapshot-manifests`. The cycle-4 LF remediation is committed at
+`52e71f0802e31580304980f487eba3c23f57db41`, pushed to PR `#4`, and hosted
+rerun `31147466248` passes. Evidence reconciliation review/audit, its later
+commit/push and hosted rerun, PR readiness, merge, and approved-`main`
+integration remain pending.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -45,9 +46,14 @@ exact-byte raw snapshot storage, canonical manifest construction, and replay
 integrity checks. Its terminal implementation review and pre-commit evidence
 audit passed. Hosted PR run `31146015339` passed Compose, Ruff, format, and
 MyPy, but Windows tests reported 422 passed and 2 failed because Git checked
-the canonical manifest fixture out with CRLF. Cycle 4 adds an LF checkout rule;
-fresh local validation now passes, while review, hosted CI rerun, merge, and
-approved-`main` integration remain incomplete.
+the canonical manifest fixture out with CRLF. Cycle 4 added the exact LF
+checkout rule in remediation commit `52e71f0`. A fresh
+`core.autocrlf=true` clone verified the 1,155-byte LF-only fixture and the two
+formerly failing tests passed 2/2. Hosted rerun `31147466248` passed
+Compose-config (114 cases), Ruff, format (32 files), MyPy (17 source files),
+and the offline unit/contract suite (424 passed, one expected warning, 86%
+coverage). The earlier failed run remains part of the record. Evidence
+reconciliation and the remaining PR lifecycle gates are incomplete.
 
 No PostgreSQL persistence adapter, application tool, report service, or
 FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA,
@@ -148,7 +154,8 @@ effective. The governance package and M1A-001B implementation have been
 reviewed and merged. M1A-002 is locally integrated into the approved `main`
 baseline and is limited to the bounded connector plus its historical offline
 evidence. Live NCBI/TLS behavior remains intentionally unverified. `M1A-003A`
-has a locally committed PR under cycle-4 LF portability remediation;
+has a locally committed and hosted-green cycle-4 LF portability remediation,
+but its evidence reconciliation and PR integration gates remain pending;
 `M1A-003B` onward remains unimplemented.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed

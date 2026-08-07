@@ -3,13 +3,15 @@
 - Work item: `M1A-003A`
 - Branch: `feat/m1a-003a-snapshot-manifests`
 - Baseline: `a3fd66477046c9e026d7b2222e882cd94a84d535`
-- Status: **CYCLE-4 LOCAL VALIDATION PASS; INDEPENDENT REVIEW, COMMIT, PUSH, AND HOSTED CI RERUN PENDING**
+- Status: **CYCLE-4 REMEDIATION COMMITTED, PUSHED, AND HOSTED RERUN PASS; EVIDENCE RECONCILIATION REVIEW/AUDIT AND REMOTE FINALIZATION PENDING**
 - Implementation candidate identity:
   `sha256:8df53196ccd2eb5f377eb42b0625269e925644385c02cd9cb72a6664ce419627`
   (2,235 bytes; 21 files)
 - Implementation commit: `c3d724b2097c8df1249b217f610a78291039edbb`
 - Implementation parent: `a3fd66477046c9e026d7b2222e882cd94a84d535`
 - Evidence-record commit: `94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`
+- Cycle-4 remediation commit: `52e71f0802e31580304980f487eba3c23f57db41`
+- Cycle-4 remediation parent: `94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`
 - Pull request: `#4`
 
 ## Candidate scope
@@ -150,9 +152,37 @@ Fresh local validation executed after the LF rule was added:
 - full sockets-disabled unit/contract suite: 424 passed, one expected
   socket-block warning, 86% aggregate coverage.
 
-These results establish fresh local cycle-4 validation only. Independent
-cycle-4 review, the remediation commit, push, and hosted-CI rerun remain
-pending. Hosted CI PASS is not claimed.
+These results established the fresh local validation supporting the later
+remediation commit and hosted rerun. They did not by themselves establish a
+hosted PASS.
+
+## Cycle-4 remediation commit and hosted rerun
+
+The cycle-4 remediation was committed at
+`52e71f0802e31580304980f487eba3c23f57db41` with exact parent
+`94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`. The commit contains exactly the
+seven authorized cycle-4 paths, including the exact root `.gitattributes`
+rule, and was pushed to PR `#4`.
+
+A fresh clone configured with `core.autocrlf=true` checked out remediation
+HEAD `52e71f0802e31580304980f487eba3c23f57db41`. In that clone:
+
+- `git check-attr` reported `text: set` and `eol: lf` for the fixture;
+- the checked-out fixture was 1,155 bytes, ended in LF, and contained zero CR
+  bytes; and
+- the two tests that failed in hosted run `31146015339` passed 2/2.
+
+Hosted rerun `31147466248` passed:
+
+- `compose-config`: 114 cases;
+- Windows Ruff check;
+- Ruff format check for 32 files;
+- MyPy for 17 source files; and
+- the offline unit/contract suite: 424 passed, one expected socket-block
+  warning, and 86% aggregate coverage.
+
+Run `31146015339` remains preserved above as the failed historical run. The
+successful remediation rerun does not erase that evidence.
 
 ## Exact validation commands
 
@@ -206,22 +236,40 @@ Observed results:
 - the worktree contained exactly six changed paths, all authorized for this
   evidence-only node, with zero missing, unexpected, or outside-scope paths.
 
+## Cycle-4 evidence-reconciliation validation
+
+This documentation-only node did not rerun application tests or
+static-analysis gates. Application behavior was unchanged, and the node
+records already-executed fresh-clone and hosted results. It executed:
+
+```text
+git diff --check
+git diff --name-only HEAD
+git diff --exit-code HEAD -- .gitattributes src tests .github/workflows
+git status --porcelain=v1 --untracked-files=all
+```
+
+Observed results:
+
+- `git diff --check` passed;
+- exactly the six authorized evidence/status documents differed from HEAD;
+  and
+- `.gitattributes`, source, tests, and workflows were unchanged from HEAD.
+
 ## Remaining risk and manual verification
 
-Independent cycle-4 review must inspect the current seven-path diff, confirm
-that `.gitattributes` contains exactly
-`/tests/fixtures/snapshots/manifest-v1.json text eol=lf` followed by one LF,
-and verify that no source, test, dependency, workflow, interface, database, or
-medical-source behavior changed.
+The remediation commit and its first hosted rerun are complete and PASS.
+Independent evidence-only review and terminal evidence audit of this six-file
+reconciliation candidate remain pending. A later evidence-record commit,
+push, and hosted rerun also remain pending, as do PR readiness, merge, and
+approved-`main` integration. This record does not claim final PR PASS,
+readiness, merge, integration, or live-source validation.
 
-Fresh full sockets-disabled offline validation has passed. Independent
-cycle-4 review, the remediation commit, push, and hosted-CI rerun all remain
-pending. No hosted CI PASS is claimed.
-
-Manual verification: reproduce the LF attribute and fixture byte checks,
-review the fresh local gate evidence, compare the worktree against the
-seven-path cycle-4 allowlist, and confirm the future hosted rerun replaces
-rather than obscures run `31146015339`.
+Manual verification: compare remediation commit
+`52e71f0802e31580304980f487eba3c23f57db41` with parent
+`94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`, confirm its exact seven paths,
+reproduce the fresh-clone LF checks, inspect hosted runs `31146015339` and
+`31147466248`, and review this six-document reconciliation diff.
 
 The Owner should be able to answer:
 

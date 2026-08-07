@@ -1,6 +1,6 @@
 # ADR-010: M1A remainder freeze amendment
 
-- Status: Accepted by Project Owner; cycle-4 local validation passed, review and hosted rerun pending
+- Status: Accepted by Project Owner; cycle-4 remediation hosted rerun passed, evidence reconciliation and integration pending
 - Approved by: Boqi Niu
 - Approval role: Project Owner
 - Approval date: 2026-08-06
@@ -149,10 +149,24 @@ offline unit/contract checks. Terminal independent implementation review and
 the pre-commit evidence audit passed. PR `#4` hosted run `31146015339` later
 exposed a Windows CRLF checkout defect in the canonical LF fixture: Compose,
 Ruff, format, and MyPy passed, while tests reported 422 passed and 2 failed.
-Cycle 4 adds only the exact fixture-specific `text eol=lf` rule. Fresh
-local Ruff, format, MyPy, focused 197, and full 424/86% validation passed.
-Independent cycle-4 review, commit/push, and hosted CI rerun remain incomplete
-gates; no hosted CI PASS is claimed.
+Cycle 4 added only the exact fixture-specific `text eol=lf` rule in remediation
+commit `52e71f0802e31580304980f487eba3c23f57db41`, whose parent is
+`94e3d96f33e0752b34e6a016d19b9d1b7577f3f6` and whose exact seven paths
+include root `.gitattributes`. The commit was pushed to PR `#4`.
+
+A fresh `core.autocrlf=true` clone checked out `52e71f0`, reported
+`text: set`/`eol: lf`, produced the 1,155-byte terminal-LF fixture with zero
+CR bytes, and passed the two formerly failing tests 2/2. Hosted rerun
+`31147466248` passed compose-config with 114 cases, Windows Ruff, format for 32
+files, MyPy for 17 source files, and the offline unit/contract suite with 424
+passed, one expected warning, and 86% coverage. Failed run `31146015339`
+remains historical evidence.
+
+Independent evidence-only review and terminal audit of the six-document
+reconciliation candidate remain pending. Its later commit/push and hosted
+rerun, PR readiness, merge, and approved-`main` integration also remain
+pending. No final PR PASS, merge, integration, or live-source validation is
+claimed.
 
 ## Supersedes / Superseded by
 

@@ -3,13 +3,15 @@
 - Work item: `M1A-003A`
 - Branch: `feat/m1a-003a-snapshot-manifests`
 - Baseline: `a3fd66477046c9e026d7b2222e882cd94a84d535`
-- Status: **CYCLE-4 LOCAL VALIDATION PASS; INDEPENDENT REVIEW, COMMIT, PUSH, AND HOSTED CI RERUN PENDING**
+- Status: **CYCLE-4 REMEDIATION COMMITTED, PUSHED, AND HOSTED RERUN PASS; EVIDENCE RECONCILIATION REVIEW/AUDIT AND REMOTE FINALIZATION PENDING**
 - Implementation candidate identity:
   `sha256:8df53196ccd2eb5f377eb42b0625269e925644385c02cd9cb72a6664ce419627`
   (2,235 bytes; 21 files)
 - Implementation commit: `c3d724b2097c8df1249b217f610a78291039edbb`
 - Implementation parent: `a3fd66477046c9e026d7b2222e882cd94a84d535`
 - Evidence-record commit: `94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`
+- Cycle-4 remediation commit: `52e71f0802e31580304980f487eba3c23f57db41`
+- Cycle-4 remediation parent: `94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`
 - Pull request: `#4`
 - Reviewer: independent MedEvidence review lane
 
@@ -191,6 +193,23 @@ limited to root `.gitattributes` with exactly:
 No source, test, dependency, workflow, interface, database, or medical-source
 semantics change. Fresh local cycle-4 validation passed: exact attribute and
 fixture LF checks, Ruff, format, MyPy, focused 197, and full sockets-disabled
-424/86% with one expected socket-block warning. Independent cycle-4 review,
-the remediation commit, push, and hosted CI rerun remain pending. This record
-does not claim hosted CI PASS.
+424/86% with one expected socket-block warning.
+
+The remediation was committed as
+`52e71f0802e31580304980f487eba3c23f57db41`, with parent
+`94e3d96f33e0752b34e6a016d19b9d1b7577f3f6` and exactly the seven authorized
+paths including root `.gitattributes`, then pushed to PR `#4`. A fresh
+`core.autocrlf=true` clone checked out `52e71f0`; `git check-attr` reported
+`text: set` and `eol: lf`, the fixture was 1,155 bytes with terminal LF and
+zero CR bytes, and the two formerly failing tests passed 2/2.
+
+Hosted rerun `31147466248` passed `compose-config` with 114 cases, Windows
+Ruff check, Ruff format for 32 files, MyPy for 17 source files, and the offline
+unit/contract suite with 424 passed, one expected warning, and 86% coverage.
+Historical failed run `31146015339` remains recorded above.
+
+This six-document evidence reconciliation is a local candidate pending
+independent evidence-only review and terminal evidence audit. A later evidence
+commit/push and its hosted rerun remain pending, as do final PR readiness,
+merge, and approved-`main` integration. No final PR PASS, readiness, merge,
+integration, or live-source validation is claimed.
