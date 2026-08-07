@@ -11,6 +11,7 @@ import pytest
 
 DOMAIN_ROOT = Path("src/medevidence/domain")
 CONNECTOR_ROOT = Path("src/medevidence/connectors")
+INGESTION_ROOT = Path("src/medevidence/ingestion")
 PROHIBITED_TOKENS = {
     "alembic",
     "fastapi",
@@ -86,6 +87,32 @@ def test_connectors_import_only_approved_layers_and_dependencies() -> None:
                 continue
             for module in modules:
                 if not _is_approved_connector_import(module):
+                    violations.append(f"{path}:{node.lineno}:{module}")
+
+    assert violations == []
+
+
+def test_ingestion_imports_only_domain_and_standard_library() -> None:
+    violations: list[str] = []
+    for path in sorted(INGESTION_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                if node.level > 0:
+                    continue
+                modules = {node.module or ""}
+            else:
+                continue
+            for module in modules:
+                root = module.split(".", maxsplit=1)[0]
+                if (
+                    root not in sys.stdlib_module_names
+                    and root != "pydantic"
+                    and module != "medevidence.domain"
+                    and not module.startswith("medevidence.domain.")
+                ):
                     violations.append(f"{path}:{node.lineno}:{module}")
 
     assert violations == []

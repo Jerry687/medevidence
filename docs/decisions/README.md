@@ -80,3 +80,14 @@ draft-only FastAPI transport, `M1A-LIVE-RETENTION-v1`, and exact direct
 dependency pins. The live query itself remains separately unauthorized, no
 standalone ASGI server is approved, and no implementation, installation, or
 lock-file change may occur on the unmerged governance branch.
+
+## Owner-accepted M1A remainder amendment
+
+- [ADR-010: M1A remainder freeze amendment](ADR-010-m1a-remainder-freeze-amendment.md)
+  - Freeze: `M1A-REMAINDER-FREEZE-v3`
+  - Present state: M1A-003A implementation candidate under review
+
+ADR-010 appends exact journal identity, ordinal-reference, immutable snapshot,
+canonical manifest, and constrained-capacity rules while preserving ADR-009
+history. The candidate is not merged or live-source validated and provides no
+database, tool, report, or API implementation.

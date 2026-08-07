@@ -7,8 +7,9 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**M1A-002 bounded PubMed connector is locally integrated into the approved
-`main` baseline and retains its historical offline validation evidence.**
+**M1A-002 is locally integrated into the approved `main` baseline. M1A-003A
+immutable snapshot/manifest work is an uncommitted implementation candidate
+under review on `feat/m1a-003a-snapshot-manifests`.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -34,10 +35,14 @@ foundation, and strict source-neutral M1A domain contracts for research scope,
 planning/outcomes, provenance, publications/status, claims, citations, and
 draft reports. The approved local `main` baseline also contains a synchronous
 bounded PubMed ESearch/EFetch connector with hardened XML parsing and
-deterministic offline HTTP transport contracts.
+deterministic offline HTTP transport contracts. The current feature-branch
+candidate adds typed journal contracts, immutable exact-byte raw snapshot
+storage, canonical manifest construction, and replay integrity checks. It is
+not independently approved, committed, merged, or part of the approved
+baseline.
 
-No ingestion workflow, snapshot persistence adapter, application tool, report
-service, or FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA,
+No PostgreSQL persistence adapter, application tool, report service, or
+FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA,
 CADEC, retrieval, LangGraph, LLM, Streamlit, MCP, export, and HITL capabilities
 also remain planned rather than implemented.
 
@@ -135,8 +140,8 @@ effective. The governance package and M1A-001B implementation have been
 reviewed and merged. M1A-002 is locally integrated into the approved `main`
 baseline and is limited to the bounded connector plus its historical offline
 evidence. Live NCBI/TLS behavior remains intentionally unverified. `M1A-003A`
-onward has not been implemented or authorized by this
-baseline-reconciliation phase.
+has an Owner-authorized, uncommitted feature-branch candidate under review;
+`M1A-003B` onward remains unimplemented.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the
