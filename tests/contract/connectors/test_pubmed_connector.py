@@ -69,6 +69,19 @@ class ChunkStream(httpx.SyncByteStream):
         self.closed = True
 
 
+class PreBodyFailureStream(httpx.SyncByteStream):
+    def __init__(self, error: httpx.TransportError) -> None:
+        self.error = error
+        self.closed = False
+
+    def __iter__(self) -> Any:
+        raise self.error
+        yield b""  # pragma: no cover
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def search_xml(*pmids: str, count: int | None = None, retstart: int = 0) -> bytes:
     total = len(pmids) if count is None else count
     identifiers = "".join(f"<Id>{pmid}</Id>" for pmid in pmids)
@@ -668,6 +681,10 @@ def test_payload_limit_allows_exact_bytes_and_fails_one_byte_below() -> None:
     assert over.failure.kind is PubMedFailureKind.PAYLOAD_LIMIT
     assert over.source_outcome is not None
     assert over.source_outcome.coverage_status is CoverageStatus.UNAVAILABLE
+    assert len(over.raw_responses) == 1
+    assert over.raw_responses[0].body == body[:-1]
+    assert not over.raw_responses[0].body_complete
+    assert over.raw_responses[0].termination_reason == "payload_limit"
 
 
 def test_cumulative_payload_limit_applies_across_pages() -> None:
@@ -693,6 +710,9 @@ def test_cumulative_payload_limit_applies_across_pages() -> None:
     assert result.state is PubMedResultState.PARTIAL_FAILURE
     assert result.source_outcome is not None
     assert result.source_outcome.coverage_status is CoverageStatus.PARTIAL
+    assert len(result.raw_responses) == 2
+    assert not result.raw_responses[-1].body_complete
+    assert result.raw_responses[-1].termination_reason == "payload_limit"
 
 
 def test_streaming_response_is_read_once_and_closed_on_success_and_timeout() -> None:
@@ -703,12 +723,37 @@ def test_streaming_response_is_read_once_and_closed_on_success_and_timeout() -> 
     assert success.state is PubMedResultState.COMPLETE_SUCCESS
     assert success_stream.closed
 
-    timeout_stream = ChunkStream((b"<eSearchResult>", b"</eSearchResult>"), fail_after_first=True)
+    retained_prefix = b"x" * 65_536
+    timeout_stream = ChunkStream((retained_prefix, b"ignored"), fail_after_first=True)
     with connector(lambda _: httpx.Response(200, stream=timeout_stream)) as client:
         timed_out = client.search("stream timeout")
     assert timed_out.failure is not None
     assert timed_out.failure.kind is PubMedFailureKind.TIMEOUT
+    assert len(timed_out.raw_responses) == 1
+    assert timed_out.raw_responses[0].body == retained_prefix
+    assert not timed_out.raw_responses[0].body_complete
     assert timeout_stream.closed
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_kind"),
+    [
+        (httpx.ReadTimeout("synthetic pre-body timeout"), PubMedFailureKind.TIMEOUT),
+        (httpx.ReadError("synthetic pre-body transport"), PubMedFailureKind.TRANSPORT),
+    ],
+)
+def test_pre_body_stream_failure_does_not_fabricate_empty_raw_response(
+    error: httpx.TransportError,
+    expected_kind: PubMedFailureKind,
+) -> None:
+    stream = PreBodyFailureStream(error)
+    with connector(lambda _: httpx.Response(200, stream=stream)) as client:
+        result = client.search("pre-body failure")
+
+    assert result.failure is not None
+    assert result.failure.kind is expected_kind
+    assert result.raw_responses == ()
+    assert stream.closed
 
 
 def test_total_deadline_is_enforced_after_response_arrival() -> None:
@@ -1441,3 +1486,32 @@ def test_closed_connector_does_not_reopen_or_call_transport() -> None:
     assert result.failure is not None
     assert result.failure.kind is PubMedFailureKind.INTERNAL_CONTRACT
     assert result.source_outcome is None
+
+
+def test_m1a_constrained_profile_and_raw_handoff_are_exact() -> None:
+    config = PubMedConnectorConfig.m1a_constrained_v1()
+    with connector(
+        lambda request: httpx.Response(
+            200,
+            content=search_xml("1"),
+            headers={"content-type": "application/xml; charset=utf-8"},
+            request=request,
+        ),
+        config=config,
+    ) as client:
+        result = client.search("synthetic", query_id="query:constrained")
+
+    assert (
+        config.page_size,
+        config.max_pages,
+        config.max_attempts,
+        config.max_redirects,
+        config.max_records,
+        config.max_payload_bytes,
+        config.total_deadline_seconds,
+    ) == (100, 1, 2, 1, 100, 5_242_880, 30)
+    assert len(result.raw_responses) == 1
+    raw = result.raw_responses[0]
+    assert raw.body == search_xml("1")
+    assert raw.observed_at_utc == NOW
+    assert ("content-type", "application/xml; charset=utf-8") in raw.headers

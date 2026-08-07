@@ -83,6 +83,101 @@ def derive_identity(namespace: str, value: Any) -> str:
     return f"{namespace}:sha256:{digest}"
 
 
+def _reject_non_m1a_json_value(value: Any, *, path: str = "$") -> None:
+    """Reject values outside the frozen M1A canonical JSON profile."""
+
+    if value is None:
+        raise ValueError(f"{path}: null is not permitted by M1A_CANONICAL_JSON_V1")
+    if isinstance(value, float):
+        raise ValueError(f"{path}: floats are not permitted by M1A_CANONICAL_JSON_V1")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path}: JSON object keys must be strings")
+            _reject_non_m1a_json_value(item, path=f"{path}.{key}")
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for index, item in enumerate(value):
+            _reject_non_m1a_json_value(item, path=f"{path}[{index}]")
+
+
+def m1a_canonical_json_bytes(value: Any) -> bytes:
+    """Serialize with the distinct, terminal-LF M1A canonical JSON profile."""
+
+    jsonable = _jsonable(
+        value.model_dump(mode="python", exclude_none=True)
+        if isinstance(value, BaseModel)
+        else value
+    )
+    _reject_non_m1a_json_value(jsonable)
+    text = json.dumps(
+        jsonable,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return text.encode("utf-8") + b"\n"
+
+
+def derive_m1a_journal_identity(
+    *,
+    namespace: str,
+    prefix: str,
+    self_field: str,
+    value: BaseModel | Mapping[str, Any],
+) -> str:
+    """Derive a frozen M1A journal ID without changing generic identities."""
+
+    payload = (
+        value.model_dump(mode="python", exclude_none=True)
+        if isinstance(value, BaseModel)
+        else dict(value)
+    )
+    if self_field not in payload:
+        raise ValueError(f"missing logical identity field: {self_field}")
+    del payload[self_field]
+    canonical = m1a_canonical_json_bytes(payload)
+    preimage = namespace.encode("ascii") + b"\x00" + canonical
+    return f"{prefix}{hashlib.sha256(preimage).hexdigest()}"
+
+
+def parse_m1a_json_bytes(raw: bytes) -> Any:
+    """Parse UTF-8 JSON while rejecting BOM, duplicates, floats, and null."""
+
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise ValueError("UTF-8 BOM is forbidden")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("M1A JSON must be valid UTF-8") from error
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite number is forbidden: {value}")
+
+    def reject_float(value: str) -> None:
+        raise ValueError(f"float is forbidden: {value}")
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON object key: {key}")
+            result[key] = item
+        return result
+
+    try:
+        parsed = json.loads(
+            text,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+            parse_float=reject_float,
+        )
+    except json.JSONDecodeError as error:
+        raise ValueError("invalid M1A JSON") from error
+    _reject_non_m1a_json_value(parsed)
+    return parsed
+
+
 type NonBlankText = Annotated[
     str,
     StringConstraints(min_length=1, max_length=512),
@@ -118,6 +213,53 @@ type Doi = Annotated[
 type Sha256Digest = Annotated[
     str,
     StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$"),
+]
+type RunIntentId = Annotated[
+    str,
+    StringConstraints(pattern=r"^run-intent:sha256:[0-9a-f]{64}$"),
+]
+type AcquisitionIntentId = Annotated[
+    str,
+    StringConstraints(pattern=r"^acquisition-intent:sha256:[0-9a-f]{64}$"),
+]
+type ArtifactLinkId = Annotated[
+    str,
+    StringConstraints(pattern=r"^artifact-link:sha256:[0-9a-f]{64}$"),
+]
+type AcquisitionRegistrationEnvelopeId = Annotated[
+    str,
+    StringConstraints(pattern=r"^registration-envelope:acquisition:sha256:[0-9a-f]{64}$"),
+]
+type RunRegistrationEnvelopeId = Annotated[
+    str,
+    StringConstraints(pattern=r"^registration-envelope:run:sha256:[0-9a-f]{64}$"),
+]
+type RunId = Annotated[
+    str,
+    StringConstraints(
+        pattern=(
+            r"^run:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    ),
+]
+type AttemptId = Annotated[
+    str,
+    StringConstraints(
+        pattern=(
+            r"^attempt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    ),
+]
+type RequestId = Annotated[
+    str,
+    StringConstraints(
+        pattern=(
+            r"^request:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    ),
 ]
 
 _STABLE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"

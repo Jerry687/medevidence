@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import islice
-from typing import Final, Self
+from typing import Final, Literal, Self
 
 import httpx
 
@@ -76,6 +76,7 @@ _REDIRECT_STATUS_CODES: Final = frozenset({301, 302, 303, 307, 308})
 _SAFE_RESPONSE_HEADERS: Final = frozenset(
     {
         "content-length",
+        "content-encoding",
         "content-type",
         "location",
         "retry-after",
@@ -225,6 +226,19 @@ class _HttpResponse:
     def header(self, name: str) -> str | None:
         expected = name.casefold()
         return next((value for key, value in self.headers if key == expected), None)
+
+
+@dataclass(frozen=True, slots=True)
+class _BodyRead:
+    body: bytes
+    body_complete: bool
+    termination_reason: Literal[
+        "complete_response",
+        "payload_limit",
+        "stream_error",
+        "deadline_exceeded",
+    ]
+    failure_kind: PubMedFailureKind | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1227,14 +1241,7 @@ class PubMedConnector:
         try:
             response = self._client.send(request, stream=True, follow_redirects=False)
             final_url = validate_pubmed_url(str(response.url), expected_path)
-            body = self._read_bounded_body(response, context)
-            if body is None:
-                return _HttpResult(
-                    failure=_failure(
-                        PubMedFailureKind.PAYLOAD_LIMIT,
-                        "PubMed cumulative response payload exceeded the configured bound.",
-                    )
-                )
+            body_read = self._read_bounded_body(response, context)
             operational_headers = tuple(
                 sorted(
                     (name.casefold(), value)
@@ -1245,16 +1252,37 @@ class PubMedConnector:
             evidence_headers = tuple(
                 (name, value) for name, value in operational_headers if name != "location"
             )
-            raw = RawPubMedResponse(
-                request_url=_redacted_evidence_url(str(request.url)),
-                final_url=_redacted_evidence_url(final_url),
-                status_code=response.status_code,
-                body=body,
-                headers=evidence_headers,
-                page_number=page_number,
-                attempt_count=attempt_number,
-            )
-            context.raw_responses.append(raw)
+            raw: RawPubMedResponse | None = None
+            if body_read.body_complete or body_read.body:
+                raw = RawPubMedResponse(
+                    request_url=_redacted_evidence_url(str(request.url)),
+                    final_url=_redacted_evidence_url(final_url),
+                    status_code=response.status_code,
+                    body=body_read.body,
+                    observed_at_utc=self._require_utc_now(),
+                    body_complete=body_read.body_complete,
+                    termination_reason=body_read.termination_reason,
+                    headers=evidence_headers,
+                    page_number=page_number,
+                    attempt_count=attempt_number,
+                )
+                context.raw_responses.append(raw)
+            if not body_read.body_complete:
+                failure_kind = body_read.failure_kind or PubMedFailureKind.TRANSPORT
+                message = {
+                    PubMedFailureKind.PAYLOAD_LIMIT: (
+                        "PubMed cumulative response payload exceeded the configured bound."
+                    ),
+                    PubMedFailureKind.TIMEOUT: (
+                        "PubMed total operation deadline expired while receiving a response."
+                    ),
+                }.get(
+                    failure_kind,
+                    "PubMed response streaming failed after a bounded prefix arrived.",
+                )
+                return _HttpResult(failure=_failure(failure_kind, message))
+            if raw is None:
+                raise RuntimeError("complete response did not produce raw response material")
             result = _HttpResponse(
                 request_url=str(request.url),
                 final_url=final_url,
@@ -1299,35 +1327,64 @@ class PubMedConnector:
         self,
         response: httpx.Response,
         context: _OperationContext,
-    ) -> bytes | None:
+    ) -> _BodyRead:
         remaining_bytes = (
             self._config.max_cumulative_payload_bytes - context.cumulative_payload_bytes
         )
-        content_length = response.headers.get("content-length")
-        if content_length is not None:
-            try:
-                declared_length = int(content_length)
-            except ValueError:
-                declared_length = -1
-            if declared_length > remaining_bytes:
-                return None
-
         if response.is_stream_consumed:
             consumed_body = response.content
             if len(consumed_body) > remaining_bytes:
-                return None
+                prefix = consumed_body[:remaining_bytes]
+                context.cumulative_payload_bytes += len(prefix)
+                return _BodyRead(
+                    prefix,
+                    False,
+                    "payload_limit",
+                    PubMedFailureKind.PAYLOAD_LIMIT,
+                )
             context.cumulative_payload_bytes += len(consumed_body)
-            return consumed_body
+            return _BodyRead(consumed_body, True, "complete_response")
 
         body = bytearray()
-        for chunk in response.iter_raw(chunk_size=min(65_536, max(1, remaining_bytes))):
-            if len(chunk) > remaining_bytes - len(body):
-                return None
-            body.extend(chunk)
-            if self._remaining_seconds(context) <= 0:
-                raise httpx.ReadTimeout("total PubMed deadline expired", request=response.request)
+        try:
+            for chunk in response.iter_raw(chunk_size=min(65_536, max(1, remaining_bytes))):
+                available = remaining_bytes - len(body)
+                if len(chunk) > available:
+                    body.extend(chunk[:available])
+                    context.cumulative_payload_bytes += len(body)
+                    return _BodyRead(
+                        bytes(body),
+                        False,
+                        "payload_limit",
+                        PubMedFailureKind.PAYLOAD_LIMIT,
+                    )
+                body.extend(chunk)
+                if self._remaining_seconds(context) <= 0:
+                    context.cumulative_payload_bytes += len(body)
+                    return _BodyRead(
+                        bytes(body),
+                        False,
+                        "deadline_exceeded",
+                        PubMedFailureKind.TIMEOUT,
+                    )
+        except httpx.TimeoutException:
+            context.cumulative_payload_bytes += len(body)
+            return _BodyRead(
+                bytes(body),
+                False,
+                "deadline_exceeded",
+                PubMedFailureKind.TIMEOUT,
+            )
+        except httpx.TransportError:
+            context.cumulative_payload_bytes += len(body)
+            return _BodyRead(
+                bytes(body),
+                False,
+                "stream_error",
+                PubMedFailureKind.TRANSPORT,
+            )
         context.cumulative_payload_bytes += len(body)
-        return bytes(body)
+        return _BodyRead(bytes(body), True, "complete_response")
 
     def _remaining_seconds(self, context: _OperationContext) -> float:
         elapsed = self._monotonic() - context.started_at

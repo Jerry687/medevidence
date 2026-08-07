@@ -31,6 +31,8 @@ from medevidence.domain import (
     ResultStatus,
     SourceOutcome,
     SourceType,
+    canonical_json,
+    derive_identity,
     sha256_digest,
 )
 
@@ -509,3 +511,12 @@ def test_publication_status_is_strict_frozen_and_versioned() -> None:
                 "provider_payload": {},
             }
         )
+
+
+def test_existing_generic_identity_recipe_remains_unchanged() -> None:
+    payload = {"value": "café", "ordinal": 1}
+
+    assert canonical_json(payload) == '{"ordinal":1,"value":"café"}'
+    assert derive_identity("legacy", payload) == (
+        "legacy:sha256:34a0deaf71c5b9ae2015b42d0074f0d99f5afb70b7ed33131393936ac05354ff"
+    )

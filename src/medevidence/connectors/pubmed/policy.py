@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import Final, Literal
@@ -182,6 +182,30 @@ class PubMedConnectorConfig:
 
         return self.max_payload_bytes
 
+    @classmethod
+    def m1a_constrained_v1(cls) -> PubMedConnectorConfig:
+        """Return the exact frozen M1A_CONSTRAINED_V1 connector limits."""
+
+        return cls(
+            max_query_characters=512,
+            page_size=100,
+            max_pages=1,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            connect_timeout_seconds=5.0,
+            read_timeout_seconds=10.0,
+            write_timeout_seconds=5.0,
+            pool_timeout_seconds=5.0,
+            total_deadline_seconds=30,
+            max_attempts=2,
+            base_backoff_seconds=0.25,
+            jitter_seconds=0.1,
+            max_backoff_seconds=4.0,
+            max_retry_after_seconds=10.0,
+            max_redirects=1,
+            cache_policy="none",
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class PubMedFailure:
@@ -215,6 +239,14 @@ class RawPubMedResponse:
     final_url: str
     status_code: int
     body: bytes
+    observed_at_utc: datetime
+    body_complete: bool = True
+    termination_reason: Literal[
+        "complete_response",
+        "payload_limit",
+        "stream_error",
+        "deadline_exceeded",
+    ] = "complete_response"
     headers: tuple[tuple[str, str], ...] = ()
     page_number: int = 1
     attempt_count: int = 1
@@ -224,10 +256,16 @@ class RawPubMedResponse:
             raise ValueError("request and final URLs must not be blank")
         if not 100 <= self.status_code <= 599:
             raise ValueError("status_code must be an HTTP status")
+        if self.observed_at_utc.tzinfo is None or self.observed_at_utc.utcoffset() != timedelta(0):
+            raise ValueError("observed_at_utc must be timezone-aware UTC")
         if self.page_number < 1:
             raise ValueError("page_number must be positive")
         if self.attempt_count < 1:
             raise ValueError("attempt_count must be positive")
+        if self.body_complete != (self.termination_reason == "complete_response"):
+            raise ValueError("body_complete must match termination_reason")
+        if not self.body_complete and not self.body:
+            raise ValueError("incomplete response requires a retained nonempty prefix")
 
 
 @dataclass(frozen=True, slots=True)
