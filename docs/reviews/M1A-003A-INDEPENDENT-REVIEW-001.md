@@ -3,12 +3,14 @@
 - Work item: `M1A-003A`
 - Branch: `feat/m1a-003a-snapshot-manifests`
 - Baseline: `a3fd66477046c9e026d7b2222e882cd94a84d535`
-- Status: **EVIDENCE-FINALIZATION CANDIDATE; INDEPENDENT EVIDENCE-ONLY REVIEW PENDING**
+- Status: **CYCLE-4 LOCAL VALIDATION PASS; INDEPENDENT REVIEW, COMMIT, PUSH, AND HOSTED CI RERUN PENDING**
 - Implementation candidate identity:
   `sha256:8df53196ccd2eb5f377eb42b0625269e925644385c02cd9cb72a6664ce419627`
   (2,235 bytes; 21 files)
 - Implementation commit: `c3d724b2097c8df1249b217f610a78291039edbb`
 - Implementation parent: `a3fd66477046c9e026d7b2222e882cd94a84d535`
+- Evidence-record commit: `94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`
+- Pull request: `#4`
 - Reviewer: independent MedEvidence review lane
 
 ## Review decision
@@ -165,11 +167,30 @@ Post-commit verification recorded:
 - full sockets-disabled unit/contract suite: 424 passed, one expected
   `pytest-socket` warning, 86% aggregate coverage.
 
-No network, medical-source request, dependency operation, container, or
-database activity occurred. Only the local implementation commit was created.
-It is not pushed, in a PR, hosted-CI validated, merged, integrated, or approved
-on `main`.
+At the terminal post-implementation verification point, no network,
+medical-source request, dependency operation, container, or database activity
+had occurred. Only the local implementation commit had then been created; the
+remote lifecycle had not started.
 
-This document is now an evidence-finalization candidate. Independent
-evidence-only review remains pending, so it does not declare final
-evidence-finalization PASS.
+## Cycle 4: Windows LF checkout portability
+
+The evidence record was later committed at
+`94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`, pushed, and opened as PR `#4`.
+Hosted run `31146015339` passed `compose-config`, Ruff check, Ruff format, and
+MyPy. Windows unit/contract tests reported 422 passed and 2 failed because
+`tests/fixtures/snapshots/manifest-v1.json` was checked out with CRLF instead
+of its canonical LF bytes.
+
+The Project Owner authorized cycle 4 as a deterministic mechanical remediation
+limited to root `.gitattributes` with exactly:
+
+```text
+/tests/fixtures/snapshots/manifest-v1.json text eol=lf
+```
+
+No source, test, dependency, workflow, interface, database, or medical-source
+semantics change. Fresh local cycle-4 validation passed: exact attribute and
+fixture LF checks, Ruff, format, MyPy, focused 197, and full sockets-disabled
+424/86% with one expected socket-block warning. Independent cycle-4 review,
+the remediation commit, push, and hosted CI rerun remain pending. This record
+does not claim hosted CI PASS.

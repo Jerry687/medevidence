@@ -3,12 +3,14 @@
 - Work item: `M1A-003A`
 - Branch: `feat/m1a-003a-snapshot-manifests`
 - Baseline: `a3fd66477046c9e026d7b2222e882cd94a84d535`
-- Status: **EVIDENCE-FINALIZATION CANDIDATE; INDEPENDENT EVIDENCE-ONLY REVIEW PENDING**
+- Status: **CYCLE-4 LOCAL VALIDATION PASS; INDEPENDENT REVIEW, COMMIT, PUSH, AND HOSTED CI RERUN PENDING**
 - Implementation candidate identity:
   `sha256:8df53196ccd2eb5f377eb42b0625269e925644385c02cd9cb72a6664ce419627`
   (2,235 bytes; 21 files)
 - Implementation commit: `c3d724b2097c8df1249b217f610a78291039edbb`
 - Implementation parent: `a3fd66477046c9e026d7b2222e882cd94a84d535`
+- Evidence-record commit: `94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`
+- Pull request: `#4`
 
 ## Candidate scope
 
@@ -89,11 +91,68 @@ Post-commit verification recorded exact implementation commit
 path/content mismatches, and a clean worktree. Ruff, format, MyPy, focused 197,
 and full 424/86% gates passed with the expected socket-block warning.
 
-No medical-source or other network request occurred. No dependency was
-installed or resolved. No container or database was started or contacted. The
-only Git write was the authorized local implementation commit. It has not been
-evidence-finalized, pushed, opened as a PR, hosted-CI validated, merged,
-integrated, or approved on `main`.
+At the post-implementation verification point, no medical-source or other
+network request, dependency operation, container, or database activity had
+occurred. The only Git write at that point was the authorized local
+implementation commit; the remote lifecycle had not yet begun.
+
+## Hosted CI and cycle-4 remediation
+
+The evidence record was subsequently committed at
+`94e3d96f33e0752b34e6a016d19b9d1b7577f3f6`, pushed on the feature branch,
+and opened as PR `#4`. Hosted run `31146015339` reported:
+
+- `compose-config`: PASS;
+- Windows Ruff check, Ruff format check, and MyPy: PASS; and
+- Windows unit/contract tests: FAIL, with 422 passed and 2 failed.
+
+Both test failures came from deterministic checkout portability:
+`tests/fixtures/snapshots/manifest-v1.json` was checked out with CRLF on
+Windows, while its canonical contract requires terminal LF bytes. The Project
+Owner authorized cycle 4 solely to create root `.gitattributes` with:
+
+```text
+/tests/fixtures/snapshots/manifest-v1.json text eol=lf
+```
+
+This remediation changes checkout normalization only; it does not change
+source, tests, dependencies, workflows, interfaces, database behavior, or
+medical-source behavior. At this initial mechanical-node checkpoint, fresh
+validation, independent review, a remediation commit, push, and hosted CI
+rerun remained pending; no new PASS had yet been claimed.
+
+Cycle-4 mechanical-node checks executed:
+
+```text
+git diff --check
+[IO.File]::ReadAllBytes((Resolve-Path .gitattributes))
+git status --porcelain=v1 --untracked-files=all
+```
+
+The attributes file was exactly 55 bytes, with one LF, zero CR bytes, and an
+exact byte match to the Owner-required line. `git diff --check` passed, and the
+worktree contained exactly the seven authorized cycle-4 paths with zero
+missing or unexpected paths. These initial structural checks preceded the
+fresh application validation below.
+
+## Fresh cycle-4 local validation
+
+Fresh local validation executed after the LF rule was added:
+
+- `.gitattributes`: exactly 55 bytes, one LF, zero CR bytes;
+- `git check-attr`: `text: set` and `eol: lf` for the manifest fixture;
+- checked-out manifest fixture: 1,155 bytes, terminal LF, zero CR bytes;
+- `git diff --check`: PASS;
+- Ruff check: PASS;
+- Ruff format check: PASS for 32 files;
+- MyPy: PASS for 17 source files;
+- broad focused selector: 197 passed; and
+- full sockets-disabled unit/contract suite: 424 passed, one expected
+  socket-block warning, 86% aggregate coverage.
+
+These results establish fresh local cycle-4 validation only. Independent
+cycle-4 review, the remediation commit, push, and hosted-CI rerun remain
+pending. Hosted CI PASS is not claimed.
 
 ## Exact validation commands
 
@@ -114,7 +173,7 @@ git status --porcelain=v1 --untracked-files=all
 The independent reviewer's 35 targeted assertions are intentionally not
 assigned a command here because its exact selector was not supplied.
 
-## Evidence-finalization node validation
+## Historical evidence-finalization node validation
 
 This evidence-only node did not rerun application tests or static-analysis
 gates and does not claim that it did. It executed read-only identity,
@@ -149,14 +208,20 @@ Observed results:
 
 ## Remaining risk and manual verification
 
-Independent evidence-only review must inspect this six-file documentation diff,
-reconcile every status and identity against the committed implementation
-evidence, and confirm that no implementation path changed. Only then may the
-separately authorized evidence-finalization commit be considered.
+Independent cycle-4 review must inspect the current seven-path diff, confirm
+that `.gitattributes` contains exactly
+`/tests/fixtures/snapshots/manifest-v1.json text eol=lf` followed by one LF,
+and verify that no source, test, dependency, workflow, interface, database, or
+medical-source behavior changed.
 
-Manual verification: run the commands above from the repository root, confirm
-197 focused tests, 424 full offline tests, and 86% aggregate coverage, then
-compare the implementation commit against its 21-path allowlist.
+Fresh full sockets-disabled offline validation has passed. Independent
+cycle-4 review, the remediation commit, push, and hosted-CI rerun all remain
+pending. No hosted CI PASS is claimed.
+
+Manual verification: reproduce the LF attribute and fixture byte checks,
+review the fresh local gate evidence, compare the worktree against the
+seven-path cycle-4 allowlist, and confirm the future hosted rerun replaces
+rather than obscures run `31146015339`.
 
 The Owner should be able to answer:
 

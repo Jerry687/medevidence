@@ -1,6 +1,6 @@
 # ADR-010: M1A remainder freeze amendment
 
-- Status: Accepted by Project Owner; M1A-003A locally committed, evidence-finalization review pending
+- Status: Accepted by Project Owner; cycle-4 local validation passed, review and hosted rerun pending
 - Approved by: Boqi Niu
 - Approval role: Project Owner
 - Approval date: 2026-08-06
@@ -146,8 +146,13 @@ vector/mutation, exact-byte,
 no-clobber, corruption, capacity, containment, recovery, canonical fixture,
 replay, connector handoff, dependency-boundary, Ruff, format, MyPy, and full
 offline unit/contract checks. Terminal independent implementation review and
-the pre-commit evidence audit passed. Evidence-only finalization review and
-the remote lifecycle remain separate incomplete gates.
+the pre-commit evidence audit passed. PR `#4` hosted run `31146015339` later
+exposed a Windows CRLF checkout defect in the canonical LF fixture: Compose,
+Ruff, format, and MyPy passed, while tests reported 422 passed and 2 failed.
+Cycle 4 adds only the exact fixture-specific `text eol=lf` rule. Fresh
+local Ruff, format, MyPy, focused 197, and full 424/86% validation passed.
+Independent cycle-4 review, commit/push, and hosted CI rerun remain incomplete
+gates; no hosted CI PASS is claimed.
 
 ## Supersedes / Superseded by
 

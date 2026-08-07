@@ -85,12 +85,15 @@ lock-file change may occur on the unmerged governance branch.
 
 - [ADR-010: M1A remainder freeze amendment](ADR-010-m1a-remainder-freeze-amendment.md)
   - Freeze: `M1A-REMAINDER-FREEZE-v3`
-  - Present state: M1A-003A locally committed; evidence-finalization review
-    pending
+  - Present state: cycle-4 local validation PASS; review, commit/push, and
+    hosted rerun pending
 
 ADR-010 appends exact journal identity, ordinal-reference, immutable snapshot,
 canonical manifest, and constrained-capacity rules while preserving ADR-009
 history. The implementation commit is
-`c3d724b2097c8df1249b217f610a78291039edbb`; it is not pushed, merged,
-approved on `main`, or live-source validated and provides no database, tool,
+`c3d724b2097c8df1249b217f610a78291039edbb`. Hosted run `31146015339`
+identified only a Windows LF-checkout portability defect; cycle 4 is pending
+independent review after fresh local validation passed. The remediation is not
+committed or pushed, hosted CI has not rerun, and the work is not merged,
+approved on `main`, or live-source validated. It provides no database, tool,
 report, or API implementation.

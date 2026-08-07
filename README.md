@@ -10,8 +10,10 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 **M1A-002 is locally integrated into the approved `main` baseline. M1A-003A
 immutable snapshot/manifest work is locally committed at
 `c3d724b2097c8df1249b217f610a78291039edbb` on
-`feat/m1a-003a-snapshot-manifests`; its evidence-finalization candidate awaits
-independent evidence-only review. It is not merged or approved on `main`.**
+`feat/m1a-003a-snapshot-manifests`. PR `#4` is in cycle-4 remediation for a
+Windows LF-checkout portability defect. Fresh local validation passes; review,
+commit, push, and hosted CI rerun remain pending. It is not merged or approved
+on `main`.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -41,7 +43,10 @@ deterministic offline HTTP transport contracts. The locally committed
 M1A-003A feature-branch implementation adds typed journal contracts, immutable
 exact-byte raw snapshot storage, canonical manifest construction, and replay
 integrity checks. Its terminal implementation review and pre-commit evidence
-audit passed, but evidence-only finalization, remote review, merge, and
+audit passed. Hosted PR run `31146015339` passed Compose, Ruff, format, and
+MyPy, but Windows tests reported 422 passed and 2 failed because Git checked
+the canonical manifest fixture out with CRLF. Cycle 4 adds an LF checkout rule;
+fresh local validation now passes, while review, hosted CI rerun, merge, and
 approved-`main` integration remain incomplete.
 
 No PostgreSQL persistence adapter, application tool, report service, or
@@ -143,8 +148,8 @@ effective. The governance package and M1A-001B implementation have been
 reviewed and merged. M1A-002 is locally integrated into the approved `main`
 baseline and is limited to the bounded connector plus its historical offline
 evidence. Live NCBI/TLS behavior remains intentionally unverified. `M1A-003A`
-has a locally committed feature-branch implementation awaiting evidence-only
-finalization and remote lifecycle; `M1A-003B` onward remains unimplemented.
+has a locally committed PR under cycle-4 LF portability remediation;
+`M1A-003B` onward remains unimplemented.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the
