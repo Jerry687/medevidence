@@ -8,8 +8,10 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 ## Repository status
 
 **M1A-002 is locally integrated into the approved `main` baseline. M1A-003A
-immutable snapshot/manifest work is an uncommitted implementation candidate
-under review on `feat/m1a-003a-snapshot-manifests`.**
+immutable snapshot/manifest work is locally committed at
+`c3d724b2097c8df1249b217f610a78291039edbb` on
+`feat/m1a-003a-snapshot-manifests`; its evidence-finalization candidate awaits
+independent evidence-only review. It is not merged or approved on `main`.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -35,11 +37,12 @@ foundation, and strict source-neutral M1A domain contracts for research scope,
 planning/outcomes, provenance, publications/status, claims, citations, and
 draft reports. The approved local `main` baseline also contains a synchronous
 bounded PubMed ESearch/EFetch connector with hardened XML parsing and
-deterministic offline HTTP transport contracts. The current feature-branch
-candidate adds typed journal contracts, immutable exact-byte raw snapshot
-storage, canonical manifest construction, and replay integrity checks. It is
-not independently approved, committed, merged, or part of the approved
-baseline.
+deterministic offline HTTP transport contracts. The locally committed
+M1A-003A feature-branch implementation adds typed journal contracts, immutable
+exact-byte raw snapshot storage, canonical manifest construction, and replay
+integrity checks. Its terminal implementation review and pre-commit evidence
+audit passed, but evidence-only finalization, remote review, merge, and
+approved-`main` integration remain incomplete.
 
 No PostgreSQL persistence adapter, application tool, report service, or
 FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA,
@@ -140,8 +143,8 @@ effective. The governance package and M1A-001B implementation have been
 reviewed and merged. M1A-002 is locally integrated into the approved `main`
 baseline and is limited to the bounded connector plus its historical offline
 evidence. Live NCBI/TLS behavior remains intentionally unverified. `M1A-003A`
-has an Owner-authorized, uncommitted feature-branch candidate under review;
-`M1A-003B` onward remains unimplemented.
+has a locally committed feature-branch implementation awaiting evidence-only
+finalization and remote lifecycle; `M1A-003B` onward remains unimplemented.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the

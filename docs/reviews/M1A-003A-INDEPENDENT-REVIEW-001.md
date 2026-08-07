@@ -3,8 +3,12 @@
 - Work item: `M1A-003A`
 - Branch: `feat/m1a-003a-snapshot-manifests`
 - Baseline: `a3fd66477046c9e026d7b2222e882cd94a84d535`
-- Status: **THREE FAIL DECISIONS RECORDED; FINAL REMEDIATION CYCLE 3 AWAITS RE-REVIEW**
-- Candidate commit: not created
+- Status: **EVIDENCE-FINALIZATION CANDIDATE; INDEPENDENT EVIDENCE-ONLY REVIEW PENDING**
+- Implementation candidate identity:
+  `sha256:8df53196ccd2eb5f377eb42b0625269e925644385c02cd9cb72a6664ce419627`
+  (2,235 bytes; 21 files)
+- Implementation commit: `c3d724b2097c8df1249b217f610a78291039edbb`
+- Implementation parent: `a3fd66477046c9e026d7b2222e882cd94a84d535`
 - Reviewer: independent MedEvidence review lane
 
 ## Review decision
@@ -88,10 +92,10 @@ The same single authorized writer applied a bounded correction:
   while partial matches may keep an incomplete prefix with zero completed
   pages.
 
-Cycle-2 evidence is 120 focused offline tests and 390 full unit/contract
-offline tests passing, with repository-wide Ruff/format and MyPy passing.
-Independent re-review and terminal evidence audit remain pending; this
-document does not declare PASS.
+Cycle-2 evidence was 120 focused offline tests and 390 full unit/contract
+offline tests passing, with repository-wide Ruff/format and MyPy passing. At
+that evidence point, independent re-review and terminal evidence audit
+remained pending.
 
 ## Cycle 2 re-review decision
 
@@ -123,7 +127,49 @@ The final authorized remediation cycle:
   then publishes the correct record to the same path to prove no-clobber was
   not poisoned.
 
-Cycle-3 evidence is 154 focused offline tests and 424 full unit/contract
-offline tests passing, with repository-wide Ruff/format and MyPy passing.
-Independent re-review and terminal evidence audit remain pending. This
-document does not declare PASS.
+Cycle-3 implementer evidence was 154 focused offline tests and 424 full
+unit/contract offline tests passing, with repository-wide Ruff/format and
+MyPy passing. At that evidence point, independent re-review and terminal
+evidence audit remained pending.
+
+## Terminal independent implementation review
+
+After remediation cycle 3, the terminal independent reviewer returned
+**PASS** with no P0, P1, or P2 findings for implementation candidate
+`sha256:8df53196ccd2eb5f377eb42b0625269e925644385c02cd9cb72a6664ce419627`.
+The reviewer reported 35 targeted assertions passing; its exact selector was
+not supplied and is not invented here. The independently reproduced broad
+focused selection passed 197 tests, and the full offline unit/contract suite
+passed 424 tests.
+
+This terminal PASS does not erase the three historical FAIL decisions above
+and is validation only, not Project Owner approval or approved-`main` status.
+
+## Terminal pre-commit evidence audit
+
+The terminal pre-commit evidence audit returned **PASS**. It verified the
+2,235-byte/21-file candidate identity, exact allowlist, validation evidence,
+offline/network boundary, and readiness for the separately authorized local
+implementation commit.
+
+Post-commit verification recorded:
+
+- implementation commit `c3d724b2097c8df1249b217f610a78291039edbb`;
+- exact parent `a3fd66477046c9e026d7b2222e882cd94a84d535`;
+- exact implementation tree `bf85382096c5b511b091cc43c0e3fc236605ee57`;
+- exactly 21 committed paths, zero path or content mismatches, and a clean
+  worktree;
+- Ruff check and format check passing;
+- MyPy passing for 17 source files;
+- broad focused selection: 197 passed; and
+- full sockets-disabled unit/contract suite: 424 passed, one expected
+  `pytest-socket` warning, 86% aggregate coverage.
+
+No network, medical-source request, dependency operation, container, or
+database activity occurred. Only the local implementation commit was created.
+It is not pushed, in a PR, hosted-CI validated, merged, integrated, or approved
+on `main`.
+
+This document is now an evidence-finalization candidate. Independent
+evidence-only review remains pending, so it does not declare final
+evidence-finalization PASS.

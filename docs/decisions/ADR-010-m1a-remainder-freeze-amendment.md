@@ -1,6 +1,6 @@
 # ADR-010: M1A remainder freeze amendment
 
-- Status: Accepted by Project Owner; M1A-003A candidate under review
+- Status: Accepted by Project Owner; M1A-003A locally committed, evidence-finalization review pending
 - Approved by: Boqi Niu
 - Approval role: Project Owner
 - Approval date: 2026-08-06
@@ -108,7 +108,7 @@ Closed canonical manifests include source/request identity, attempt times,
 count, status triad, warnings, ordered retry file metadata,
 connector/schema/code revision, and retention policy. Earlier retained
 incomplete/error attempts remain visible; complete coverage requires its
-terminal effective response to be nonempty, body-complete, and HTTP 2xx. Their
+terminal effective response to be nonempty, body-complete, and HTTP 2xx.
 Every `matches` outcome also requires at least one retained nonempty HTTP 2xx
 body or prefix, even when a later retained failure ends partial coverage.
 Their ID is SHA-256 over complete canonical bytes.
@@ -141,11 +141,13 @@ API, report-generation, or export behavior.
 
 ## Validation
 
-The implementation candidate must pass vector/mutation, exact-byte,
+The implementation at `c3d724b2097c8df1249b217f610a78291039edbb` passed
+vector/mutation, exact-byte,
 no-clobber, corruption, capacity, containment, recovery, canonical fixture,
 replay, connector handoff, dependency-boundary, Ruff, format, MyPy, and full
-offline unit/contract checks. Independent review and terminal audit remain
-separate gates.
+offline unit/contract checks. Terminal independent implementation review and
+the pre-commit evidence audit passed. Evidence-only finalization review and
+the remote lifecycle remain separate incomplete gates.
 
 ## Supersedes / Superseded by
 

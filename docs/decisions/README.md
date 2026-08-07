@@ -85,9 +85,12 @@ lock-file change may occur on the unmerged governance branch.
 
 - [ADR-010: M1A remainder freeze amendment](ADR-010-m1a-remainder-freeze-amendment.md)
   - Freeze: `M1A-REMAINDER-FREEZE-v3`
-  - Present state: M1A-003A implementation candidate under review
+  - Present state: M1A-003A locally committed; evidence-finalization review
+    pending
 
 ADR-010 appends exact journal identity, ordinal-reference, immutable snapshot,
 canonical manifest, and constrained-capacity rules while preserving ADR-009
-history. The candidate is not merged or live-source validated and provides no
-database, tool, report, or API implementation.
+history. The implementation commit is
+`c3d724b2097c8df1249b217f610a78291039edbb`; it is not pushed, merged,
+approved on `main`, or live-source validated and provides no database, tool,
+report, or API implementation.
