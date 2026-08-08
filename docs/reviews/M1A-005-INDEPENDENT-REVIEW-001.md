@@ -4,13 +4,15 @@
 - Branch: `feat/m1a-005-fastapi-acceptance`
 - Approved `main` baseline:
   `14a38d48416e8a4b63fe72b91ceb083f1d895473`
-- Reviewed PR-head commit:
+- Reviewed implementation parent commit:
   `5a75b96a034abbaf4769f9dfde93ea3bb154567e`
+- Current PR head (documentation-only child):
+  `d70b3121634ba2cd1ca89d7c935c6ec470a9a988`
 - Draft PR: [#7](https://github.com/Jerry687/medevidence/pull/7),
   `M1A-005: expose and validate the PubMed vertical slice`
 - Hosted checks: **PASS** — `compose-config`, `dependency-audit`, and
   `windows-quality`
-- Independent PR-head review: **PASS — P0 0 / P1 0 / P2 0**
+- Independent implementation review: **PASS — P0 0 / P1 0 / P2 0**
 - Terminal evidence audit: **PASS — P0 0 / P1 0 / P2 0**
 - Integration state: **NOT MERGED OR INTEGRATED**
 - Live medical-source access: **NOT RUN**
@@ -72,13 +74,19 @@ without untrusted-value leakage. Independent review returned
 
 Cycle-4 evidence candidate
 `sha256:cf1a65aecae71dbd8f35b56d29adb90ae43152512985ec39a2475665601053cb`
-was committed as PR head
+was committed as the reviewed implementation
 `5a75b96a034abbaf4769f9dfde93ea3bb154567e`. Hosted checks then passed,
-independent PR-head review returned **PASS — P0 0 / P1 0 / P2 0**, and the
+independent review returned **PASS — P0 0 / P1 0 / P2 0**, and the
 terminal evidence audit returned **PASS — P0 0 / P1 0 / P2 0**.
 
-The prior failures remain historical evidence and are not current PR-head
-findings.
+Cycle-5 evidence candidate
+`sha256:ff2652651de9cde37ff767dd3d17201505062a1c64879889754cc22a96051177`
+was committed as documentation-only child
+`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` and pushed as the current Draft PR
+`#7` head.
+
+The prior failures remain historical evidence and are not current
+implementation findings.
 
 ## Reviewed evidence
 
@@ -101,16 +109,20 @@ findings.
 - no live PubMed or other medical-source request occurred.
 
 Hosted `compose-config`, `dependency-audit`, and `windows-quality` checks passed
-at exact PR-head commit
-`5a75b96a034abbaf4769f9dfde93ea3bb154567e`.
+for reviewed implementation commit
+`5a75b96a034abbaf4769f9dfde93ea3bb154567e`. Current PR head
+`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` is its documentation-only child.
 
 ## Decision
 
-**PASS — P0 0 / P1 0 / P2 0.** Independent PR-head review and terminal
-evidence audit both passed for Draft PR `#7` at commit
-`5a75b96a034abbaf4769f9dfde93ea3bb154567e`. This is not evidence of merge,
-integration into `main`, or live PubMed acceptance; none of those occurred.
+**PASS — P0 0 / P1 0 / P2 0.** Independent review and terminal evidence audit
+both passed for reviewed implementation commit
+`5a75b96a034abbaf4769f9dfde93ea3bb154567e`. Current Draft PR `#7` head
+`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` adds only the committed and pushed
+cycle-5 documentation ledger. This is not evidence of merge, integration into
+`main`, or live PubMed acceptance; none of those occurred.
 
-These final ledger updates are local and uncommitted until separately
-authorized. No code, dependency, schema, or public contract changed during
-this evidence-finalization cycle.
+The cycle-5 ledger updates are committed and pushed at current PR head
+`d70b3121634ba2cd1ca89d7c935c6ec470a9a988`; this cycle-6 correction is not
+committed or pushed under the current authorization. No code, dependency,
+schema, or public contract changed during either documentation-only cycle.
