@@ -1576,7 +1576,7 @@ def test_complete_no_match_rejects_mutually_coherent_publication_graph() -> None
         ),
     )
 
-    with pytest.raises(ValueError, match="publication cardinality"):
+    with pytest.raises(ValueError, match="search acquisition"):
         PersistenceRepository._validate_acquisition(registration)
 
 
@@ -1721,12 +1721,13 @@ def _acquisition_for_run(
     publication: tuple[ArtifactRow, PublicationVersionRow] | None = None,
 ) -> AcquisitionRegistration:
     registration = _complete_acquisition_registration(label)
+    effective_ordinal = 1 if publication is not None and ordinal == 0 else ordinal
     attempt = ResearchRunAttemptRow(
         **{
             **registration.attempt,
             "run_id": run_id,
-            "acquisition_ordinal": ordinal,
-            "operation": "search" if ordinal == 0 else "fetch",
+            "acquisition_ordinal": effective_ordinal,
+            "operation": "search" if effective_ordinal == 0 else "fetch",
         }
     )
     if publication is None:
@@ -1778,6 +1779,390 @@ def _acquisition_for_run(
             publication_memberships=(membership,),
         ),
     )
+
+
+def _with_acquisition_outcome(
+    registration: AcquisitionRegistration,
+    *,
+    operation: str,
+    execution_status: str,
+    coverage_status: str,
+    result_status: str,
+    record_count: int,
+    pages_completed: int,
+) -> AcquisitionRegistration:
+    snapshot = SourceSnapshotRow(
+        **{
+            **registration.snapshot,
+            "execution_status": execution_status,
+            "coverage_status": coverage_status,
+            "result_status": result_status,
+            "record_count": record_count,
+            "pages_completed": pages_completed,
+        }
+    )
+    attempt = ResearchRunAttemptRow(
+        **{
+            **registration.attempt,
+            "operation": operation,
+            "execution_status": execution_status,
+            "coverage_status": coverage_status,
+            "result_status": result_status,
+            "valid_result_count": record_count,
+            "pages_completed": pages_completed,
+        }
+    )
+    manifest = replace(
+        registration.manifest,
+        execution_status=execution_status,
+        coverage_status=coverage_status,
+        result_status=result_status,
+        record_count=record_count,
+        pages_completed=pages_completed,
+    )
+    return replace(
+        registration,
+        snapshot=snapshot,
+        attempt=attempt,
+        manifest=manifest,
+        envelope=replace(registration.envelope, attempt=attempt),
+    )
+
+
+@pytest.mark.parametrize(
+    "coverage_status,record_count",
+    (("complete", 2), ("partial", 2)),
+)
+def test_search_matches_accept_identifier_count_without_publications(
+    repository: PersistenceRepository,
+    coverage_status: str,
+    record_count: int,
+) -> None:
+    label = f"operation-search-{coverage_status}-matches"
+    registration = _with_acquisition_outcome(
+        _complete_acquisition_registration(label),
+        operation="search",
+        execution_status="succeeded",
+        coverage_status=coverage_status,
+        result_status="matches",
+        record_count=record_count,
+        pages_completed=1,
+    )
+
+    assert repository.register_acquisition(registration) == registration.snapshot
+    stored = repository.get_snapshot(registration.snapshot["snapshot_id"])
+    assert stored is not None
+    assert stored.snapshot["record_count"] == record_count
+    assert stored.publications == stored.publication_memberships == ()
+
+
+def test_search_complete_no_match_accepts_zero_publications(
+    repository: PersistenceRepository,
+) -> None:
+    registration = _complete_acquisition_registration("operation-search-complete-no-match")
+
+    assert repository.register_acquisition(registration) == registration.snapshot
+    stored = repository.get_snapshot(registration.snapshot["snapshot_id"])
+    assert stored is not None
+    assert stored.snapshot["record_count"] == 0
+    assert stored.publications == stored.publication_memberships == ()
+
+
+def test_search_rejects_publication_row() -> None:
+    label = "operation-search-publication-row"
+    artifact, values = _publication_values(label)
+    registration = _acquisition_for_run(
+        label,
+        f"run:{_uuid4(label)}",
+        publication=(artifact, cast(PublicationVersionRow, values)),
+    )
+    attempt = ResearchRunAttemptRow(
+        **{
+            **registration.attempt,
+            "acquisition_ordinal": 0,
+            "operation": "search",
+        }
+    )
+    registration = replace(
+        registration,
+        attempt=attempt,
+        envelope=replace(registration.envelope, attempt=attempt),
+    )
+
+    with pytest.raises(ValueError, match="search acquisition"):
+        PersistenceRepository._validate_acquisition(registration)
+
+
+def test_search_rejects_publication_membership() -> None:
+    label = "operation-search-publication-membership"
+    _, values = _publication_values(label)
+    registration = _with_acquisition_outcome(
+        _complete_acquisition_registration(label),
+        operation="search",
+        execution_status="succeeded",
+        coverage_status="complete",
+        result_status="matches",
+        record_count=1,
+        pages_completed=1,
+    )
+    membership = cast(
+        repository_module.SourceSnapshotPublicationRow,
+        {
+            "snapshot_id": registration.snapshot["snapshot_id"],
+            "publication_ordinal": 0,
+            "pmid": values["pmid"],
+            "publication_version_id": values["publication_version_id"],
+            "source": values["source"],
+            "publication_content_hash": values["content_hash"],
+        },
+    )
+    registration = replace(
+        registration,
+        publication_memberships=(membership,),
+        envelope=replace(registration.envelope, publication_memberships=(membership,)),
+    )
+
+    with pytest.raises(ValueError):
+        PersistenceRepository._validate_acquisition(registration)
+
+
+def test_search_rejects_publication_lineage() -> None:
+    label = "operation-search-publication-lineage"
+    registration = _with_acquisition_outcome(
+        _complete_acquisition_registration(label),
+        operation="search",
+        execution_status="succeeded",
+        coverage_status="complete",
+        result_status="matches",
+        record_count=1,
+        pages_completed=1,
+    )
+    edge = ArtifactLineageRow(
+        parent_artifact_id=_hash(f"{label}:publication"),
+        parent_artifact_kind="publication_record",
+        parent_source_partition="pubmed",
+        parent_content_hash=_hash(f"{label}:publication"),
+        child_artifact_id=registration.snapshot["snapshot_id"],
+        child_artifact_kind="snapshot_manifest",
+        child_source_partition="pubmed",
+        child_content_hash=registration.snapshot["snapshot_id"],
+        lineage_type="publication_to_manifest",
+        lineage_ordinal=0,
+        schema_version="1.0",
+    )
+    registration = replace(
+        registration,
+        lineage=(*registration.lineage, edge),
+        envelope=replace(registration.envelope, lineage=(*registration.lineage, edge)),
+    )
+
+    with pytest.raises(ValueError, match="search acquisition"):
+        PersistenceRepository._validate_acquisition(registration)
+
+
+def test_search_rejects_manifest_snapshot_attempt_count_mismatch() -> None:
+    registration = _with_acquisition_outcome(
+        _complete_acquisition_registration("operation-search-count-mismatch"),
+        operation="search",
+        execution_status="succeeded",
+        coverage_status="complete",
+        result_status="matches",
+        record_count=2,
+        pages_completed=1,
+    )
+    attempt = ResearchRunAttemptRow(**{**registration.attempt, "valid_result_count": 1})
+    registration = replace(
+        registration,
+        attempt=attempt,
+        envelope=replace(registration.envelope, attempt=attempt),
+    )
+
+    with pytest.raises(ValueError, match="record count"):
+        PersistenceRepository._validate_acquisition(registration)
+
+
+def test_fetch_matches_accepts_one_publication_and_membership(
+    repository: PersistenceRepository,
+) -> None:
+    label = "operation-fetch-one-publication"
+    artifact, values = _publication_values(label)
+    registration = _acquisition_for_run(
+        label,
+        f"run:{_uuid4(label)}",
+        ordinal=1,
+        publication=(artifact, cast(PublicationVersionRow, values)),
+    )
+
+    assert repository.register_acquisition(registration) == registration.snapshot
+    stored = repository.get_snapshot(registration.snapshot["snapshot_id"])
+    assert stored is not None
+    assert len(stored.publications) == len(stored.publication_memberships) == 1
+
+
+def test_fetch_matches_rejects_zero_publications() -> None:
+    label = "operation-fetch-zero-publications"
+    registration = _with_acquisition_outcome(
+        _acquisition_for_run(label, f"run:{_uuid4(label)}", ordinal=1),
+        operation="fetch",
+        execution_status="succeeded",
+        coverage_status="complete",
+        result_status="matches",
+        record_count=1,
+        pages_completed=1,
+    )
+
+    with pytest.raises(ValueError, match="fetch publication cardinality"):
+        PersistenceRepository._validate_acquisition(registration)
+
+
+def test_fetch_matches_rejects_more_than_one_publication() -> None:
+    label = "operation-fetch-two-publications"
+    first_artifact, first_values = _publication_values(f"{label}:first", pmid="1")
+    second_artifact, second_values = _publication_values(f"{label}:second", pmid="2")
+    registration = _acquisition_for_run(
+        label,
+        f"run:{_uuid4(label)}",
+        ordinal=1,
+        publication=(first_artifact, cast(PublicationVersionRow, first_values)),
+    )
+    second = cast(PublicationVersionRow, second_values)
+    second_membership = cast(
+        repository_module.SourceSnapshotPublicationRow,
+        {
+            "snapshot_id": registration.snapshot["snapshot_id"],
+            "publication_ordinal": 1,
+            "pmid": second["pmid"],
+            "publication_version_id": second["publication_version_id"],
+            "source": second["source"],
+            "publication_content_hash": second["content_hash"],
+        },
+    )
+    registration = _with_acquisition_outcome(
+        replace(
+            registration,
+            artifacts=(*registration.artifacts, second_artifact),
+            publications=(*registration.publications, second),
+            publication_memberships=(
+                *registration.publication_memberships,
+                second_membership,
+            ),
+            envelope=replace(
+                registration.envelope,
+                publications=(*registration.publications, second),
+                publication_memberships=(
+                    *registration.publication_memberships,
+                    second_membership,
+                ),
+            ),
+        ),
+        operation="fetch",
+        execution_status="succeeded",
+        coverage_status="complete",
+        result_status="matches",
+        record_count=2,
+        pages_completed=1,
+    )
+
+    with pytest.raises(ValueError, match="fetch publication cardinality"):
+        PersistenceRepository._validate_acquisition(registration)
+
+
+def test_fetch_rejects_publication_count_differing_from_manifest() -> None:
+    label = "operation-fetch-publication-manifest-mismatch"
+    artifact, values = _publication_values(label)
+    registration = _with_acquisition_outcome(
+        _acquisition_for_run(
+            label,
+            f"run:{_uuid4(label)}",
+            ordinal=1,
+            publication=(artifact, cast(PublicationVersionRow, values)),
+        ),
+        operation="fetch",
+        execution_status="succeeded",
+        coverage_status="complete",
+        result_status="no_match",
+        record_count=0,
+        pages_completed=1,
+    )
+
+    with pytest.raises(ValueError, match="fetch publication cardinality"):
+        PersistenceRepository._validate_acquisition(registration)
+
+
+@pytest.mark.parametrize(
+    "coverage_status,result_status",
+    (("complete", "no_match"), ("partial", "indeterminate")),
+)
+def test_fetch_nonmatch_accepts_zero_publications(
+    repository: PersistenceRepository,
+    coverage_status: str,
+    result_status: str,
+) -> None:
+    label = f"operation-fetch-{coverage_status}-{result_status}"
+    registration = _with_acquisition_outcome(
+        _acquisition_for_run(label, f"run:{_uuid4(label)}", ordinal=1),
+        operation="fetch",
+        execution_status="succeeded",
+        coverage_status=coverage_status,
+        result_status=result_status,
+        record_count=0,
+        pages_completed=1,
+    )
+
+    assert repository.register_acquisition(registration) == registration.snapshot
+
+
+def test_fetch_nonmatch_rejects_publication_row() -> None:
+    label = "operation-fetch-nonmatch-publication"
+    artifact, values = _publication_values(label)
+    registration = _with_acquisition_outcome(
+        _acquisition_for_run(
+            label,
+            f"run:{_uuid4(label)}",
+            ordinal=1,
+            publication=(artifact, cast(PublicationVersionRow, values)),
+        ),
+        operation="fetch",
+        execution_status="succeeded",
+        coverage_status="complete",
+        result_status="no_match",
+        record_count=0,
+        pages_completed=1,
+    )
+
+    with pytest.raises(ValueError, match="fetch publication cardinality"):
+        PersistenceRepository._validate_acquisition(registration)
+
+
+def test_matching_search_replay_accepts_positive_count_without_publications(
+    repository: PersistenceRepository,
+) -> None:
+    label = "operation-search-positive-replay"
+    registration = _with_acquisition_outcome(
+        _complete_acquisition_registration(label),
+        operation="search",
+        execution_status="succeeded",
+        coverage_status="complete",
+        result_status="matches",
+        record_count=2,
+        pages_completed=1,
+    )
+    repository.register_acquisition(registration)
+    replay = ValidatedReplay(
+        manifest=registration.manifest,
+        artifact_links=registration.artifact_links,
+        publications=(),
+        publication_memberships=(),
+        lineage=registration.lineage,
+        attempt=registration.attempt,
+    )
+
+    loaded = repository.load_snapshot_for_replay(
+        registration.snapshot["snapshot_id"],
+        replay_port=_VerifiedReplayPort(label, replay),
+    )
+    assert loaded.replay.manifest.record_count == 2
+    assert loaded.replay.publications == loaded.replay.publication_memberships == ()
 
 
 def _final_registration(
@@ -2013,11 +2398,13 @@ def test_exact_durable_attempt_set_and_owned_publication_are_accepted(
     run_id = cast(str, _run_report_values(label)[2]["run_id"])
     publication_artifact, publication_values = _publication_values(label)
     publication = (publication_artifact, cast(PublicationVersionRow, publication_values))
-    acquisition = _acquisition_for_run(label, run_id, publication=publication)
-    repository.register_acquisition(acquisition)
+    search = _acquisition_for_run(f"{label}:search", run_id)
+    fetch = _acquisition_for_run(f"{label}:fetch", run_id, publication=publication)
+    repository.register_acquisition(search)
+    repository.register_acquisition(fetch)
     registration = _final_registration(
         label,
-        (acquisition,),
+        (search, fetch),
         cited_artifacts=(publication_artifact,),
     )
 
@@ -2073,11 +2460,17 @@ def test_report_publication_artifact_binding_mismatch_is_rejected(
     publication_artifact, publication_values = _publication_values(label)
     publication = (publication_artifact, cast(PublicationVersionRow, publication_values))
     run_id = cast(str, _run_report_values(label)[2]["run_id"])
-    acquisition = _acquisition_for_run(label, run_id, publication=publication)
-    repository.register_acquisition(acquisition)
+    search = _acquisition_for_run(f"{label}:search", run_id)
+    fetch = _acquisition_for_run(f"{label}:fetch", run_id, publication=publication)
+    repository.register_acquisition(search)
+    repository.register_acquisition(fetch)
     wrong_artifact = _artifact_values(f"{label}:wrong", "publication_record")
     repository.insert_or_verify_artifact(wrong_artifact)
-    registration = _final_registration(label, (acquisition,), cited_artifacts=(wrong_artifact,))
+    registration = _final_registration(
+        label,
+        (search, fetch),
+        cited_artifacts=(wrong_artifact,),
+    )
 
     with pytest.raises(PersistenceIntegrityError, match="not owned"):
         repository.register_run_and_report(registration)
@@ -2096,10 +2489,16 @@ def test_earlier_publication_version_with_current_run_membership_is_accepted(
         publication=publication,
     )
     run_id = cast(str, _run_report_values(label)[2]["run_id"])
+    search = _acquisition_for_run(f"{label}:search", run_id)
     current = _acquisition_for_run(f"{label}:current", run_id, publication=publication)
     repository.register_acquisition(earlier)
+    repository.register_acquisition(search)
     repository.register_acquisition(current)
-    registration = _final_registration(label, (current,), cited_artifacts=(publication_artifact,))
+    registration = _final_registration(
+        label,
+        (search, current),
+        cited_artifacts=(publication_artifact,),
+    )
 
     assert _register_without_commit(engine, registration) == registration.run
     _assert_final_metadata_absent(engine, registration)
@@ -2135,9 +2534,11 @@ def test_uncited_current_run_publication_is_not_required_in_report_lineage(
     run_id = cast(str, _run_report_values(label)[2]["run_id"])
     publication_artifact, publication_values = _publication_values(label)
     publication = (publication_artifact, cast(PublicationVersionRow, publication_values))
-    acquisition = _acquisition_for_run(label, run_id, publication=publication)
-    repository.register_acquisition(acquisition)
-    registration = _final_registration(label, (acquisition,))
+    search = _acquisition_for_run(f"{label}:search", run_id)
+    fetch = _acquisition_for_run(f"{label}:fetch", run_id, publication=publication)
+    repository.register_acquisition(search)
+    repository.register_acquisition(fetch)
+    registration = _final_registration(label, (search, fetch))
 
     assert _register_without_commit(engine, registration) == registration.run
     _assert_final_metadata_absent(engine, registration)

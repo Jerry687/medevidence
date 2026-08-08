@@ -1157,9 +1157,14 @@ class PersistenceRepository:
     @staticmethod
     def _validate_acquisition_outcome(registration: AcquisitionRegistration) -> None:
         manifest = registration.manifest
-        publication_count = len(registration.publications)
-        if publication_count > 100 or publication_count != manifest.record_count:
-            raise ValueError("publication cardinality differs from validated manifest")
+        PersistenceRepository._validate_operation_cardinality(
+            operation=registration.attempt["operation"],
+            manifest=manifest,
+            publications=registration.publications,
+            publication_memberships=registration.publication_memberships,
+            lineage=registration.lineage,
+            error_type=ValueError,
+        )
         if manifest.coverage_status == "complete":
             if manifest.truncated or manifest.pages_completed != 1 or not manifest.files:
                 raise ValueError("complete coverage requires retained terminal evidence")
@@ -1176,6 +1181,38 @@ class PersistenceRepository:
             200 <= item.http_status <= 299 and item.byte_size > 0 for item in manifest.files
         ):
             raise ValueError("matches requires nonempty retained HTTP 2xx evidence")
+
+    @staticmethod
+    def _validate_operation_cardinality(
+        *,
+        operation: str,
+        manifest: ValidatedManifest,
+        publications: tuple[PublicationVersionRow, ...],
+        publication_memberships: tuple[SourceSnapshotPublicationRow, ...],
+        lineage: tuple[ArtifactLineageRow, ...],
+        error_type: type[ValueError] | type[PersistenceIntegrityError],
+    ) -> None:
+        publication_lineage = tuple(
+            row
+            for row in lineage
+            if row["lineage_type"]
+            in {"publication_to_manifest", "acquisition_envelope_to_publication"}
+            or row["parent_artifact_kind"] == "publication_record"
+            or row["child_artifact_kind"] == "publication_record"
+        )
+        if operation == "search":
+            if publications or publication_memberships or publication_lineage:
+                raise error_type("search acquisition must not persist publication metadata")
+            return
+        if operation != "fetch":
+            raise error_type("acquisition operation is not search or fetch")
+        publication_count = len(publications)
+        if (
+            publication_count > 1
+            or publication_count != manifest.record_count
+            or len(publication_memberships) != publication_count
+        ):
+            raise error_type("fetch publication cardinality differs from validated manifest")
 
     @staticmethod
     def _validate_acquisition_artifacts(registration: AcquisitionRegistration) -> None:
@@ -1803,6 +1840,14 @@ class PersistenceRepository:
             )
         except ValueError as error:
             raise PersistenceIntegrityError(str(error)) from error
+        self._validate_operation_cardinality(
+            operation=metadata.attempt["operation"],
+            manifest=replay.manifest,
+            publications=replay.publications,
+            publication_memberships=replay.publication_memberships,
+            lineage=replay.lineage,
+            error_type=PersistenceIntegrityError,
+        )
         expected_warnings = tuple(
             SnapshotWarningRow(
                 snapshot_id=snapshot_id,

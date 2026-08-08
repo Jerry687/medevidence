@@ -14,6 +14,7 @@ CONNECTOR_ROOT = Path("src/medevidence/connectors")
 INGESTION_ROOT = Path("src/medevidence/ingestion")
 PERSISTENCE_ROOT = Path("src/medevidence/persistence")
 TOOLS_ROOT = Path("src/medevidence/tools")
+API_ROOT = Path("src/medevidence/api")
 PROHIBITED_TOKENS = {
     "alembic",
     "fastapi",
@@ -173,6 +174,33 @@ def test_tools_import_only_domain_and_consumer_owned_tool_modules() -> None:
     assert violations == []
 
 
+def test_api_imports_no_concrete_connector_storage_or_persistence_adapter() -> None:
+    forbidden = {
+        "medevidence.connectors",
+        "medevidence.ingestion",
+        "medevidence.persistence",
+        "sqlalchemy",
+        "psycopg",
+    }
+    violations: list[str] = []
+    for path in sorted(API_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                if node.level > 0:
+                    continue
+                modules = {node.module or ""}
+            else:
+                continue
+            for module in modules:
+                if any(module == item or module.startswith(f"{item}.") for item in forbidden):
+                    violations.append(f"{path}:{node.lineno}:{module}")
+
+    assert violations == []
+
+
 @pytest.mark.parametrize(
     "module",
     [
@@ -191,6 +219,7 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
     assert project["project"]["dependencies"] == [
         "alembic==1.18.5",
         "defusedxml==0.7.1",
+        "fastapi==0.141.1",
         "httpx==0.28.1",
         "psycopg[binary]==3.3.4",
         "pydantic==2.13.4",
@@ -205,3 +234,6 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
         "pytest-socket==0.8.0",
         "ruff==0.15.22",
     }
+    lock_text = Path("uv.lock").read_text(encoding="utf-8").casefold()
+    assert 'name = "uvicorn"' not in lock_text
+    assert not any(item.startswith("fastapi[") for item in project["project"]["dependencies"])
