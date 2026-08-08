@@ -187,8 +187,9 @@ hosted `compose-config` and `windows-quality` checks succeeded.
 - The implementation is committed, pushed, and green in Draft PR `#6`, but it
   is not merged or integrated into approved `main`.
 
-Manual release review should confirm Draft PR `#6` still points to
-`2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`, both hosted checks remain green,
+Manual release review should confirm Draft PR `#6` points to
+`82eebbeb00b189765f9ea3a5f254a20f6aa73a0c`, whose parent implementation commit
+is `2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`; both hosted checks remain green,
 and merge/integration receive separate Owner authorization. Live PubMed remains
 a separate opt-in gate.
 
