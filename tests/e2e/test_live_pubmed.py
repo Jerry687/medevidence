@@ -55,8 +55,6 @@ from medevidence.ingestion.contracts import (
 from medevidence.ingestion.snapshots import INITIAL_FREE_SPACE_FLOOR_BYTES, SnapshotStore
 from medevidence.tools.pubmed import build_pubmed_query, query_identity
 
-pytestmark = [pytest.mark.live_api]
-
 PUBMED_ORIGIN = "https://eutils.ncbi.nlm.nih.gov"
 PUBMED_ESEARCH_PATH = "/entrez/eutils/esearch.fcgi"
 PUBMED_EFETCH_PATH = "/entrez/eutils/efetch.fcgi"
@@ -670,8 +668,12 @@ def test_redacted_acceptance_shape_is_constructible_without_live_request(tmp_pat
     assert json.loads(path.read_text(encoding="utf-8"))["fetch"]["status"] == "not_executed"
 
 
+@pytest.mark.live_api
 @pytest.mark.enable_socket
-def test_live_pubmed_one_page_one_record() -> None:
+def test_live_pubmed_one_page_one_record(request: pytest.FixtureRequest) -> None:
+    marker_expression = request.config.getoption("markexpr") or ""
+    if re.search(r"(?<![\w])live_api(?![\w])", marker_expression) is None:
+        pytest.skip("live PubMed requires explicit -m live_api marker selection")
     if os.environ.get("MEDEVIDENCE_RUN_LIVE_PUBMED") != "1":
         pytest.skip("live PubMed requires explicit Owner-run opt-in")
     email = os.environ.get("NCBI_EMAIL")

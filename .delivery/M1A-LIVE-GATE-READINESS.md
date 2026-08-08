@@ -10,7 +10,8 @@ ADR-009 §14 and the current `tests/e2e/test_live_pubmed.py` define a separate
 single-shot gate for the bounded PubMed smoke query. The gate remains disabled
 unless all of the following are true:
 
-- the `live_api` marker is selected;
+- the `-m live_api` pytest marker expression is explicitly selected (the live
+  test also carries the `live_api` marker);
 - `MEDEVIDENCE_RUN_LIVE_PUBMED=1` is explicitly supplied;
 - the Owner supplies a nonblank `NCBI_EMAIL`;
 - `MEDEVIDENCE_LIVE_SNAPSHOT_ROOT` resolves outside the Git repository;
