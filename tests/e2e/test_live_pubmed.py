@@ -63,10 +63,15 @@ SUMMARY_SCHEMA_VERSION = "1.0"
 CONNECTOR_VERSION = "m1a-002"
 RETENTION_POLICY_ID = "M1A-LIVE-RETENTION-v1"
 _REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_LIVE_MARKER_PATTERN = re.compile(r"(?<![\w])live_api(?![\w])")
 
 
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _live_marker_selected(marker_expression: str) -> bool:
+    return _LIVE_MARKER_PATTERN.search(marker_expression) is not None
 
 
 def _assert_outside_git(root: Path) -> None:
@@ -396,6 +401,12 @@ def test_live_gate_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> No
     assert os.environ.get("MEDEVIDENCE_RUN_LIVE_PUBMED") != "1"
 
 
+def test_live_gate_requires_explicit_marker_selection() -> None:
+    assert not _live_marker_selected("")
+    assert _live_marker_selected("live_api")
+    assert _live_marker_selected("live_api and not slow")
+
+
 def test_live_gate_uses_exact_frozen_query_and_limits() -> None:
     request = ResearchPubMedApiRequest.model_validate_json(json.dumps(REQUEST_EXAMPLE))
     catalog = load_production_catalog()
@@ -672,7 +683,7 @@ def test_redacted_acceptance_shape_is_constructible_without_live_request(tmp_pat
 @pytest.mark.enable_socket
 def test_live_pubmed_one_page_one_record(request: pytest.FixtureRequest) -> None:
     marker_expression = request.config.getoption("markexpr") or ""
-    if re.search(r"(?<![\w])live_api(?![\w])", marker_expression) is None:
+    if not _live_marker_selected(marker_expression):
         pytest.skip("live PubMed requires explicit -m live_api marker selection")
     if os.environ.get("MEDEVIDENCE_RUN_LIVE_PUBMED") != "1":
         pytest.skip("live PubMed requires explicit Owner-run opt-in")

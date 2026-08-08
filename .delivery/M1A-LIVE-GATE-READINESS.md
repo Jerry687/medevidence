@@ -2,7 +2,7 @@
 
 Updated: `2026-08-08`
 
-Status: **CANDIDATE - offline constructibility and independent review passed; final audit pending**
+Status: **CANDIDATE - offline constructibility validated; post-remediation PR-head review and final audit pending**
 
 ## Frozen gate
 
@@ -76,8 +76,9 @@ format, MyPy, diff-check, and changed-path checks. No live acceptance result is
 claimed here. The focused suite completed with `43 passed, 1 skipped`; the
 full offline unit/contract suite completed with `713 passed` and 79% reported
 coverage. Ruff, format, MyPy, lock, diff-check, exact baseline/ancestor, and
-authorized-path checks passed. Independent review returned `PASS` with P0 0 /
-P1 0 / P2 0; terminal audit remains pending.
+authorized-path checks passed. The earlier worktree review passed before the
+marker-gate remediation; post-remediation PR-head review and terminal audit
+remain pending.
 
 ## Owner gate still required
 

@@ -257,10 +257,10 @@ Recommended next action: independent re-review and terminal audit, then on PASS 
 
 ```text
 Task: M1A-OFFLINE-INTEGRATION-RECONCILIATION-AND-LIVE-READINESS
-Status: M1A_OFFLINE_INTEGRATED; LIVE_GATE_NOT_RUN; focused/full offline validation PASS; independent review PASS; terminal audit pending
+Status: M1A_OFFLINE_INTEGRATED; LIVE_GATE_NOT_RUN; focused/full offline validation PASS; post-remediation PR-head review and terminal audit pending
 Baseline: local main, cached origin/main, and live origin/main resolved to 47504a4016f968ed0a0dd10e4280b1a957c15461 at preflight
 Integration: PR #7 merged with merge-commit semantics at 47504a4016f968ed0a0dd10e4280b1a957c15461; M1A-005 implementation/evidence ancestors are recorded in the reconciliation record
 Scope: authorized delivery/readiness records and conditional tests/e2e/test_live_pubmed.py only; no production source, dependency, schema, or public-interface change
 Network: no PubMed/NCBI/DailyMed/FAERS request; the live gate remains disabled by default
-Next action: terminal evidence audit, then the authorized GitHub lifecycle only if every gate passes
+Next action: post-remediation PR-head review, terminal evidence audit, then the authorized GitHub lifecycle only if every gate passes
 ```

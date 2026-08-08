@@ -3,7 +3,7 @@
 - Review reference: `M1A-LIVE-GATE-READINESS-001`
 - Work item: `M1A-OFFLINE-INTEGRATION-RECONCILIATION-AND-LIVE-READINESS`
 - Baseline: `47504a4016f968ed0a0dd10e4280b1a957c15461`
-- Review state: **INDEPENDENT REVIEW PASS - terminal audit pending**
+- Review state: **POST-REMEDIATION PR-HEAD REVIEW PENDING**
 - Live medical-source access: **NOT RUN**
 
 ## Review scope
@@ -35,9 +35,9 @@ credential, header, or source payload is placed in a Git-tracked summary.
 
 ## Decision
 
-Independent review returned `PASS` with P0 0 / P1 0 / P2 0 after fresh focused
-no-live validation, full sockets-disabled offline validation, and review of the
-actual diff and executable behavior. Focused validation completed with
-`43 passed, 1 skipped`; full offline unit/contract validation completed with
-`713 passed`; and no medical-source request occurred. Terminal evidence audit
-is still required. No live acceptance result is claimed.
+The earlier independent review passed before the explicit marker-selection
+remediation. The post-remediation PR-head review and terminal evidence audit
+must complete against the final pushed head. Fresh focused validation completed
+with `44 passed, 1 skipped`; full offline unit/contract validation completed
+with `713 passed`; and no medical-source request occurred. No live acceptance
+result is claimed.

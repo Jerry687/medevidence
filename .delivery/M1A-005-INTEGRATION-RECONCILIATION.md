@@ -2,7 +2,7 @@
 
 Updated: `2026-08-08`
 
-Status: **CANDIDATE - offline validation and independent review passed; terminal audit pending**
+Status: **CANDIDATE - post-remediation PR-head review and terminal audit pending**
 
 Branch at reconciliation: `docs/m1a-offline-integration-live-readiness`
 
@@ -84,9 +84,10 @@ git diff --check
   made.
 
 The live test itself must remain unexecuted. The final handoff must record
-fresh results for each command, exact changed paths, and the independent
-review and terminal evidence decisions. The independent review returned
-`PASS` with P0 0 / P1 0 / P2 0; the terminal evidence audit remains pending.
+fresh results for each command, exact changed paths, and the post-remediation
+PR-head review and terminal evidence decisions. The earlier worktree review
+passed before the marker-gate remediation; post-remediation PR-head review and
+terminal audit remain pending.
 
 ## Network and Git boundary
 
