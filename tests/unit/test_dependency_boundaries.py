@@ -12,6 +12,7 @@ import pytest
 DOMAIN_ROOT = Path("src/medevidence/domain")
 CONNECTOR_ROOT = Path("src/medevidence/connectors")
 INGESTION_ROOT = Path("src/medevidence/ingestion")
+PERSISTENCE_ROOT = Path("src/medevidence/persistence")
 PROHIBITED_TOKENS = {
     "alembic",
     "fastapi",
@@ -26,6 +27,7 @@ PROHIBITED_TOKENS = {
     "uvicorn",
 }
 APPROVED_CONNECTOR_THIRD_PARTY_ROOTS = {"defusedxml", "httpx"}
+APPROVED_PERSISTENCE_THIRD_PARTY_ROOTS = {"sqlalchemy"}
 
 
 def _is_approved_connector_import(module: str) -> bool:
@@ -118,6 +120,32 @@ def test_ingestion_imports_only_domain_and_standard_library() -> None:
     assert violations == []
 
 
+def test_persistence_imports_only_approved_inward_layers_and_sqlalchemy() -> None:
+    violations: list[str] = []
+    for path in sorted(PERSISTENCE_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                if node.level > 0:
+                    continue
+                modules = {node.module or ""}
+            else:
+                continue
+            for module in modules:
+                root = module.split(".", maxsplit=1)[0]
+                if (
+                    root not in sys.stdlib_module_names
+                    and root not in APPROVED_PERSISTENCE_THIRD_PARTY_ROOTS
+                    and module != "medevidence.domain"
+                    and not module.startswith("medevidence.domain.")
+                ):
+                    violations.append(f"{path}:{node.lineno}:{module}")
+
+    assert violations == []
+
+
 @pytest.mark.parametrize(
     "module",
     [
@@ -134,9 +162,12 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     assert project["project"]["dependencies"] == [
+        "alembic==1.18.5",
         "defusedxml==0.7.1",
         "httpx==0.28.1",
+        "psycopg[binary]==3.3.4",
         "pydantic==2.13.4",
+        "SQLAlchemy==2.0.51",
     ]
     assert set(project["dependency-groups"]["dev"]) == {
         "coverage==7.15.2",

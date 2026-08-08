@@ -37,6 +37,10 @@ $hasAcquisitionRecord = (
     -not [string]::IsNullOrWhiteSpace($AcquisitionRecordPath)
 )
 $candidatePaths = @(
+    "alembic.ini",
+    "alembic/env.py",
+    "alembic/script.py.mako",
+    "alembic/versions/20260806_01_m1a_003b_snapshot_metadata.py",
     ".github/workflows/dependency-audit.yml",
     "pyproject.toml",
     "README.md",
@@ -54,6 +58,11 @@ $candidatePaths = @(
     "src/medevidence/domain/reports.py",
     "src/medevidence/domain/scope.py",
     "src/medevidence/domain/sources.py",
+    "src/medevidence/persistence/__init__.py",
+    "src/medevidence/persistence/config.py",
+    "src/medevidence/persistence/models.py",
+    "src/medevidence/persistence/repositories.py",
+    "src/medevidence/persistence/session.py",
     "tests/unit/domain/test_provenance.py",
     "tests/unit/domain/test_publications.py",
     "tests/unit/domain/test_reports.py",
@@ -62,6 +71,10 @@ $candidatePaths = @(
     "tests/unit/connectors/test_pubmed_parsing.py",
     "tests/unit/connectors/test_pubmed_policy.py",
     "tests/unit/test_dependency_boundaries.py",
+    "tests/unit/persistence/test_config.py",
+    "tests/unit/persistence/test_metadata.py",
+    "tests/integration/persistence/test_migrations.py",
+    "tests/integration/persistence/test_snapshot_metadata.py",
     "tests/contract/connectors/test_pubmed_connector.py",
     "tests/contract/test_offline_network.py",
     "tests/fixtures/pubmed/valid_fetch.xml",
@@ -407,6 +420,7 @@ $acquisitionRecordOutputPath = Join-Path (
 ) "network-acquisition-command-record.json"
 $exceptionsPath = Join-Path $resolvedOutput "exceptions.json"
 $reconciliationPath = Join-Path $resolvedOutput "package-reconciliation.json"
+$nativeInventoryPath = Join-Path $resolvedOutput "psycopg-binary-native-libraries.json"
 $manifestPath = Join-Path $resolvedOutput "evidence-manifest.json"
 $helperPath = Join-Path $resolvedOutput "dependency-evidence-helper.py"
 
@@ -464,6 +478,7 @@ APPROVED_SPDX_LICENSE_IDS = {
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "LGPL-3.0-only",
     "MIT",
     "MPL-2.0",
     "PSF-2.0",
@@ -962,6 +977,58 @@ if __name__ == "__main__":
         )
     }
 
+    $psycopgBinaryVersion = Invoke-CheckedCapture `
+        -Command $uvCommand.Source `
+        -Arguments @(
+            "run", "--locked", "--no-sync", "python", "-c",
+            "import importlib.metadata as m; print(m.version('psycopg-binary'))"
+        )
+    if ($psycopgBinaryVersion.Trim() -ne "3.3.4") {
+        throw "psycopg-binary 3.3.4 is required for native-library inventory."
+    }
+    $psycopgBinaryLibraryDirectory = Invoke-CheckedCapture `
+        -Command $uvCommand.Source `
+        -Arguments @(
+            "run", "--locked", "--no-sync", "python", "-c",
+            (
+                "import importlib.metadata as m; " +
+                "print(m.distribution('psycopg-binary').locate_file('psycopg_binary.libs'))"
+            )
+        )
+    $psycopgBinaryLibraryDirectory = $psycopgBinaryLibraryDirectory.Trim()
+    if (-not (Test-Path -LiteralPath $psycopgBinaryLibraryDirectory -PathType Container)) {
+        throw "The psycopg-binary native-library directory is missing."
+    }
+    $nativeLibraries = @(
+        foreach ($libraryName in @("libpq", "libssl", "libcrypto")) {
+            $matches = @(
+                Get-ChildItem -LiteralPath $psycopgBinaryLibraryDirectory -File |
+                Where-Object { $_.Name -match "^$libraryName-.*\.dll$" }
+            )
+            if ($matches.Count -ne 1) {
+                throw "Expected exactly one bundled $libraryName DLL; found $($matches.Count)."
+            }
+            $library = $matches[0]
+            $productVersion = $library.VersionInfo.ProductVersion
+            $fileVersion = $library.VersionInfo.FileVersion
+            if (
+                [string]::IsNullOrWhiteSpace($productVersion) -or
+                [string]::IsNullOrWhiteSpace($fileVersion)
+            ) {
+                throw "Bundled $libraryName DLL does not expose version metadata."
+            }
+            [ordered]@{
+                logical_name = $libraryName
+                file_name = $library.Name
+                product_version = $productVersion
+                file_version = $fileVersion
+                sha256 = (
+                    Get-FileHash -Algorithm SHA256 -LiteralPath $library.FullName
+                ).Hash.ToLowerInvariant()
+            }
+        }
+    )
+
     $reconcileArguments = @(
         "run", "--locked", "--no-sync", "python", $helperPath,
         "reconcile", $Mode,
@@ -1080,6 +1147,28 @@ if __name__ == "__main__":
         )
     }
 
+    $nativeInventory = [ordered]@{
+        schema_version = "1.0"
+        distribution = "psycopg-binary"
+        distribution_version = $psycopgBinaryVersion.Trim()
+        platform = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+        process_architecture = (
+            [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+        )
+        dependency_roles = [ordered]@{
+            sqlalchemy = "production runtime persistence library"
+            alembic = "production schema-migration tooling"
+            psycopg_binary = "production PostgreSQL runtime driver and bundled native libraries"
+        }
+        advisory_status = $advisoryStatus
+        advisory_monitoring_owner = "MedEvidence Project Owner"
+        patch_decision_owner = "MedEvidence Project Owner"
+        libraries = $nativeLibraries
+    }
+    Write-Utf8NoBom -Path $nativeInventoryPath -Content (
+        $nativeInventory | ConvertTo-Json -Depth 10
+    )
+
     $reconciliation = Invoke-CheckedCapture -Command $uvCommand.Source -Arguments (
         $reconcileArguments
     )
@@ -1093,7 +1182,8 @@ if __name__ == "__main__":
         $licensesPath,
         $auditPath,
         $exceptionsPath,
-        $reconciliationPath
+        $reconciliationPath,
+        $nativeInventoryPath
     )
     if ($usingPreservedAuditEvidence) {
         $evidenceFiles += $acquisitionRecordOutputPath
@@ -1340,6 +1430,11 @@ if __name__ == "__main__":
         vulnerability_count = $parsedReconciliation.vulnerability_count
         skipped_package_count = $parsedReconciliation.skipped_package_count
         license_review_counts = $parsedReconciliation.license_review_counts
+        dependency_roles = $nativeInventory.dependency_roles
+        native_library_advisory_monitoring_owner = (
+            $nativeInventory.advisory_monitoring_owner
+        )
+        native_library_patch_decision_owner = $nativeInventory.patch_decision_owner
         evidence_files = $evidenceFileHashes
     }
     if ($usingPreservedAuditEvidence) {
