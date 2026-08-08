@@ -169,3 +169,28 @@ authorized six cycle 4 paths or 21-path candidate. No medical-source access or
 Git mutation occurred. The terminal evidence audit remains **PENDING**. This
 reviewer PASS does not claim terminal-audit PASS, commit, hosted CI, merge,
 approved-`main` integration, or live-source validation.
+
+## Final-byte review, terminal audit, and hosted evidence
+
+- Final-byte candidate identity:
+  `68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`
+- Final-byte independent review: **PASS**
+- Terminal evidence audit: **PASS, P0 0 / P1 0 / P2 0**
+- Staged identity: exact match
+- Implementation commit:
+  `7bd41450cb13d9d118c64e8da51de0e10079bc6b`
+
+The implementation commit was pushed normally to Draft PR
+[#5](https://github.com/Jerry687/medevidence/pull/5), titled
+`M1A-003B: persist snapshot metadata in PostgreSQL`. Hosted CI passed:
+
+- `compose-config`: run `31238530166`, job `93055404634`, 38 seconds;
+- `windows-quality`: run `31238530166`, job `93055404647`, 1 minute 3 seconds;
+  and
+- `dependency-audit`: run `31238530162`, job `93055404624`, 42 seconds.
+
+The historical review failures and remediation trail above remain part of the
+record. No medical-source request occurred. This four-document post-CI evidence
+update follows the implementation commit, so final PR-head review and the
+post-evidence-commit terminal audit remain **PENDING**. PR readiness, merge,
+approved-`main` integration, and `M1A-004` remain **PENDING**.

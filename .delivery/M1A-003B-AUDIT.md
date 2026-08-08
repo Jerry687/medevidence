@@ -2,9 +2,11 @@
 
 - Work item: `M1A-003B`
 - Branch: `feat/m1a-003b-postgres-snapshot-metadata`
-- Approved baseline and current HEAD: `9f326481d13c149e818f77a75de3c53184522f0a`
-- Status: **CYCLE 4 INDEPENDENT REVIEW PASS; TERMINAL AUDIT PENDING**
-- Candidate: uncommitted 21-path worktree rooted at the baseline above
+- Approved baseline: `9f326481d13c149e818f77a75de3c53184522f0a`
+- Implementation commit and pre-evidence HEAD:
+  `7bd41450cb13d9d118c64e8da51de0e10079bc6b`
+- Status: **IMPLEMENTATION COMMIT AND HOSTED CI PASS; POST-EVIDENCE REVIEW/AUDIT PENDING**
+- Candidate: exact 21-path implementation committed on the feature branch
 - Failed reviewed candidate identity:
   `a10b414fc4c2f3473a2bea984215a4bd15f68eb0c7fae7d85611b35cdd4d8c24`
 - Final independently reviewed technical candidate identity:
@@ -13,12 +15,15 @@
   `a8f5b0231a1ac94a41ccf1ba2e64cc1d07bd5998e765fcf2dd0df49f9b671230`
 - Cycle 4 pre-documentation candidate identity:
   `e3482d1a9d923f7bf828a04959fb36c1c0a6b260433feecbfa781c99b98792a6`
+- Final-byte candidate and exact staged identity:
+  `68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`
 
 The initial independent review recorded **P0 0 / P1 3 / P2 1**; later review
-cycles and remediation are preserved below. This record does not claim a
-terminal evidence-audit PASS,
-commit, hosted CI result, merge, approved-`main` integration, or live-source
-validation. The companion contract was bound before implementation to the
+cycles and remediation are preserved below. Final-byte review and the terminal
+evidence audit passed with **P0 0 / P1 0 / P2 0** before the implementation
+commit. This record does not claim final PR-head review, post-evidence-commit
+terminal audit, PR readiness, merge, approved-`main` integration, or
+live-source validation. The companion contract was bound before implementation to the
 137,908-byte external artifact with SHA-256
 `346f95b7d4aba72a9fccad597e684a6faab8f7115ca5272ca326bbece966e10e`.
 The parent freeze SHA-256 was
@@ -153,12 +158,37 @@ collection of 236 cases; and 20 database-independent integration cases, with
 reviewer inspected the root 236/236 PostgreSQL evidence but did not rerun Docker
 or network operations. All 15 protected pre-cycle hashes remained exact, the
 candidate retained the authorized six-path cycle 4 delta and 21-path total
-scope, and no medical-source access or Git mutation occurred. Terminal evidence
-audit remains **PENDING**; this reviewer PASS is not a terminal work-item PASS.
+scope, and no medical-source access or Git mutation occurred. At that review
+point, terminal evidence audit remained **PENDING**; the reviewer PASS alone was
+not a terminal work-item PASS.
+
+## Final-byte audit, implementation commit, and hosted CI
+
+The final-byte candidate identity was
+`68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`.
+Independent final-byte review passed, and the terminal evidence auditor returned
+**PASS, P0 0 / P1 0 / P2 0**. The staged identity matched that exact candidate.
+The implementation was committed as
+`7bd41450cb13d9d118c64e8da51de0e10079bc6b` and pushed normally, without force,
+to Draft PR [#5](https://github.com/Jerry687/medevidence/pull/5), titled
+`M1A-003B: persist snapshot metadata in PostgreSQL`.
+
+Hosted CI passed:
+
+- `compose-config`: run `31238530166`, job `93055404634`, 38 seconds;
+- `windows-quality`: run `31238530166`, job `93055404647`, 1 minute 3 seconds;
+  and
+- `dependency-audit`: run `31238530162`, job `93055404624`, 42 seconds.
+
+No medical-source request occurred. Because this post-CI evidence update changes
+the four documentation records after the implementation commit, final review of
+the resulting PR head and a final terminal audit after the evidence commit remain
+**PENDING**. PR readiness, merge, approved-`main` integration, and `M1A-004`
+authorization or implementation also remain **PENDING**.
 
 ## Exact 21-path scope
 
-The current candidate contains exactly these 21 authorized paths:
+The implementation commit contains exactly these 21 authorized paths:
 
 1. `alembic.ini`
 2. `alembic/env.py`
@@ -182,7 +212,7 @@ The current candidate contains exactly these 21 authorized paths:
 20. `.delivery/M1A-003B-AUDIT.md`
 21. `docs/reviews/M1A-003B-INDEPENDENT-REVIEW-001.md`
 
-No other repository path is part of this candidate.
+No other repository path is part of the implementation commit.
 
 ## Dependency and lock evidence
 
@@ -505,10 +535,12 @@ zero volumes, and only the default `bridge`, `host`, and `none` networks.
   database, network, medical-source, or Git operation.
 - Cycle 3 performed no Git mutation: no stage, commit, push, merge, rebase,
   reset, clean, branch deletion, or remote-state change.
-- Git network activity was limited to the authorized remote-baseline and
-  conflicting-PR queries. No push, merge, rebase, reset, clean, force-push,
-  branch deletion, or remote mutation occurred.
-- No staging or local commit has occurred for this candidate.
+- The exact staged candidate was committed as
+  `7bd41450cb13d9d118c64e8da51de0e10079bc6b` and pushed normally to Draft PR
+  `#5`; no force-push, merge, rebase, reset, clean, branch deletion, or history
+  rewrite occurred.
+- This post-CI evidence-finalization node performed no staging, commit, push,
+  Docker, network, or other Git mutation.
 
 ## Lifecycle gates and remaining risks
 
@@ -520,9 +552,11 @@ zero volumes, and only the default `bridge`, `host`, and `none` networks.
 | Disposable PostgreSQL integration | Cycle 4 PASS: 236/236 in 6.02 seconds; exact container removed and cleanup verified |
 | Remediation | Authorized cycle 4 of 4 implemented, locally validated, and independently reviewed |
 | Independent actual-diff/executable review | **PASS for exact technical candidate `cceaa47edaddccc81e6a41760fc6b9efc1c2d0311ccc2ac9914e15ca13ed8b0f`; P0 0 / P1 0 / P2 0** |
-| Terminal evidence audit | **PENDING** |
-| Local implementation commit | **PENDING** |
-| Draft PR and hosted CI | **PENDING** |
+| Final-byte review and pre-commit terminal evidence audit | **PASS for exact candidate `68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`; P0 0 / P1 0 / P2 0; staged identity exact** |
+| Local implementation commit | **PASS: `7bd41450cb13d9d118c64e8da51de0e10079bc6b`** |
+| Draft PR and hosted CI | **PASS: Draft PR `#5`; compose-config, windows-quality, and dependency-audit jobs passed** |
+| Final PR-head review | **PENDING after the evidence commit** |
+| Final terminal evidence audit | **PENDING after the evidence commit** |
 | Merge and approved-`main` integration | **PENDING** |
 | Live medical-source validation | Not authorized; not run |
 
@@ -532,23 +566,21 @@ Remaining risks:
   production deployment/runtime suitability still requires the later
   deployment-context review; this local slice does not establish a production
   deployment claim.
-- The repository is private and the implementation remains an uncommitted local
-  worktree candidate; no public or hosted reproduction has occurred.
-- The cycle 4 candidate still requires terminal evidence audit despite the
-  completed local offline, PostgreSQL, and independent-review gates.
+- The implementation is committed and hosted CI is green, but the Draft PR has
+  not completed final PR-head review or post-evidence terminal audit.
 - No live medical-source behavior was exercised, by design.
-- The 21-path candidate still requires terminal audit, commit, hosted CI, and
-  integration evidence.
+- PR readiness, merge, approved-`main` integration, and `M1A-004` remain
+  pending.
 
 ## Manual verification
 
-1. Recompute the exact 21-path scope against the allowlist above.
-2. Reconcile the independent-review reproductions and root PostgreSQL evidence
-   against the exact reviewed technical candidate.
-3. Reconcile the two dependency manifests without treating the offline
-   inventory as a second advisory lookup.
-4. Run the terminal evidence audit against the stable final documentation
-   candidate identity.
+1. Verify the evidence commit changes only the four authorized documentation
+   paths.
+2. Confirm Draft PR `#5` points at the evidence commit and all three hosted jobs
+   remain green.
+3. Run final independent review of the resulting PR head.
+4. Run the final terminal evidence audit only after the documentation bytes are
+   stable.
 
 ## Owner interview questions
 

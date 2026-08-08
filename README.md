@@ -55,8 +55,8 @@ and the offline unit/contract suite (424 passed, one expected warning, 86%
 coverage). The earlier failed run remains part of the record. Evidence
 reconciliation and the remaining PR lifecycle gates are incomplete.
 
-No PostgreSQL persistence adapter is approved or integrated yet. An
-uncommitted M1A-003B persistence candidate exists locally, but independent
+No PostgreSQL persistence adapter is integrated into `main` yet. The M1A-003B
+persistence implementation is committed on its feature branch, but independent
 review of candidate
 `a10b414fc4c2f3473a2bea984215a4bd15f68eb0c7fae7d85611b35cdd4d8c24`
 failed with P0 0 / P1 3 / P2 1. Remediation cycle 2 passed its 479-test
@@ -79,7 +79,14 @@ MyPy. A fresh authorized dependency audit found no known vulnerabilities in
 the unchanged 58-package external graph. Fresh independent review of exact
 technical candidate
 `cceaa47edaddccc81e6a41760fc6b9efc1c2d0311ccc2ac9914e15ca13ed8b0f`
-passed with P0 0 / P1 0 / P2 0. Terminal evidence audit remains pending.
+passed with P0 0 / P1 0 / P2 0. Final-byte review and terminal evidence audit
+also passed exact candidate
+`68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`
+with P0 0 / P1 0 / P2 0. Implementation commit
+`7bd41450cb13d9d118c64e8da51de0e10079bc6b` was pushed normally to Draft PR
+[#5](https://github.com/Jerry687/medevidence/pull/5), and all three hosted CI
+jobs passed. Final PR-head review and post-evidence-commit terminal audit remain
+pending; the PR is not ready or merged.
 No application tool, report service, or FastAPI business endpoint exists.
 DailyMed, FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP,
 export, and HITL capabilities remain planned.
@@ -146,7 +153,7 @@ M1A direct dependency pins. M1A-001B added and locked
 `pydantic==2.13.4` plus the development-only `pip-audit==2.10.1`. M1A-002 adds
 the approved `httpx==0.28.1` and `defusedxml==0.7.1` production pins. It uses a
 small explicit retry loop, so the approved optional Tenacity pin is not added.
-The uncommitted M1A-003B candidate adds the approved runtime pins
+The M1A-003B implementation commit adds the approved runtime pins
 `SQLAlchemy==2.0.51` and `psycopg[binary]==3.3.4`, plus the approved production
 schema-migration tooling pin `alembic==1.18.5`, and a complete 59-package lock.
 The dependency evidence inventories the native `psycopg-binary` payload;
@@ -184,7 +191,7 @@ reviewed and merged. M1A-002 is locally integrated into the approved `main`
 baseline and is limited to the bounded connector plus its historical offline
 evidence. Live NCBI/TLS behavior remains intentionally unverified. `M1A-003A`
 is integrated in baseline `9f326481d13c149e818f77a75de3c53184522f0a`.
-`M1A-003B` remains an uncommitted 21-path local candidate. Its first
+`M1A-003B` is committed as an exact 21-path feature-branch implementation. Its first
 independent implementation review failed with three P1 and one P2 findings;
 the earlier 185-case PostgreSQL run did not execute every claimed repository
 path. Cycle 2 removes the concrete ingestion dependency, strengthens complete
@@ -216,9 +223,18 @@ Fresh independent review of exact technical candidate
 `cceaa47edaddccc81e6a41760fc6b9efc1c2d0311ccc2ac9914e15ca13ed8b0f`
 then passed with P0 0 / P1 0 / P2 0 after reproducing the missing-attempt,
 mismatched-reference, and cross-run-publication failure paths with zero final
-writes. Terminal evidence audit, local commit, PR/hosted CI, merge, and
-approved-`main` integration remain pending. `M1A-004` onward remains
-unimplemented.
+writes. Final-byte review and the terminal evidence audit passed exact candidate
+`68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`
+with P0 0 / P1 0 / P2 0, and its staged identity was exact. Implementation
+commit `7bd41450cb13d9d118c64e8da51de0e10079bc6b` was pushed normally to Draft
+PR [#5](https://github.com/Jerry687/medevidence/pull/5), titled
+`M1A-003B: persist snapshot metadata in PostgreSQL`. Hosted CI passed
+compose-config run `31238530166` job `93055404634` in 38 seconds,
+windows-quality in the same run job `93055404647` in 1 minute 3 seconds, and
+dependency-audit run `31238530162` job `93055404624` in 42 seconds. Final
+PR-head review, final terminal audit after the evidence
+commit, PR readiness, merge, and approved-`main` integration remain pending.
+`M1A-004` onward remains unimplemented.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the
