@@ -2,31 +2,29 @@
 
 - Work item: `M1A-005`
 - Branch: `feat/m1a-005-fastapi-acceptance`
-- Approved baseline and current HEAD:
+- Approved `main` baseline:
   `14a38d48416e8a4b63fe72b91ceb083f1d895473`
-- Candidate state: uncommitted and unstaged
-- Initial reviewed candidate:
-  `sha256:0813bc6c42d5dee434335749f018598d716cf8be38eb9fe7e0c40421be4449ed`
-- Initial independent review: **FAIL — P0 0 / P1 2 / P2 2**
-- Cycle-2 candidate:
-  `sha256:ebf5d7c7994dc6ae40768f44852808bd6f8c4950c58b3d9640ff51da91e5b5c6`
-- Cycle-2 independent review: **FAIL — shared fallback correlation remained**
-- Cycle-3 reviewed candidate:
-  `sha256:295c8401b9aa4f44038f93c16c8425c5a6266e6949016656e33f4aebd3020045`
-- Cycle-3 independent review: **PASS — P0 0 / P1 0 / P2 0**
-- Terminal evidence audit: **PENDING**
-- Hosted CI and integrated-main verification: **NOT RUN**
-- Live PubMed acceptance: **NOT AUTHORIZED AND NOT RUN**
+- Implementation commit and PR head:
+  `5a75b96a034abbaf4769f9dfde93ea3bb154567e`
+- Draft PR: [#7](https://github.com/Jerry687/medevidence/pull/7),
+  `M1A-005: expose and validate the PubMed vertical slice`
+- Hosted checks: **PASS** — `compose-config`, `dependency-audit`, and
+  `windows-quality`
+- Independent PR-head review: **PASS — P0 0 / P1 0 / P2 0**
+- Terminal evidence audit: **PASS — P0 0 / P1 0 / P2 0**
+- Lifecycle state: **COMMITTED, PUSHED, DRAFT PR; NOT MERGED OR INTEGRATED**
+- Live PubMed acceptance: **NOT RUN**
 
 ## Owner authority and dependency decision
 
 The controlling artifact is
 `C:\Users\BoqiNiu\Downloads\M1A-005-API-FREEZE-v1.md`: 32,586 bytes,
 SHA-256 `27da352fd395833de78d8eb6f9222d84e7410c02f4efd7785dc4398ec9c46b71`,
-UTF-8, LF-only, with its required terminal marker. Its status is
+UTF-8/LF with terminal marker `READY_FOR_M1A005_IMPLEMENTATION\n`, status
 **OWNER APPROVED — IMPLEMENTATION AUTHORIZED**. It supersedes ADR-009's older
-provisional `fastapi==0.140.0` pin for M1A-005 and explicitly authorizes only
-`fastapi==0.141.1`, without FastAPI extras or Uvicorn. ADR-009 was not changed.
+provisional `fastapi==0.140.0` pin for this work item and explicitly authorizes
+only `fastapi==0.141.1`, without FastAPI extras or Uvicorn. ADR-009 was not
+changed.
 
 The Owner amendment artifact is 12,490 bytes with SHA-256
 `9f69433d1497e7631709171526472584da250c118bf12fb9b7fd9077210447f7`.
@@ -35,7 +33,7 @@ two added persistence paths, producing the amended exact 26-path allowlist.
 
 ## Scope and design
 
-The candidate exposes only `POST /v1/research/pubmed` through an explicit
+The implementation exposes only `POST /v1/research/pubmed` through an explicit
 FastAPI application factory. It accepts the closed request contract, resolves
 only the frozen catalog, delegates to the merged M1A-004 service, warning-safely
 revalidates the returned `ResearchReport`, and emits fixed redacted versioned
@@ -55,10 +53,8 @@ from fetch publication cardinality. Search owns zero publication rows,
 memberships, and publication lineage. Fetch continues to require publication
 count equal to manifest count equal to membership count, bounded to one.
 
-## Exact scope
-
-The candidate is bounded to the amended exact 26-path allowlist: the original
-24 freeze paths plus:
+The implementation remains bounded to the amended exact 26-path allowlist: the
+original 24 freeze paths plus:
 
 1. `src/medevidence/persistence/repositories.py`
 2. `tests/integration/persistence/test_snapshot_metadata.py`
@@ -66,7 +62,27 @@ The candidate is bounded to the amended exact 26-path allowlist: the original
 No schema, migration, domain contract, M1A-004 public contract, connector,
 ingestion implementation, workflow, or medical-source authority changed.
 
-## Cycle-3 evidence bound to the reviewed candidate
+## Historical review ledger
+
+- Initial candidate
+  `sha256:0813bc6c42d5dee434335749f018598d716cf8be38eb9fe7e0c40421be4449ed`:
+  **FAIL — P0 0 / P1 2 / P2 2**.
+- Cycle-2 candidate
+  `sha256:ebf5d7c7994dc6ae40768f44852808bd6f8c4950c58b3d9640ff51da91e5b5c6`:
+  **FAIL** because request-ID factory failures shared a hard-coded fallback
+  correlation.
+- Cycle-3 candidate
+  `sha256:295c8401b9aa4f44038f93c16c8425c5a6266e6949016656e33f4aebd3020045`:
+  independent review **PASS — P0 0 / P1 0 / P2 0**.
+- Cycle-4 evidence candidate
+  `sha256:cf1a65aecae71dbd8f35b56d29adb90ae43152512985ec39a2475665601053cb`
+  was committed as
+  `5a75b96a034abbaf4769f9dfde93ea3bb154567e` and pushed to Draft PR `#7`.
+
+The failures above are preserved as historical evidence and are not current
+PR-head findings.
+
+## Validation evidence bound to the reviewed implementation
 
 - focused M1A-005 unit/contract/e2e selection excluding live: 46 passed in
   0.55 seconds;
@@ -76,8 +92,8 @@ ingestion implementation, workflow, or medical-source authority changed.
   exit 0;
 - combined PostgreSQL repository/API gate: 254 passed in 7.30 seconds;
   cleanup residue was 0 containers / 0 networks / 0 volumes;
-- Docker used the cached approved PostgreSQL 18.4-bookworm digest with
-  `--pull never`;
+- Docker used the cached approved PostgreSQL image with `--pull never`:
+  `docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296`;
 - normalized OpenAPI fixture: 40,511 bytes, SHA-256
   `0d735acbbb1503dcc3235a37193b9d383cae08b8dc4fdb3b0e42616982ff028a`;
 - dependency evidence: 61 external packages, 61 declared licenses, zero
@@ -89,29 +105,32 @@ ingestion implementation, workflow, or medical-source authority changed.
   `756c21b38536114807daee5dcb5e8716e16ab145742ba38739aeb83fc5cf9827`;
 - dependency evidence directory:
   `C:\Users\BoqiNiu\AppData\Local\Temp\medevidence-m1a005-dependency-audit-cycle3-20260808`;
-- `git diff --check`: exit 0; exact scope was 26 changed paths, 26 allowed,
-  zero unexpected, and zero missing.
+- implementation scope: 26 changed paths, 26 allowed, zero unexpected, and
+  zero missing.
 
-The independent reviewer inspected exact cycle-3 candidate
-`sha256:295c8401b9aa4f44038f93c16c8425c5a6266e6949016656e33f4aebd3020045`
-and returned **PASS — P0 0 / P1 0 / P2 0**. This evidence-only cycle reconciles
-the ledgers to that reviewed state. Terminal evidence audit remains pending.
+Hosted PR-head `compose-config`, `dependency-audit`, and `windows-quality`
+checks passed at commit
+`5a75b96a034abbaf4769f9dfde93ea3bb154567e`. Independent PR-head review and
+terminal evidence audit each returned **PASS — P0 0 / P1 0 / P2 0**.
 
 ## Network and Git boundary
 
 No PubMed, NCBI, DailyMed, FAERS, or other medical-source request was made.
-PostgreSQL traffic was loopback-only. Dependency advisory traffic was limited
-to the approved PyPI vulnerability service and is not medical-source evidence.
-No commit, stage, push, PR, merge, fetch, rebase, reset, clean, or remote-state
-operation was performed.
+PostgreSQL validation traffic was loopback-only. Dependency advisory traffic
+was limited to the approved vulnerability service and is not medical-source
+evidence.
+
+The implementation commit, branch push, and Draft PR creation occurred before
+this evidence-finalization cycle. This cycle performs no stage, commit, push,
+PR mutation, merge, fetch, rebase, reset, clean, or other remote-state change.
 
 ## Remaining gates and risks
 
-- Independent actual-diff review passed; terminal evidence audit is pending.
-- Hosted CI, commit identity, PR state, and integrated-main verification do not
-  yet exist.
-- The implemented disabled live test remains a separate Owner-authorized gate
-  and was not collected or executed.
+- Draft PR `#7` is not merged, and M1A-005 is not integrated into `main`.
+- These final ledger updates remain local and uncommitted until separately
+  authorized for commit and push.
+- The disabled live PubMed test remains a separate Owner-authorized gate and
+  was not collected or executed.
 - FastAPI's TestClient emits an upstream Starlette deprecation warning; no
   unauthorized dependency was added to suppress it.
 

@@ -9,9 +9,11 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 **The approved `main` baseline is
 `14a38d48416e8a4b63fe72b91ceb083f1d895473` and includes the reviewed,
-merged M1A-004 PubMed tools/report slice. M1A-005 is an uncommitted local
-candidate on `feat/m1a-005-fastapi-acceptance`; it is not yet independently
-reviewed, audited, pushed, or merged.**
+merged M1A-004 PubMed tools/report slice. M1A-005 is committed at
+`5a75b96a034abbaf4769f9dfde93ea3bb154567e` and pushed to Draft PR
+[#7](https://github.com/Jerry687/medevidence/pull/7). Its hosted checks,
+independent PR-head review, and terminal audit passed; it is not merged or
+integrated, and live PubMed acceptance was not run.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -49,11 +51,12 @@ residue. Historical failed review candidates and the earlier 193/194 and
 they are not the current baseline state.
 
 M1A-004's PubMed application tools and deterministic draft-report behavior are
-merged. The M1A-005 candidate adds the single versioned
+merged. The M1A-005 implementation adds the single versioned
 `POST /v1/research/pubmed` FastAPI operation, a fixed embedded catalog, closed
 request/error contracts, an explicit composition boundary, normalized OpenAPI
 evidence, and disabled-by-default live-smoke code. Ordinary validation remains
-offline, and the candidate is not a completed or integrated release state.
+offline. The implementation is committed and pushed in Draft PR `#7`, with
+hosted checks and final review/audit green, but it is not merged or integrated.
 DailyMed, FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP,
 export, and HITL capabilities remain planned.
 
@@ -180,9 +183,13 @@ content. Its tests are offline and injectable; the implementation has not
 contacted PubMed/NCBI or run Docker. Hosted `compose-config` and
 `windows-quality` succeeded, and final PR-head review and terminal audit both
 returned PASS with P0 0 / P1 0 / P2 0. The reviewed M1A-004 change is merged in
-approved baseline `14a38d48416e8a4b63fe72b91ceb083f1d895473`. M1A-005 remains
-an uncommitted local candidate until its offline, PostgreSQL,
-independent-review, and terminal-audit gates are complete.
+approved baseline `14a38d48416e8a4b63fe72b91ceb083f1d895473`. M1A-005 is
+committed at `5a75b96a034abbaf4769f9dfde93ea3bb154567e` and pushed to Draft PR
+[#7](https://github.com/Jerry687/medevidence/pull/7), titled
+`M1A-005: expose and validate the PubMed vertical slice`. Hosted
+`compose-config`, `dependency-audit`, and `windows-quality` passed, and final
+PR-head review and terminal audit both returned PASS with P0 0 / P1 0 / P2 0.
+It is not merged or integrated, and live PubMed acceptance was not run.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the
