@@ -7,14 +7,12 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**M1A-002 is locally integrated into the approved `main` baseline. M1A-003A
-immutable snapshot/manifest work is locally committed at
-`c3d724b2097c8df1249b217f610a78291039edbb` on
-`feat/m1a-003a-snapshot-manifests`. The cycle-4 LF remediation is committed at
-`52e71f0802e31580304980f487eba3c23f57db41`, pushed to PR `#4`, and hosted
-rerun `31147466248` passes. Evidence reconciliation review/audit, its later
-commit/push and hosted rerun, PR readiness, merge, and approved-`main`
-integration remain pending.**
+**The approved `main` baseline remains the merged M1A-003B identity
+`5102d56c73b6714d3608a93a47aa31f70ffa1097`. PR `#4` (M1A-003A) and PR `#5`
+(M1A-003B) are merged and integrated. M1A-004 is committed at
+`2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`, pushed, and hosted in green Draft
+PR [#6](https://github.com/Jerry687/medevidence/pull/6); final PR-head review
+and terminal audit passed, but M1A-004 is not merged or integrated.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -27,7 +25,9 @@ M0 and `ME-000A` are complete and approved. The approved baselines are:
 - M1A-001B `main` merge commit:
   `0bf3d58d7411fffa1873a6f2adab8ee73c23ce88`; and
 - M1A-002 approved local `main` identity:
-  `4f39ed3d27438e69a4a5a30ff6be499d247541c1`.
+  `4f39ed3d27438e69a4a5a30ff6be499d247541c1`; and
+- merged M1A-003B `main` identity:
+  `5102d56c73b6714d3608a93a47aa31f70ffa1097`.
 
 The original independent M0 review returned **FAIL**. The frozen remediation
 later received an unconditional independent **PASS**, and the Project Owner
@@ -38,56 +38,19 @@ development-quality tools, Windows validation scripts, loopback-only
 PostgreSQL and Qdrant Compose infrastructure contracts, the two-job CI
 foundation, and strict source-neutral M1A domain contracts for research scope,
 planning/outcomes, provenance, publications/status, claims, citations, and
-draft reports. The approved local `main` baseline also contains a synchronous
-bounded PubMed ESearch/EFetch connector with hardened XML parsing and
-deterministic offline HTTP transport contracts. The locally committed
-M1A-003A feature-branch implementation adds typed journal contracts, immutable
-exact-byte raw snapshot storage, canonical manifest construction, and replay
-integrity checks. Its terminal implementation review and pre-commit evidence
-audit passed. Hosted PR run `31146015339` passed Compose, Ruff, format, and
-MyPy, but Windows tests reported 422 passed and 2 failed because Git checked
-the canonical manifest fixture out with CRLF. Cycle 4 added the exact LF
-checkout rule in remediation commit `52e71f0`. A fresh
-`core.autocrlf=true` clone verified the 1,155-byte LF-only fixture and the two
-formerly failing tests passed 2/2. Hosted rerun `31147466248` passed
-Compose-config (114 cases), Ruff, format (32 files), MyPy (17 source files),
-and the offline unit/contract suite (424 passed, one expected warning, 86%
-coverage). The earlier failed run remains part of the record. Evidence
-reconciliation and the remaining PR lifecycle gates are incomplete.
+draft reports. The approved `main` baseline also contains the synchronous
+bounded PubMed ESearch/EFetch connector, immutable exact-byte snapshots and
+canonical manifests, and the PostgreSQL metadata adapter. PR `#4` and PR `#5`
+are merged and integrated. M1A-003B's integrated gates passed 532 offline
+unit/contract tests and 236 PostgreSQL integration tests with zero Docker
+residue. Historical failed review candidates and the earlier 193/194 and
+218/219 PostgreSQL runs remain preserved in their review and delivery records;
+they are not the current baseline state.
 
-No PostgreSQL persistence adapter is integrated into `main` yet. The M1A-003B
-persistence implementation is committed on its feature branch, but independent
-review of candidate
-`a10b414fc4c2f3473a2bea984215a4bd15f68eb0c7fae7d85611b35cdd4d8c24`
-failed with P0 0 / P1 3 / P2 1. Remediation cycle 2 passed its 479-test
-initial offline unit/contract gate. Its first expanded PostgreSQL run passed
-193/194 and exposed a capacity-versus-conflict classification defect. After the
-bounded fix, the final offline suite passed 531 tests at 82% coverage and the
-same-lifecycle PostgreSQL rerun passed 193/193. Fresh independent review of
-candidate `517271d6687541e9774c9a221416998e682e3eca46952ffc21e8238c68cd6b7a`
-then failed with P0 0 / P1 5 / P2 1. Final remediation cycle 3 is local;
-its full offline gate passed 532 tests at 81% coverage. The first cycle 3
-PostgreSQL run passed 218/219 and exposed one stale rollback-test fixture; the
-mechanical test-only repair was followed by a warning-free 219/219 rerun in
-4.59 seconds. A later independent review reproduced a P1 finalization defect:
-the candidate did not bind a run envelope to the complete durable attempt set
-or prove that report publications belonged to the same run. Owner-authorized
-remediation cycle 4 now adds those transactional gates and 17 focused
-PostgreSQL regressions locally. Fresh root validation passed all 236 PostgreSQL
-integration cases, all 532 offline unit/contract tests, lock, Ruff, format, and
-MyPy. A fresh authorized dependency audit found no known vulnerabilities in
-the unchanged 58-package external graph. Fresh independent review of exact
-technical candidate
-`cceaa47edaddccc81e6a41760fc6b9efc1c2d0311ccc2ac9914e15ca13ed8b0f`
-passed with P0 0 / P1 0 / P2 0. Final-byte review and terminal evidence audit
-also passed exact candidate
-`68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`
-with P0 0 / P1 0 / P2 0. Implementation commit
-`7bd41450cb13d9d118c64e8da51de0e10079bc6b` was pushed normally to Draft PR
-[#5](https://github.com/Jerry687/medevidence/pull/5), and all three hosted CI
-jobs passed. Final PR-head review and post-evidence-commit terminal audit remain
-pending; the PR is not ready or merged.
-No application tool, report service, or FastAPI business endpoint exists.
+M1A-004 adds committed PubMed application tools and deterministic draft-report
+behavior on its pushed feature branch. Draft PR `#6` has green hosted CI and
+passed final PR-head review and terminal audit, but remains unmerged. No FastAPI
+business endpoint exists yet.
 DailyMed, FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP,
 export, and HITL capabilities remain planned.
 
@@ -186,55 +149,33 @@ its own branch and focused Draft PR from the latest approved `main`; a
 monolithic M1A implementation PR is not authorized.
 
 ADR-009 Revision 2 and the owner-authorization package are approved and
-effective. The governance package and M1A-001B implementation have been
-reviewed and merged. M1A-002 is locally integrated into the approved `main`
-baseline and is limited to the bounded connector plus its historical offline
-evidence. Live NCBI/TLS behavior remains intentionally unverified. `M1A-003A`
-is integrated in baseline `9f326481d13c149e818f77a75de3c53184522f0a`.
-`M1A-003B` is committed as an exact 21-path feature-branch implementation. Its first
-independent implementation review failed with three P1 and one P2 findings;
-the earlier 185-case PostgreSQL run did not execute every claimed repository
-path. Cycle 2 removes the concrete ingestion dependency, strengthens complete
-provenance equality and replay ports, expands repository tests, and removes
-credential identifiers from URL diagnostics. Its first database run passed
-193/194 and caught a product defect in full-capacity identity precedence. The
-corrected final gates passed 531 offline unit/contract tests at 82% aggregate
-coverage and 193/193 PostgreSQL integration cases in 2.17 seconds. This is
-implementation validation, not a reviewer PASS. Fresh review of candidate
-`517271d6687541e9774c9a221416998e682e3eca46952ffc21e8238c68cd6b7a`
-failed with P0 0 / P1 5 / P2 1 on acquisition completeness, full publication
-domain validation, run/report lineage ownership, native dependency evidence,
-real PostgreSQL capacity evidence, and invalid-port exception translation.
-Final remediation cycle 3 addresses those frozen counterexamples locally;
-the final PostgreSQL suite passed 219/219 after a stale rollback fixture was
-mechanically corrected, and the refreshed offline dependency inventory records
-the bundled native-library versions. These are implementation-owned results,
-not a reviewer PASS. Cycle 4 is now implemented locally under the Owner's
-Option A decision: final registration receives an ordered source-neutral
-acquisition-reference tuple, requires exact equality with the target run's
-durable attempts, and accepts report-publication lineage only when the cited
-artifact is reachable through a current-run attempt, snapshot membership, and
-publication-version binding. The 17 new database regressions are collected,
-and fresh root execution now passes all 236 PostgreSQL integration cases in 6.02
-seconds. The corresponding offline gate passes 532 tests at 80% coverage, and
-the authorized dependency audit reports no known vulnerabilities. Those
-validation results alone are not an independent-review or terminal-audit PASS.
-Fresh independent review of exact technical candidate
-`cceaa47edaddccc81e6a41760fc6b9efc1c2d0311ccc2ac9914e15ca13ed8b0f`
-then passed with P0 0 / P1 0 / P2 0 after reproducing the missing-attempt,
-mismatched-reference, and cross-run-publication failure paths with zero final
-writes. Final-byte review and the terminal evidence audit passed exact candidate
-`68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`
-with P0 0 / P1 0 / P2 0, and its staged identity was exact. Implementation
-commit `7bd41450cb13d9d118c64e8da51de0e10079bc6b` was pushed normally to Draft
-PR [#5](https://github.com/Jerry687/medevidence/pull/5), titled
-`M1A-003B: persist snapshot metadata in PostgreSQL`. Hosted CI passed
-compose-config run `31238530166` job `93055404634` in 38 seconds,
-windows-quality in the same run job `93055404647` in 1 minute 3 seconds, and
-dependency-audit run `31238530162` job `93055404624` in 42 seconds. Final
-PR-head review, final terminal audit after the evidence
-commit, PR readiness, merge, and approved-`main` integration remain pending.
-`M1A-004` onward remains unimplemented.
+effective. M1A-001B, M1A-002, M1A-003A PR `#4`, and M1A-003B PR `#5` are
+reviewed, merged, and integrated into approved `main` baseline
+`5102d56c73b6714d3608a93a47aa31f70ffa1097`. Live NCBI/TLS behavior remains
+intentionally unverified. M1A-003A's historical CRLF failure and M1A-003B's
+historical failed review/database evidence remain visible in their immutable
+records. The integrated M1A-003B gates passed 532 offline unit/contract tests,
+236 PostgreSQL integration tests, and left zero Docker residue.
+
+`M1A-004` is committed at `2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`
+and pushed on `feat/m1a-004-pubmed-tools-report` to Draft PR
+[#6](https://github.com/Jerry687/medevidence/pull/6), titled
+`M1A-004: expose PubMed tools and draft reports`. It adds strict source-neutral PubMed tool
+contracts, consumer-owned injected ports, deterministic quoted query
+construction, ordered search/fetch acquisition orchestration, exact Unicode
+abstract-span claims/citations, publication-status restrictions, and a
+non-exportable draft report bound to the run, catalog, acquisition, manifest,
+envelope, and report-artifact identities. Persisted singular-fetch bindings now
+prove one exact publication-content-artifact to current-manifest edge, which is
+projected as the report publication's ordered current-run artifact lineage;
+each persisted acquisition must also echo the exact ADR-010 acquisition-intent
+identity, and every untrusted adapter result is recursively reconstructed before
+downstream use. Failure diagnostics reject credential-like or multiline
+content. Its tests are offline and injectable; the implementation has not
+contacted PubMed/NCBI or run Docker. Hosted `compose-config` and
+`windows-quality` succeeded, and final PR-head review and terminal audit both
+returned PASS with P0 0 / P1 0 / P2 0. The Draft PR is not merged and M1A-004
+has not entered the approved `main` baseline. `M1A-005` remains unimplemented.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the

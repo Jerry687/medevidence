@@ -8,6 +8,7 @@ from pydantic import model_validator
 
 from .claims import Citation, EvidenceClaim
 from .identifiers import (
+    AcquisitionRegistrationEnvelopeId,
     ClaimId,
     DurableModel,
     LongText,
@@ -16,10 +17,15 @@ from .identifiers import (
     PublicationVersionId,
     QueryId,
     ReportId,
+    RunId,
+    RunIntentId,
     SchemaVersion,
+    Sha256Digest,
     UtcDateTime,
     WarningCode,
+    canonical_json,
     derive_identity,
+    sha256_digest,
 )
 from .publications import PublicationRecord, PublicationStatusValue
 from .scope import ExecutionBounds, ResearchScope, SourceType
@@ -153,6 +159,14 @@ class ResearchReport(DurableModel):
 
     schema_version: SchemaVersion = "1.0"
     report_id: ReportId
+    run_id: RunId
+    catalog_version: Literal["m1a-concepts-v1"] = "m1a-concepts-v1"
+    catalog_content_hash: Sha256Digest
+    run_intent_id: RunIntentId
+    acquisition_snapshot_ids: tuple[Sha256Digest, ...]
+    acquisition_manifest_ids: tuple[Sha256Digest, ...]
+    acquisition_registration_envelope_ids: tuple[AcquisitionRegistrationEnvelopeId, ...]
+    report_artifact_id: Sha256Digest
     status: Literal["draft"] = "draft"
     exportable: Literal[False] = False
     scope: ResearchScope
@@ -175,6 +189,12 @@ class ResearchReport(DurableModel):
     def create(
         cls,
         *,
+        run_id: RunId,
+        catalog_content_hash: Sha256Digest,
+        run_intent_id: RunIntentId,
+        acquisition_snapshot_ids: tuple[Sha256Digest, ...],
+        acquisition_manifest_ids: tuple[Sha256Digest, ...],
+        acquisition_registration_envelope_ids: tuple[AcquisitionRegistrationEnvelopeId, ...],
         scope: ResearchScope,
         source_plan: tuple[SourcePlanEntry, ...],
         source_outcomes: tuple[SourceOutcome, ...],
@@ -229,6 +249,13 @@ class ResearchReport(DurableModel):
         )
         payload = {
             "schema_version": "1.0",
+            "run_id": run_id,
+            "catalog_version": "m1a-concepts-v1",
+            "catalog_content_hash": catalog_content_hash,
+            "run_intent_id": run_intent_id,
+            "acquisition_snapshot_ids": acquisition_snapshot_ids,
+            "acquisition_manifest_ids": acquisition_manifest_ids,
+            "acquisition_registration_envelope_ids": (acquisition_registration_envelope_ids),
             "status": "draft",
             "exportable": False,
             "scope": scope,
@@ -243,8 +270,17 @@ class ResearchReport(DurableModel):
             "retrieval_as_of": retrieval_as_of,
             "research_only_notice": RESEARCH_ONLY_NOTICE,
         }
+        report_id = derive_identity("report", payload)
+        artifact_payload = {"report_id": report_id, **payload}
         return cls(
-            report_id=derive_identity("report", payload),
+            report_id=report_id,
+            run_id=run_id,
+            catalog_content_hash=catalog_content_hash,
+            run_intent_id=run_intent_id,
+            acquisition_snapshot_ids=acquisition_snapshot_ids,
+            acquisition_manifest_ids=acquisition_manifest_ids,
+            acquisition_registration_envelope_ids=(acquisition_registration_envelope_ids),
+            report_artifact_id=sha256_digest(canonical_json(artifact_payload)),
             scope=scope,
             source_plan=canonical_plan,
             source_outcomes=canonical_outcomes,
@@ -257,8 +293,33 @@ class ResearchReport(DurableModel):
             retrieval_as_of=retrieval_as_of,
         )
 
+    def artifact_bytes(self) -> bytes:
+        """Return exact canonical report bytes with the artifact self-field omitted."""
+
+        return canonical_json(
+            self.model_dump(mode="python", exclude={"report_artifact_id"})
+        ).encode("utf-8")
+
     @model_validator(mode="after")
     def validate_aggregate(self) -> Self:
+        acquisition_count = len(self.acquisition_snapshot_ids)
+        if not 1 <= acquisition_count <= 101:
+            raise ValueError("report requires between one and 101 acquisition bindings")
+        if not (
+            len(self.acquisition_manifest_ids)
+            == len(self.acquisition_registration_envelope_ids)
+            == acquisition_count
+        ):
+            raise ValueError("ordered acquisition identity bindings must have equal lengths")
+        if self.acquisition_snapshot_ids != self.acquisition_manifest_ids:
+            raise ValueError("M1A snapshot identities must equal their manifest identities")
+        for identities in (
+            self.acquisition_snapshot_ids,
+            self.acquisition_manifest_ids,
+            self.acquisition_registration_envelope_ids,
+        ):
+            if len(set(identities)) != len(identities):
+                raise ValueError("ordered acquisition identities must be unique")
         expected_bounds = ExecutionBounds.from_scope(self.scope)
         plan_by_source = {entry.source: entry for entry in self.source_plan}
         if len(plan_by_source) != len(self.source_plan):
@@ -318,6 +379,16 @@ class ResearchReport(DurableModel):
         for publication in self.publications:
             report_outcome = outcomes_by_source.get(publication.source_type)
             provenance = publication.provenance
+            if (
+                provenance.snapshot_id not in self.acquisition_snapshot_ids
+                or publication.content_hash not in provenance.artifact_ids
+                or provenance.snapshot_id not in provenance.artifact_ids
+                or provenance.transformation_lineage
+                != (publication.content_hash, provenance.snapshot_id)
+            ):
+                raise ValueError(
+                    "report publication requires persisted current-run artifact lineage"
+                )
             if (
                 publication.source_type not in plan_by_source
                 or report_outcome is None
@@ -461,8 +532,13 @@ class ResearchReport(DurableModel):
 
         expected = derive_identity(
             "report",
-            self.model_dump(mode="python", exclude={"report_id"}),
+            self.model_dump(
+                mode="python",
+                exclude={"report_id", "report_artifact_id"},
+            ),
         )
         if self.report_id != expected:
             raise ValueError("report_id does not match canonical report content")
+        if self.report_artifact_id != sha256_digest(self.artifact_bytes()):
+            raise ValueError("report_artifact_id does not match canonical report artifact bytes")
         return self

@@ -13,6 +13,7 @@ DOMAIN_ROOT = Path("src/medevidence/domain")
 CONNECTOR_ROOT = Path("src/medevidence/connectors")
 INGESTION_ROOT = Path("src/medevidence/ingestion")
 PERSISTENCE_ROOT = Path("src/medevidence/persistence")
+TOOLS_ROOT = Path("src/medevidence/tools")
 PROHIBITED_TOKENS = {
     "alembic",
     "fastapi",
@@ -138,6 +139,32 @@ def test_persistence_imports_only_approved_inward_layers_and_sqlalchemy() -> Non
                 if (
                     root not in sys.stdlib_module_names
                     and root not in APPROVED_PERSISTENCE_THIRD_PARTY_ROOTS
+                    and module != "medevidence.domain"
+                    and not module.startswith("medevidence.domain.")
+                ):
+                    violations.append(f"{path}:{node.lineno}:{module}")
+
+    assert violations == []
+
+
+def test_tools_import_only_domain_and_consumer_owned_tool_modules() -> None:
+    violations: list[str] = []
+    for path in sorted(TOOLS_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                if node.level > 0:
+                    continue
+                modules = {node.module or ""}
+            else:
+                continue
+            for module in modules:
+                root = module.split(".", maxsplit=1)[0]
+                if (
+                    root not in sys.stdlib_module_names
+                    and root != "pydantic"
                     and module != "medevidence.domain"
                     and not module.startswith("medevidence.domain.")
                 ):
