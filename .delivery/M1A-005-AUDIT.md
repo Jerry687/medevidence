@@ -1,5 +1,13 @@
 # M1A-005 Implementation Audit
 
+> **Historical pre-merge evidence — superseded for current integration state.**
+> This document captures the M1A-005 implementation audit as it existed before
+> PR #7 was merged. PR #7 was subsequently merged at
+> `47504a4016f968ed0a0dd10e4280b1a957c15461`. Its earlier FAIL findings,
+> candidate identities, and pre-merge wording remain historical evidence and
+> are not rewritten here. Current integration state is recorded in
+> [M1A-005-INTEGRATION-RECONCILIATION](M1A-005-INTEGRATION-RECONCILIATION.md).
+
 - Work item: `M1A-005`
 - Branch: `feat/m1a-005-fastapi-acceptance`
 - Approved `main` baseline:

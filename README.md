@@ -8,12 +8,11 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 ## Repository status
 
 **The approved `main` baseline is
-`14a38d48416e8a4b63fe72b91ceb083f1d895473` and includes the reviewed,
-merged M1A-004 PubMed tools/report slice. M1A-005 is committed at
-`5a75b96a034abbaf4769f9dfde93ea3bb154567e` and pushed to Draft PR
-[#7](https://github.com/Jerry687/medevidence/pull/7). Its hosted checks,
-independent PR-head review, and terminal audit passed; it is not merged or
-integrated, and live PubMed acceptance was not run.**
+`47504a4016f968ed0a0dd10e4280b1a957c15461`, the merge commit for PR #7. The
+M1A-005 implementation, review, terminal audit, and hosted checks are
+integrated. M1A offline integration is complete
+(`M1A_OFFLINE_INTEGRATED`); live PubMed acceptance remains unexecuted
+(`LIVE_GATE_NOT_RUN`).**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -29,8 +28,10 @@ M0 and `ME-000A` are complete and approved. The approved baselines are:
   `4f39ed3d27438e69a4a5a30ff6be499d247541c1`; and
 - merged M1A-003B `main` identity:
   `5102d56c73b6714d3608a93a47aa31f70ffa1097`; and
-- M1A-004-integrated approved `main` identity:
-  `14a38d48416e8a4b63fe72b91ceb083f1d895473`.
+- M1A-004-integrated historical `main` identity:
+  `14a38d48416e8a4b63fe72b91ceb083f1d895473`; and
+- M1A-005-integrated approved `main` identity:
+  `47504a4016f968ed0a0dd10e4280b1a957c15461`.
 
 The original independent M0 review returned **FAIL**. The frozen remediation
 later received an unconditional independent **PASS**, and the Project Owner
@@ -51,12 +52,14 @@ residue. Historical failed review candidates and the earlier 193/194 and
 they are not the current baseline state.
 
 M1A-004's PubMed application tools and deterministic draft-report behavior are
-merged. The M1A-005 implementation adds the single versioned
+merged. M1A-005 adds the single versioned
 `POST /v1/research/pubmed` FastAPI operation, a fixed embedded catalog, closed
 request/error contracts, an explicit composition boundary, normalized OpenAPI
 evidence, and disabled-by-default live-smoke code. Ordinary validation remains
-offline. The implementation is committed and pushed in Draft PR `#7`, with
-hosted checks and final review/audit green, but it is not merged or integrated.
+offline. PR #7 is merged at
+`47504a4016f968ed0a0dd10e4280b1a957c15461`; hosted checks and final review/
+audit were green before merge. The live gate remains disabled by default and
+M1B has not begun.
 DailyMed, FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP,
 export, and HITL capabilities remain planned.
 
@@ -182,14 +185,9 @@ downstream use. Failure diagnostics reject credential-like or multiline
 content. Its tests are offline and injectable; the implementation has not
 contacted PubMed/NCBI or run Docker. Hosted `compose-config` and
 `windows-quality` succeeded, and final PR-head review and terminal audit both
-returned PASS with P0 0 / P1 0 / P2 0. The reviewed M1A-004 change is merged in
-approved baseline `14a38d48416e8a4b63fe72b91ceb083f1d895473`. M1A-005 is
-committed at `5a75b96a034abbaf4769f9dfde93ea3bb154567e` and pushed to Draft PR
-[#7](https://github.com/Jerry687/medevidence/pull/7), titled
-`M1A-005: expose and validate the PubMed vertical slice`. Hosted
-`compose-config`, `dependency-audit`, and `windows-quality` passed, and final
-PR-head review and terminal audit both returned PASS with P0 0 / P1 0 / P2 0.
-It is not merged or integrated, and live PubMed acceptance was not run.
+returned PASS with P0 0 / P1 0 / P2 0. M1A-005 is integrated in approved
+baseline `47504a4016f968ed0a0dd10e4280b1a957c15461`, the merge commit for PR #7.
+Live PubMed acceptance was not run and remains behind the separate Owner gate.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the

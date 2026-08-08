@@ -1,9 +1,32 @@
-# Delivery state: M1A-002 approved-main baseline reconciliation
+# Delivery state: M1A-005 offline integration and live-gate readiness
 
-Updated: `2026-08-06`
+Updated: `2026-08-08`
 Repository: `D:\Projects\medevidence`
-Branch: `docs/m1a-002-baseline-reconciliation`
-Current status: `M1A-002_LOCALLY_INTEGRATED_IN_APPROVED_MAIN`
+Branch: `docs/m1a-offline-integration-live-readiness`
+Current status: `M1A_OFFLINE_INTEGRATED`
+Live gate: `LIVE_GATE_NOT_RUN`
+
+## Current M1A-005 state
+
+The current approved `main` identity is
+`47504a4016f968ed0a0dd10e4280b1a957c15461`, the merge commit for PR #7.
+M1A-005 is offline-integrated. PR #7 is merged and is not an open, Draft,
+pending, or unintegrated change. The historical M1A-002 ledger below remains
+preserved for provenance; its old active-candidate wording is not the current
+M1A state. The live PubMed acceptance gate remains unexecuted, and M1B has not
+begun.
+
+Current integration and readiness records:
+
+- [M1A-005 integration reconciliation](M1A-005-INTEGRATION-RECONCILIATION.md)
+- [M1A live-gate readiness](M1A-LIVE-GATE-READINESS.md)
+- [M1A-005 Owner integration approval](../docs/reviews/M1A-005-OWNER-INTEGRATION-APPROVAL-001.md)
+- [M1A live-gate readiness review](../docs/reviews/M1A-LIVE-GATE-READINESS-001.md)
+
+The earlier M1A-005 audit and independent-review documents remain historical
+pre-merge evidence and retain their original candidate identities and findings.
+
+## Historical M1A-002 reconciliation ledger
 
 ## Goal
 
@@ -197,7 +220,7 @@ Remote operations: none
 - `M1A-003A` onward remains unimplemented and is not authorized by this
   reconciliation.
 
-## Current step
+## Historical M1A-002 current step
 
 `M1A-002_LOCALLY_INTEGRATED_IN_APPROVED_MAIN remains the confirmed baseline
 fact: 02550d7c674540430e1c11edb1edd9c091593f7b and
@@ -206,7 +229,7 @@ fact: 02550d7c674540430e1c11edb1edd9c091593f7b and
 candidate is VERIFYING; independent re-review and terminal audit are pending,
 and no reconciliation commit or fast-forward integration has occurred.`
 
-## Next step
+## Historical M1A-002 next step
 
 Run independent re-review and terminal evidence audit. Only if both return
 PASS, stage exactly the four authorized paths, create the already-authorized
@@ -216,7 +239,7 @@ local commit with subject
 switch to `main`, and fast-forward only from
 `docs/m1a-002-baseline-reconciliation`. Do not begin `M1A-003A` or later work.
 
-## Latest handoff
+## Historical M1A-002 latest handoff
 
 ```text
 Task: M1A-002 approved-main baseline reconciliation
@@ -228,4 +251,16 @@ Findings: four-file candidate awaits independent re-review and terminal audit; n
 Assumptions and unknowns: cached origin/main was not refreshed; no remote-state claim; live NCBI/TLS behavior intentionally unverified
 Files modified in this reconciliation: docs/reviews/M1A-002-OWNER-INTEGRATION-APPROVAL-001.md, .delivery/M1A-002-INTEGRATION-RECONCILIATION.md, .delivery/STATE.md, and README.md
 Recommended next action: independent re-review and terminal audit, then on PASS execute the already-authorized exact four-path commit and fast-forward-only local integration flow; do not begin M1A-003A or later work
+```
+
+## Current M1A-005 handoff
+
+```text
+Task: M1A-OFFLINE-INTEGRATION-RECONCILIATION-AND-LIVE-READINESS
+Status: M1A_OFFLINE_INTEGRATED; LIVE_GATE_NOT_RUN; focused/full offline validation PASS; post-remediation PR-head review and terminal audit pending
+Baseline: local main, cached origin/main, and live origin/main resolved to 47504a4016f968ed0a0dd10e4280b1a957c15461 at preflight
+Integration: PR #7 merged with merge-commit semantics at 47504a4016f968ed0a0dd10e4280b1a957c15461; M1A-005 implementation/evidence ancestors are recorded in the reconciliation record
+Scope: authorized delivery/readiness records and conditional tests/e2e/test_live_pubmed.py only; no production source, dependency, schema, or public-interface change
+Network: no PubMed/NCBI/DailyMed/FAERS request; the live gate remains disabled by default
+Next action: post-remediation PR-head review, terminal evidence audit, then the authorized GitHub lifecycle only if every gate passes
 ```
