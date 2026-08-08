@@ -7,12 +7,11 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**The approved `main` baseline remains the merged M1A-003B identity
-`5102d56c73b6714d3608a93a47aa31f70ffa1097`. PR `#4` (M1A-003A) and PR `#5`
-(M1A-003B) are merged and integrated. M1A-004 is committed at
-`2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`, pushed, and hosted in green Draft
-PR [#6](https://github.com/Jerry687/medevidence/pull/6); final PR-head review
-and terminal audit passed, but M1A-004 is not merged or integrated.**
+**The approved `main` baseline is
+`14a38d48416e8a4b63fe72b91ceb083f1d895473` and includes the reviewed,
+merged M1A-004 PubMed tools/report slice. M1A-005 is an uncommitted local
+candidate on `feat/m1a-005-fastapi-acceptance`; it is not yet independently
+reviewed, audited, pushed, or merged.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -27,7 +26,9 @@ M0 and `ME-000A` are complete and approved. The approved baselines are:
 - M1A-002 approved local `main` identity:
   `4f39ed3d27438e69a4a5a30ff6be499d247541c1`; and
 - merged M1A-003B `main` identity:
-  `5102d56c73b6714d3608a93a47aa31f70ffa1097`.
+  `5102d56c73b6714d3608a93a47aa31f70ffa1097`; and
+- M1A-004-integrated approved `main` identity:
+  `14a38d48416e8a4b63fe72b91ceb083f1d895473`.
 
 The original independent M0 review returned **FAIL**. The frozen remediation
 later received an unconditional independent **PASS**, and the Project Owner
@@ -47,10 +48,12 @@ residue. Historical failed review candidates and the earlier 193/194 and
 218/219 PostgreSQL runs remain preserved in their review and delivery records;
 they are not the current baseline state.
 
-M1A-004 adds committed PubMed application tools and deterministic draft-report
-behavior on its pushed feature branch. Draft PR `#6` has green hosted CI and
-passed final PR-head review and terminal audit, but remains unmerged. No FastAPI
-business endpoint exists yet.
+M1A-004's PubMed application tools and deterministic draft-report behavior are
+merged. The M1A-005 candidate adds the single versioned
+`POST /v1/research/pubmed` FastAPI operation, a fixed embedded catalog, closed
+request/error contracts, an explicit composition boundary, normalized OpenAPI
+evidence, and disabled-by-default live-smoke code. Ordinary validation remains
+offline, and the candidate is not a completed or integrated release state.
 DailyMed, FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP,
 export, and HITL capabilities remain planned.
 
@@ -118,8 +121,10 @@ the approved `httpx==0.28.1` and `defusedxml==0.7.1` production pins. It uses a
 small explicit retry loop, so the approved optional Tenacity pin is not added.
 The M1A-003B implementation commit adds the approved runtime pins
 `SQLAlchemy==2.0.51` and `psycopg[binary]==3.3.4`, plus the approved production
-schema-migration tooling pin `alembic==1.18.5`, and a complete 59-package lock.
-The dependency evidence inventories the native `psycopg-binary` payload;
+schema-migration tooling pin `alembic==1.18.5`. M1A-005 adds only the approved
+base-package pin `fastapi==0.141.1`; its `standard` and `all` extras and Uvicorn
+remain absent. The resolved additions are `fastapi`, `starlette`, and
+`annotated-doc`. The dependency evidence inventories the native `psycopg-binary` payload;
 deployment suitability is not inferred. Later pins remain absent until their
 first requiring focused work item.
 Model-provider, retrieval-model/configuration, and external tracing decisions
@@ -174,8 +179,10 @@ downstream use. Failure diagnostics reject credential-like or multiline
 content. Its tests are offline and injectable; the implementation has not
 contacted PubMed/NCBI or run Docker. Hosted `compose-config` and
 `windows-quality` succeeded, and final PR-head review and terminal audit both
-returned PASS with P0 0 / P1 0 / P2 0. The Draft PR is not merged and M1A-004
-has not entered the approved `main` baseline. `M1A-005` remains unimplemented.
+returned PASS with P0 0 / P1 0 / P2 0. The reviewed M1A-004 change is merged in
+approved baseline `14a38d48416e8a4b63fe72b91ceb083f1d895473`. M1A-005 remains
+an uncommitted local candidate until its offline, PostgreSQL,
+independent-review, and terminal-audit gates are complete.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the

@@ -37,6 +37,8 @@ $hasAcquisitionRecord = (
     -not [string]::IsNullOrWhiteSpace($AcquisitionRecordPath)
 )
 $candidatePaths = @(
+    ".gitattributes",
+    ".delivery/M1A-005-AUDIT.md",
     "alembic.ini",
     "alembic/env.py",
     "alembic/script.py.mako",
@@ -46,6 +48,15 @@ $candidatePaths = @(
     "README.md",
     "scripts/dependency-audit.ps1",
     "docs/INTERVIEW_NOTES.md",
+    "docs/TRACEABILITY_MATRIX.md",
+    "docs/reviews/M1A-005-INDEPENDENT-REVIEW-001.md",
+    "src/medevidence/api/__init__.py",
+    "src/medevidence/api/app.py",
+    "src/medevidence/api/contracts.py",
+    "src/medevidence/api/errors.py",
+    "src/medevidence/api/routes.py",
+    "src/medevidence/catalog.py",
+    "src/medevidence/composition.py",
     "src/medevidence/connectors/__init__.py",
     "src/medevidence/connectors/pubmed/__init__.py",
     "src/medevidence/connectors/pubmed/client.py",
@@ -71,12 +82,20 @@ $candidatePaths = @(
     "tests/unit/connectors/test_pubmed_parsing.py",
     "tests/unit/connectors/test_pubmed_policy.py",
     "tests/unit/test_dependency_boundaries.py",
+    "tests/unit/api/test_contracts.py",
+    "tests/unit/api/test_errors.py",
+    "tests/unit/api/test_routes.py",
     "tests/unit/persistence/test_config.py",
     "tests/unit/persistence/test_metadata.py",
     "tests/integration/persistence/test_migrations.py",
     "tests/integration/persistence/test_snapshot_metadata.py",
+    "tests/integration/api/test_research_pubmed.py",
     "tests/contract/connectors/test_pubmed_connector.py",
     "tests/contract/test_offline_network.py",
+    "tests/contract/api/test_openapi.py",
+    "tests/e2e/test_live_pubmed.py",
+    "tests/e2e/test_m1a_pubmed.py",
+    "tests/fixtures/api/openapi-v1.json",
     "tests/fixtures/pubmed/valid_fetch.xml",
     "tests/fixtures/pubmed/valid_search.xml",
     "uv.lock"
@@ -1156,6 +1175,9 @@ if __name__ == "__main__":
             [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
         )
         dependency_roles = [ordered]@{
+            fastapi = "production versioned HTTP transport adapter"
+            starlette = "transitive ASGI routing and in-process transport foundation"
+            annotated_doc = "transitive FastAPI annotation metadata"
             sqlalchemy = "production runtime persistence library"
             alembic = "production schema-migration tooling"
             psycopg_binary = "production PostgreSQL runtime driver and bundled native libraries"

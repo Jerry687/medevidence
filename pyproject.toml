@@ -11,6 +11,7 @@ requires-python = ">=3.12.13,<3.13"
 dependencies = [
     "alembic==1.18.5",
     "defusedxml==0.7.1",
+    "fastapi==0.141.1",
     "httpx==0.28.1",
     "psycopg[binary]==3.3.4",
     "pydantic==2.13.4",
@@ -35,7 +36,7 @@ default-groups = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
 markers = [
     "live_api: explicit opt-in tests that contact external APIs",
 ]
