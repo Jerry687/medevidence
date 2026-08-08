@@ -18,9 +18,16 @@
 - Cycle-4 authorization artifact SHA-256:
   `5a589571cfabd35f0187865381be1766204525df61c5208be2b735a3edf9d1ca`
   over 14,165 raw bytes
-- Remediation: **OWNER-AUTHORIZED CYCLE 4 IMPLEMENTED; FRESH RE-REVIEW PENDING**
-- Terminal audit: **PENDING**
-- Git operations: none
+- Final pre-commit candidate:
+  `7bacedd2e2f4361d550f0772cfd6914a20852c15f5c447210b0e2cabbd5abb36`
+- Final PR-head review: **PASS — P0 0 / P1 0 / P2 0**
+- Terminal audit: **PASS — P0 0 / P1 0 / P2 0**
+- Implementation commit: `2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`
+- Draft PR: [#6](https://github.com/Jerry687/medevidence/pull/6),
+  `M1A-004: expose PubMed tools and draft reports`
+- Hosted CI: `compose-config` **SUCCESS**; `windows-quality` **SUCCESS**
+- Current lifecycle: **COMMITTED, PUSHED, DRAFT PR; NOT MERGED OR INTEGRATED**
+- Evidence-finalization Git operations: none
 - Network operations: none
 - Medical-source requests: none
 - Docker/database operations: none
@@ -141,8 +148,8 @@ allowlist. Independent review of exact cycle-3 candidate
 found that acquisition-intent ownership and untrusted persistence-output
 revalidation still required closure and returned FAIL with P0 0 / P1 2 / P2 1.
 The Owner authorized cycle 4 solely for that same-class correction within the
-unchanged 18-path allowlist. Fresh independent re-review and terminal audit are
-pending.
+unchanged 18-path allowlist. Final PR-head review and terminal audit both
+returned PASS with P0 0 / P1 0 / P2 0 on the corrected implementation.
 
 ## Validation evidence
 
@@ -163,25 +170,27 @@ Fresh implementation-owned evidence from the approved baseline worktree:
   `coverage.xml` emitted without changing its tracked content.
 - `git diff --check`: exit 0.
 
-These are fresh cycle-4 implementation results. The exact remediated 18-path
-candidate hash is calculated only after this audit file is finalized and is
-reported in the implementation handoff to avoid a self-referential evidence
-document. These checks do not constitute independent review or terminal-audit
-PASS.
+These are fresh cycle-4 implementation results. Exact final pre-commit
+candidate `7bacedd2e2f4361d550f0772cfd6914a20852c15f5c447210b0e2cabbd5abb36`
+received final PR-head review PASS and terminal-audit PASS, each with
+P0 0 / P1 0 / P2 0. The implementation was committed at
+`2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`, pushed to Draft PR `#6`, and its
+hosted `compose-config` and `windows-quality` checks succeeded.
 
 ## Remaining risks and manual verification
 
 - The concrete M1A-005 composition adapter does not yet exist, so exact mapping
   to merged connector/capture/persistence implementations is unverified here.
-- No live PubMed, NCBI, TLS, database, Docker, API, or hosted-CI behavior was
-  exercised.
-- Fresh independent actual-diff re-review and terminal evidence audit are
-  pending after the four recorded remediation findings.
-- No commit, push, PR update, merge, or approved-`main` integration occurred.
+- No live PubMed, NCBI, TLS, database, Docker, or API behavior was exercised.
+- Historical FAIL ledgers remain preserved; final PR-head review and terminal
+  audit passed.
+- The implementation is committed, pushed, and green in Draft PR `#6`, but it
+  is not merged or integrated into approved `main`.
 
-Manual review should inspect the exact 18-path diff, confirm tools import only
-domain and local tools modules, run the commands recorded below with sockets
-disabled, and reproduce the ordering and status-policy counterexamples.
+Manual release review should confirm Draft PR `#6` still points to
+`2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`, both hosted checks remain green,
+and merge/integration receive separate Owner authorization. Live PubMed remains
+a separate opt-in gate.
 
 ## Owner interview questions
 

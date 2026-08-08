@@ -7,10 +7,12 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**The approved `main` baseline is the merged M1A-003B identity
+**The approved `main` baseline remains the merged M1A-003B identity
 `5102d56c73b6714d3608a93a47aa31f70ffa1097`. PR `#4` (M1A-003A) and PR `#5`
-(M1A-003B) are merged and integrated. M1A-004 remains a local, uncommitted
-candidate pending fresh independent re-review and terminal evidence audit.**
+(M1A-003B) are merged and integrated. M1A-004 is committed at
+`2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`, pushed, and hosted in green Draft
+PR [#6](https://github.com/Jerry687/medevidence/pull/6); final PR-head review
+and terminal audit passed, but M1A-004 is not merged or integrated.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -45,9 +47,10 @@ residue. Historical failed review candidates and the earlier 193/194 and
 218/219 PostgreSQL runs remain preserved in their review and delivery records;
 they are not the current baseline state.
 
-M1A-004 adds a local application-tool and deterministic draft-report candidate,
-but it is uncommitted and pending independent re-review and terminal audit. No
-FastAPI business endpoint exists yet.
+M1A-004 adds committed PubMed application tools and deterministic draft-report
+behavior on its pushed feature branch. Draft PR `#6` has green hosted CI and
+passed final PR-head review and terminal audit, but remains unmerged. No FastAPI
+business endpoint exists yet.
 DailyMed, FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP,
 export, and HITL capabilities remain planned.
 
@@ -154,8 +157,10 @@ historical failed review/database evidence remain visible in their immutable
 records. The integrated M1A-003B gates passed 532 offline unit/contract tests,
 236 PostgreSQL integration tests, and left zero Docker residue.
 
-`M1A-004` now has a local, uncommitted implementation candidate on
-`feat/m1a-004-pubmed-tools-report`. It adds strict source-neutral PubMed tool
+`M1A-004` is committed at `2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`
+and pushed on `feat/m1a-004-pubmed-tools-report` to Draft PR
+[#6](https://github.com/Jerry687/medevidence/pull/6), titled
+`M1A-004: expose PubMed tools and draft reports`. It adds strict source-neutral PubMed tool
 contracts, consumer-owned injected ports, deterministic quoted query
 construction, ordered search/fetch acquisition orchestration, exact Unicode
 abstract-span claims/citations, publication-status restrictions, and a
@@ -166,11 +171,11 @@ projected as the report publication's ordered current-run artifact lineage;
 each persisted acquisition must also echo the exact ADR-010 acquisition-intent
 identity, and every untrusted adapter result is recursively reconstructed before
 downstream use. Failure diagnostics reject credential-like or multiline
-content. Its tests are offline and injectable; the candidate has not contacted
-PubMed/NCBI, run Docker,
-received a passing independent review or terminal evidence audit, been
-committed, pushed, merged, or entered the approved `main` baseline. `M1A-005`
-remains unimplemented.
+content. Its tests are offline and injectable; the implementation has not
+contacted PubMed/NCBI or run Docker. Hosted `compose-config` and
+`windows-quality` succeeded, and final PR-head review and terminal audit both
+returned PASS with P0 0 / P1 0 / P2 0. The Draft PR is not merged and M1A-004
+has not entered the approved `main` baseline. `M1A-005` remains unimplemented.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the

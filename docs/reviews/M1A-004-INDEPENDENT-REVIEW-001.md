@@ -17,7 +17,15 @@
 - Cycle-4 authorization artifact SHA-256:
   `5a589571cfabd35f0187865381be1766204525df61c5208be2b735a3edf9d1ca`
   over 14,165 raw bytes
-- Current status: **OWNER-AUTHORIZED CYCLE 4 IMPLEMENTED; FRESH RE-REVIEW PENDING**
+- Final pre-commit candidate:
+  `7bacedd2e2f4361d550f0772cfd6914a20852c15f5c447210b0e2cabbd5abb36`
+- Final PR-head review: **PASS — P0 0 / P1 0 / P2 0**
+- Terminal audit: **PASS — P0 0 / P1 0 / P2 0**
+- Implementation commit: `2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`
+- Draft PR: [#6](https://github.com/Jerry687/medevidence/pull/6),
+  `M1A-004: expose PubMed tools and draft reports`
+- Hosted CI: `compose-config` **SUCCESS**; `windows-quality` **SUCCESS**
+- Current status: **PASS AT PR HEAD; NOT MERGED OR INTEGRATED**
 
 ## Review scope
 
@@ -101,6 +109,23 @@ values, valid multi-acquisition execution, and offline no-match behavior.
 These implementation-owned changes and tests are not independent review
 evidence.
 
+## Final PR-head review and terminal audit
+
+Final review inspected exact pre-commit candidate
+`7bacedd2e2f4361d550f0772cfd6914a20852c15f5c447210b0e2cabbd5abb36`
+and returned **PASS — P0 0 / P1 0 / P2 0**. The terminal evidence audit also
+returned **PASS — P0 0 / P1 0 / P2 0**. Historical FAIL decisions above remain
+part of the review record and are superseded only for the corrected final
+candidate.
+
+The implementation is committed at
+`2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0` and pushed to Draft PR
+[#6](https://github.com/Jerry687/medevidence/pull/6), titled
+`M1A-004: expose PubMed tools and draft reports`. Hosted `compose-config` and
+`windows-quality` both report SUCCESS. This is PR-head evidence, not merge or
+approved-`main` integration evidence. The separate live PubMed gate remains
+unexecuted and unauthorized without its own approval.
+
 ## Cycle-2 re-review finding
 
 Independent re-review of exact candidate
@@ -123,7 +148,7 @@ evidence.
 
 ## Decision
 
-**PENDING FRESH RE-REVIEW.** All prior FAIL decisions remain recorded. This
-remediation record is not approval, PASS, terminal audit, commit authorization,
-PR-readiness, or integration evidence. Implementation-owned tests cannot fill
-the independent gate.
+**PASS — P0 0 / P1 0 / P2 0.** Final PR-head review and terminal audit passed.
+Commit, push, Draft PR, and green hosted-CI evidence are recorded above. The PR
+is not merged, M1A-004 is not integrated into approved `main`, and the separate
+live PubMed gate remains pending.
