@@ -6,8 +6,9 @@
   `14a38d48416e8a4b63fe72b91ceb083f1d895473`
 - Reviewed implementation parent commit:
   `5a75b96a034abbaf4769f9dfde93ea3bb154567e`
-- Current PR head (documentation-only child):
-  `d70b3121634ba2cd1ca89d7c935c6ec470a9a988`
+- Documentation evidence commits recorded in Git history:
+  `d70b3121634ba2cd1ca89d7c935c6ec470a9a988` and
+  `b603a2df6a1c1c16f5dd80cbd801d425aa6aed23`
 - Draft PR: [#7](https://github.com/Jerry687/medevidence/pull/7),
   `M1A-005: expose and validate the PubMed vertical slice`
 - Hosted checks: **PASS** — `compose-config`, `dependency-audit`, and
@@ -84,6 +85,10 @@ ingestion implementation, workflow, or medical-source authority changed.
   `sha256:ff2652651de9cde37ff767dd3d17201505062a1c64879889754cc22a96051177`
   was committed as documentation-only child
   `d70b3121634ba2cd1ca89d7c935c6ec470a9a988` and pushed to Draft PR `#7`.
+- Cycle-6 evidence candidate
+  `sha256:21c4d672fd21760c3ed10f8ae6d054411eaa631de4a1e41eef6cf90d83612d01`
+  was committed as documentation-only child
+  `b603a2df6a1c1c16f5dd80cbd801d425aa6aed23` and pushed to Draft PR `#7`.
 
 The failures above are preserved as historical evidence and are not current
 implementation findings.
@@ -117,8 +122,8 @@ implementation findings.
 Hosted `compose-config`, `dependency-audit`, and `windows-quality` checks passed
 for reviewed implementation commit
 `5a75b96a034abbaf4769f9dfde93ea3bb154567e`. Independent review and terminal
-evidence audit each returned **PASS — P0 0 / P1 0 / P2 0**. Current PR head
-`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` is its documentation-only child.
+evidence audit each returned **PASS — P0 0 / P1 0 / P2 0**. The pushed feature
+ref contains later documentation-only evidence commits recorded in Git history.
 
 ## Network and Git boundary
 
@@ -127,18 +132,15 @@ PostgreSQL validation traffic was loopback-only. Dependency advisory traffic
 was limited to the approved vulnerability service and is not medical-source
 evidence.
 
-The implementation commit, branch push, Draft PR creation, and cycle-5 ledger
-commit/push occurred before this final remediation cycle. Current PR head
-`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` contains those committed and pushed
-documentation updates. This cycle performs no stage, commit, push, PR mutation,
-merge, fetch, rebase, reset, clean, or other remote-state change.
+Git history records the implementation commit and the subsequent cycle-5 and
+cycle-6 documentation-only evidence commits. The pushed feature ref contains
+those committed ledger updates; Draft PR `#7` has not been merged.
 
 ## Remaining gates and risks
 
 - Draft PR `#7` is not merged, and M1A-005 is not integrated into `main`.
-- The cycle-5 ledger updates are committed and pushed at current PR head
-  `d70b3121634ba2cd1ca89d7c935c6ec470a9a988`; this cycle-6 correction is not
-  committed or pushed under the current authorization.
+- The pushed feature ref contains the documentation evidence commits recorded
+  in Git history; their presence does not establish merge or integration.
 - The disabled live PubMed test remains a separate Owner-authorized gate and
   was not collected or executed.
 - FastAPI's TestClient emits an upstream Starlette deprecation warning; no

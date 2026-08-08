@@ -6,8 +6,9 @@
   `14a38d48416e8a4b63fe72b91ceb083f1d895473`
 - Reviewed implementation parent commit:
   `5a75b96a034abbaf4769f9dfde93ea3bb154567e`
-- Current PR head (documentation-only child):
-  `d70b3121634ba2cd1ca89d7c935c6ec470a9a988`
+- Documentation evidence commits recorded in Git history:
+  `d70b3121634ba2cd1ca89d7c935c6ec470a9a988` and
+  `b603a2df6a1c1c16f5dd80cbd801d425aa6aed23`
 - Draft PR: [#7](https://github.com/Jerry687/medevidence/pull/7),
   `M1A-005: expose and validate the PubMed vertical slice`
 - Hosted checks: **PASS** — `compose-config`, `dependency-audit`, and
@@ -82,8 +83,12 @@ terminal evidence audit returned **PASS — P0 0 / P1 0 / P2 0**.
 Cycle-5 evidence candidate
 `sha256:ff2652651de9cde37ff767dd3d17201505062a1c64879889754cc22a96051177`
 was committed as documentation-only child
-`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` and pushed as the current Draft PR
-`#7` head.
+`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` and pushed to Draft PR `#7`.
+
+Cycle-6 evidence candidate
+`sha256:21c4d672fd21760c3ed10f8ae6d054411eaa631de4a1e41eef6cf90d83612d01`
+was committed as documentation-only child
+`b603a2df6a1c1c16f5dd80cbd801d425aa6aed23` and pushed to Draft PR `#7`.
 
 The prior failures remain historical evidence and are not current
 implementation findings.
@@ -110,19 +115,18 @@ implementation findings.
 
 Hosted `compose-config`, `dependency-audit`, and `windows-quality` checks passed
 for reviewed implementation commit
-`5a75b96a034abbaf4769f9dfde93ea3bb154567e`. Current PR head
-`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` is its documentation-only child.
+`5a75b96a034abbaf4769f9dfde93ea3bb154567e`. The pushed feature ref contains
+later documentation-only evidence commits recorded in Git history.
 
 ## Decision
 
 **PASS — P0 0 / P1 0 / P2 0.** Independent review and terminal evidence audit
 both passed for reviewed implementation commit
-`5a75b96a034abbaf4769f9dfde93ea3bb154567e`. Current Draft PR `#7` head
-`d70b3121634ba2cd1ca89d7c935c6ec470a9a988` adds only the committed and pushed
-cycle-5 documentation ledger. This is not evidence of merge, integration into
-`main`, or live PubMed acceptance; none of those occurred.
+`5a75b96a034abbaf4769f9dfde93ea3bb154567e`. The pushed feature ref adds only
+the later documentation evidence commits recorded in Git history. This is not
+evidence of merge, integration into `main`, or live PubMed acceptance; none of
+those occurred.
 
-The cycle-5 ledger updates are committed and pushed at current PR head
-`d70b3121634ba2cd1ca89d7c935c6ec470a9a988`; this cycle-6 correction is not
-committed or pushed under the current authorization. No code, dependency,
-schema, or public contract changed during either documentation-only cycle.
+The documentation evidence commits are recorded in Git history and present on
+the pushed feature ref. No code, dependency, schema, or public contract changed
+during those documentation-only cycles.
