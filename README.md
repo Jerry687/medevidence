@@ -55,10 +55,41 @@ and the offline unit/contract suite (424 passed, one expected warning, 86%
 coverage). The earlier failed run remains part of the record. Evidence
 reconciliation and the remaining PR lifecycle gates are incomplete.
 
-No PostgreSQL persistence adapter, application tool, report service, or
-FastAPI business endpoint exists yet. DailyMed, FAERS/openFDA,
-CADEC, retrieval, LangGraph, LLM, Streamlit, MCP, export, and HITL capabilities
-also remain planned rather than implemented.
+No PostgreSQL persistence adapter is integrated into `main` yet. The M1A-003B
+persistence implementation is committed on its feature branch, but independent
+review of candidate
+`a10b414fc4c2f3473a2bea984215a4bd15f68eb0c7fae7d85611b35cdd4d8c24`
+failed with P0 0 / P1 3 / P2 1. Remediation cycle 2 passed its 479-test
+initial offline unit/contract gate. Its first expanded PostgreSQL run passed
+193/194 and exposed a capacity-versus-conflict classification defect. After the
+bounded fix, the final offline suite passed 531 tests at 82% coverage and the
+same-lifecycle PostgreSQL rerun passed 193/193. Fresh independent review of
+candidate `517271d6687541e9774c9a221416998e682e3eca46952ffc21e8238c68cd6b7a`
+then failed with P0 0 / P1 5 / P2 1. Final remediation cycle 3 is local;
+its full offline gate passed 532 tests at 81% coverage. The first cycle 3
+PostgreSQL run passed 218/219 and exposed one stale rollback-test fixture; the
+mechanical test-only repair was followed by a warning-free 219/219 rerun in
+4.59 seconds. A later independent review reproduced a P1 finalization defect:
+the candidate did not bind a run envelope to the complete durable attempt set
+or prove that report publications belonged to the same run. Owner-authorized
+remediation cycle 4 now adds those transactional gates and 17 focused
+PostgreSQL regressions locally. Fresh root validation passed all 236 PostgreSQL
+integration cases, all 532 offline unit/contract tests, lock, Ruff, format, and
+MyPy. A fresh authorized dependency audit found no known vulnerabilities in
+the unchanged 58-package external graph. Fresh independent review of exact
+technical candidate
+`cceaa47edaddccc81e6a41760fc6b9efc1c2d0311ccc2ac9914e15ca13ed8b0f`
+passed with P0 0 / P1 0 / P2 0. Final-byte review and terminal evidence audit
+also passed exact candidate
+`68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`
+with P0 0 / P1 0 / P2 0. Implementation commit
+`7bd41450cb13d9d118c64e8da51de0e10079bc6b` was pushed normally to Draft PR
+[#5](https://github.com/Jerry687/medevidence/pull/5), and all three hosted CI
+jobs passed. Final PR-head review and post-evidence-commit terminal audit remain
+pending; the PR is not ready or merged.
+No application tool, report service, or FastAPI business endpoint exists.
+DailyMed, FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP,
+export, and HITL capabilities remain planned.
 
 ## Formal V1 reference domain
 
@@ -122,7 +153,12 @@ M1A direct dependency pins. M1A-001B added and locked
 `pydantic==2.13.4` plus the development-only `pip-audit==2.10.1`. M1A-002 adds
 the approved `httpx==0.28.1` and `defusedxml==0.7.1` production pins. It uses a
 small explicit retry loop, so the approved optional Tenacity pin is not added.
-Later pins remain absent until their first requiring focused work item.
+The M1A-003B implementation commit adds the approved runtime pins
+`SQLAlchemy==2.0.51` and `psycopg[binary]==3.3.4`, plus the approved production
+schema-migration tooling pin `alembic==1.18.5`, and a complete 59-package lock.
+The dependency evidence inventories the native `psycopg-binary` payload;
+deployment suitability is not inferred. Later pins remain absent until their
+first requiring focused work item.
 Model-provider, retrieval-model/configuration, and external tracing decisions
 remain behind their separate gates in the PRD.
 
@@ -154,9 +190,51 @@ effective. The governance package and M1A-001B implementation have been
 reviewed and merged. M1A-002 is locally integrated into the approved `main`
 baseline and is limited to the bounded connector plus its historical offline
 evidence. Live NCBI/TLS behavior remains intentionally unverified. `M1A-003A`
-has a locally committed and hosted-green cycle-4 LF portability remediation,
-but its evidence reconciliation and PR integration gates remain pending;
-`M1A-003B` onward remains unimplemented.
+is integrated in baseline `9f326481d13c149e818f77a75de3c53184522f0a`.
+`M1A-003B` is committed as an exact 21-path feature-branch implementation. Its first
+independent implementation review failed with three P1 and one P2 findings;
+the earlier 185-case PostgreSQL run did not execute every claimed repository
+path. Cycle 2 removes the concrete ingestion dependency, strengthens complete
+provenance equality and replay ports, expands repository tests, and removes
+credential identifiers from URL diagnostics. Its first database run passed
+193/194 and caught a product defect in full-capacity identity precedence. The
+corrected final gates passed 531 offline unit/contract tests at 82% aggregate
+coverage and 193/193 PostgreSQL integration cases in 2.17 seconds. This is
+implementation validation, not a reviewer PASS. Fresh review of candidate
+`517271d6687541e9774c9a221416998e682e3eca46952ffc21e8238c68cd6b7a`
+failed with P0 0 / P1 5 / P2 1 on acquisition completeness, full publication
+domain validation, run/report lineage ownership, native dependency evidence,
+real PostgreSQL capacity evidence, and invalid-port exception translation.
+Final remediation cycle 3 addresses those frozen counterexamples locally;
+the final PostgreSQL suite passed 219/219 after a stale rollback fixture was
+mechanically corrected, and the refreshed offline dependency inventory records
+the bundled native-library versions. These are implementation-owned results,
+not a reviewer PASS. Cycle 4 is now implemented locally under the Owner's
+Option A decision: final registration receives an ordered source-neutral
+acquisition-reference tuple, requires exact equality with the target run's
+durable attempts, and accepts report-publication lineage only when the cited
+artifact is reachable through a current-run attempt, snapshot membership, and
+publication-version binding. The 17 new database regressions are collected,
+and fresh root execution now passes all 236 PostgreSQL integration cases in 6.02
+seconds. The corresponding offline gate passes 532 tests at 80% coverage, and
+the authorized dependency audit reports no known vulnerabilities. Those
+validation results alone are not an independent-review or terminal-audit PASS.
+Fresh independent review of exact technical candidate
+`cceaa47edaddccc81e6a41760fc6b9efc1c2d0311ccc2ac9914e15ca13ed8b0f`
+then passed with P0 0 / P1 0 / P2 0 after reproducing the missing-attempt,
+mismatched-reference, and cross-run-publication failure paths with zero final
+writes. Final-byte review and the terminal evidence audit passed exact candidate
+`68391faf3933b8ebc56256d7183adab0f6beeec9c616c44fccd125929c5e8dde`
+with P0 0 / P1 0 / P2 0, and its staged identity was exact. Implementation
+commit `7bd41450cb13d9d118c64e8da51de0e10079bc6b` was pushed normally to Draft
+PR [#5](https://github.com/Jerry687/medevidence/pull/5), titled
+`M1A-003B: persist snapshot metadata in PostgreSQL`. Hosted CI passed
+compose-config run `31238530166` job `93055404634` in 38 seconds,
+windows-quality in the same run job `93055404647` in 1 minute 3 seconds, and
+dependency-audit run `31238530162` job `93055404624` in 42 seconds. Final
+PR-head review, final terminal audit after the evidence
+commit, PR readiness, merge, and approved-`main` integration remain pending.
+`M1A-004` onward remains unimplemented.
 
 The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
 execution remains unauthorized until the Project Owner separately approves the
