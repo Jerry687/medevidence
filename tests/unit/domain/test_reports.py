@@ -48,6 +48,22 @@ from medevidence.domain import (
 )
 
 NOW = datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
+RUN_ID = "run:00000000-0000-4000-8000-000000000002"
+RUN_INTENT_ID = f"run-intent:sha256:{'1' * 64}"
+CATALOG_HASH = f"sha256:{'2' * 64}"
+SNAPSHOT_ID = f"sha256:{'3' * 64}"
+ENVELOPE_ID = f"registration-envelope:acquisition:sha256:{'4' * 64}"
+
+
+def report_bindings() -> dict[str, object]:
+    return {
+        "run_id": RUN_ID,
+        "catalog_content_hash": CATALOG_HASH,
+        "run_intent_id": RUN_INTENT_ID,
+        "acquisition_snapshot_ids": (SNAPSHOT_ID,),
+        "acquisition_manifest_ids": (SNAPSHOT_ID,),
+        "acquisition_registration_envelope_ids": (ENVELOPE_ID,),
+    }
 
 
 def scope(
@@ -184,6 +200,7 @@ def publication(
         retrieved_at=NOW,
         connector_version="fixture-1.0",
         content_hash=sha256_digest(b"raw"),
+        snapshot_id=SNAPSHOT_ID,
         warnings=tuple(
             DomainWarning(
                 code=code,
@@ -194,7 +211,7 @@ def publication(
         source_outcome=selected_outcome,
         configured_bounds=selected_outcome.configured_bounds,
     )
-    return PublicationRecord.create(
+    record = PublicationRecord.create(
         pmid="12345",
         doi=None,
         pmcid=None,
@@ -208,6 +225,14 @@ def publication(
         indexing_status=IndexingStatus.INDEXED,
         provenance=provenance,
     )
+    payload = record.model_dump(mode="python")
+    payload["provenance"] = record.provenance.model_copy(
+        update={
+            "artifact_ids": tuple(sorted((record.content_hash, SNAPSHOT_ID))),
+            "transformation_lineage": (record.content_hash, SNAPSHOT_ID),
+        }
+    )
+    return PublicationRecord.model_validate(payload)
 
 
 def citation_and_claim(
@@ -261,6 +286,15 @@ def claim_with_changes(claim: EvidenceClaim, **changes: object) -> EvidenceClaim
     return EvidenceClaim.model_validate(payload)
 
 
+def publication_with_provenance_changes(
+    record: PublicationRecord,
+    **changes: object,
+) -> PublicationRecord:
+    payload = record.model_dump(mode="python")
+    payload["provenance"] = record.provenance.model_copy(update=changes)
+    return PublicationRecord.model_validate(payload)
+
+
 def report_for(
     record: PublicationRecord,
     citation: Citation,
@@ -280,6 +314,7 @@ def report_for(
         derived_source_warnings = source_warnings
         derived_claim_warnings = claim_warnings
     return ResearchReport.create(
+        **report_bindings(),
         scope=report_scope or scope(),
         source_plan=(
             (
@@ -312,6 +347,7 @@ def empty_report_for(
     limitations: tuple[CoverageLimitation, ...],
 ) -> ResearchReport:
     return ResearchReport.create(
+        **report_bindings(),
         scope=scope(),
         source_plan=(
             SourcePlanEntry(
@@ -361,6 +397,28 @@ def test_current_extract_is_exact_draft_only_and_non_exportable() -> None:
     }
     assert forbidden.isdisjoint(type(report).model_fields)
     assert forbidden.isdisjoint(type(claim).model_fields)
+
+
+@pytest.mark.parametrize(
+    "provenance_changes",
+    [
+        {"snapshot_id": f"sha256:{'9' * 64}"},
+        {"artifact_ids": (SNAPSHOT_ID, f"sha256:{'9' * 64}")},
+        {"artifact_ids": (f"sha256:{'9' * 64}",)},
+        {"transformation_lineage": (SNAPSHOT_ID, f"sha256:{'9' * 64}")},
+        {"transformation_lineage": ()},
+    ],
+)
+def test_report_requires_current_run_persisted_publication_lineage(
+    provenance_changes: dict[str, object],
+) -> None:
+    record, citation, claim = citation_and_claim(
+        PublicationStatusValue.CURRENT_OR_NO_KNOWN_NOTICE,
+        ClaimUseContext.AFFIRMATIVE_SUPPORT,
+    )
+    unbound = publication_with_provenance_changes(record, **provenance_changes)
+    with pytest.raises(ValidationError, match="current-run artifact lineage"):
+        report_for(unbound, citation, claim)
 
 
 def test_ps03_retracted_record_cannot_support_affirmative_extract() -> None:
@@ -530,6 +588,7 @@ def test_report_rejects_citation_whose_publication_is_absent() -> None:
 
     with pytest.raises(ValidationError, match="citation publication version is absent"):
         ResearchReport.create(
+            **report_bindings(),
             scope=scope(),
             source_plan=(
                 SourcePlanEntry(
@@ -680,6 +739,7 @@ def test_report_rejects_every_cross_bounds_outcome(field: str) -> None:
 
     with pytest.raises(ValidationError, match="bounds"):
         ResearchReport.create(
+            **report_bindings(),
             scope=scope(),
             source_plan=(
                 SourcePlanEntry(
@@ -920,6 +980,7 @@ def test_no_match_and_indeterminate_remain_distinct() -> None:
 
 def test_missing_selected_outcome_remains_visible_and_is_not_fabricated() -> None:
     empty = ResearchReport.create(
+        **report_bindings(),
         scope=scope(),
         source_plan=(
             SourcePlanEntry(
@@ -970,6 +1031,7 @@ def test_report_rejects_missing_status_warning() -> None:
     )
     _, claim_warnings = warning_rows(record, claim)
     data = {
+        **report_bindings(),
         "scope": scope(),
         "source_plan": (
             SourcePlanEntry(
@@ -994,6 +1056,7 @@ def test_report_accepts_mixed_selected_and_skipped_by_policy_sources() -> None:
     mixed_scope = scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC))
     selected = outcome(result=ResultStatus.NO_MATCH)
     report = ResearchReport.create(
+        **report_bindings(),
         scope=mixed_scope,
         source_plan=(
             SourcePlanEntry(
@@ -1029,6 +1092,7 @@ def test_report_accepts_mixed_selected_and_skipped_by_policy_sources() -> None:
 def test_report_rejects_missing_in_scope_plan_entry() -> None:
     with pytest.raises(ValidationError, match="exactly one plan entry"):
         ResearchReport.create(
+            **report_bindings(),
             scope=scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC)),
             source_plan=(
                 SourcePlanEntry(
@@ -1050,6 +1114,7 @@ def test_report_rejects_missing_in_scope_plan_entry() -> None:
 def test_report_rejects_duplicate_in_scope_plan_entry() -> None:
     with pytest.raises(ValidationError, match="unique by source"):
         ResearchReport.create(
+            **report_bindings(),
             scope=scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC)),
             source_plan=(
                 SourcePlanEntry(
@@ -1081,6 +1146,7 @@ def test_report_rejects_duplicate_in_scope_plan_entry() -> None:
 def test_report_rejects_fabricated_outcome_for_skipped_source() -> None:
     with pytest.raises(ValidationError, match="only to selected plan entries"):
         ResearchReport.create(
+            **report_bindings(),
             scope=scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC)),
             source_plan=(
                 SourcePlanEntry(
@@ -1112,6 +1178,7 @@ def test_report_rejects_in_scope_not_applicable_plan_entry() -> None:
     mixed_scope = scope(selected_sources=(SourceType.PUBMED, SourceType.CADEC))
     with pytest.raises(ValidationError, match="selected or skipped_by_policy"):
         ResearchReport.create(
+            **report_bindings(),
             scope=mixed_scope,
             source_plan=(
                 SourcePlanEntry(
@@ -1139,6 +1206,7 @@ def test_report_rejects_in_scope_not_applicable_plan_entry() -> None:
 def test_report_rejects_out_of_scope_plan_entry() -> None:
     with pytest.raises(ValidationError, match="exactly one plan entry"):
         ResearchReport.create(
+            **report_bindings(),
             scope=scope(),
             source_plan=(
                 SourcePlanEntry(
@@ -1178,3 +1246,38 @@ def test_claim_and_report_forbid_extras_and_are_frozen() -> None:
                 "approval_state": "approved",
             }
         )
+
+
+def test_report_binds_exact_run_catalog_acquisition_and_artifact_identities() -> None:
+    record, citation, claim = citation_and_claim(
+        PublicationStatusValue.CURRENT_OR_NO_KNOWN_NOTICE,
+        ClaimUseContext.AFFIRMATIVE_SUPPORT,
+    )
+    report = report_for(record, citation, claim)
+
+    assert report.run_id == RUN_ID
+    assert report.catalog_version == "m1a-concepts-v1"
+    assert report.catalog_content_hash == CATALOG_HASH
+    assert report.run_intent_id == RUN_INTENT_ID
+    assert report.acquisition_snapshot_ids == (SNAPSHOT_ID,)
+    assert report.acquisition_manifest_ids == (SNAPSHOT_ID,)
+    assert report.acquisition_registration_envelope_ids == (ENVELOPE_ID,)
+    assert sha256_digest(report.artifact_bytes()) == report.report_artifact_id
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"acquisition_manifest_ids": (f"sha256:{'5' * 64}",)},
+        {"acquisition_registration_envelope_ids": ()},
+        {"report_artifact_id": f"sha256:{'6' * 64}"},
+    ],
+)
+def test_report_rejects_new_identity_binding_drift(changes: dict[str, object]) -> None:
+    record, citation, claim = citation_and_claim(
+        PublicationStatusValue.CURRENT_OR_NO_KNOWN_NOTICE,
+        ClaimUseContext.AFFIRMATIVE_SUPPORT,
+    )
+    report = report_for(record, citation, claim)
+    with pytest.raises(ValidationError, match=r"identit|artifact|equal lengths"):
+        ResearchReport.model_validate({**report.model_dump(mode="python"), **changes})
