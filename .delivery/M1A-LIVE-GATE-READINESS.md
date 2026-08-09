@@ -2,7 +2,11 @@
 
 Updated: `2026-08-08`
 
-Status: **CANDIDATE - offline constructibility validated; post-remediation PR-head review and final audit pending**
+Status: **M1A_LIVE_RUN_001_EXECUTED - LIVE_GATE_ACCEPTANCE_UNRESOLVED;
+NO_RERUN_AUTHORIZED; CYCLE_4_OFFLINE_PRIVACY_CORRECTION_CANDIDATE**
+
+Current baseline: PR #8 merge
+`09cc42838475a4c1bab62050fbfeac14c5dd6761`
 
 ## Frozen gate
 
@@ -29,6 +33,34 @@ The executable query derived from the frozen `REQUEST_EXAMPLE` is:
 ```text
 ("semaglutide"[Title/Abstract]) AND ("gastrointestinal"[Title/Abstract])
 ```
+
+## Live run 001 recovery disposition
+
+The separately authorized command executed one bounded ESearch request and
+exited `1`. It did not write the original acceptance record: the former
+redaction assertion compared every response-header value as a substring and a
+harmless numeric rate-limit value collided with unrelated safe summary text.
+No rerun was performed or authorized.
+
+The immutable evidence was recovered and validated without another source
+request. Typed canonical parsing, identity recomputation, manifest replay, raw
+hash/size verification, frozen request/attempt bounds, UTC ordering, and the
+deterministic first-page `InvalidPubMedXmlError` establish a reconstructed
+connector outcome of `failed / unavailable / indeterminate`. The persisted
+manifest and envelope separately remain `failed / partial / indeterminate`
+because received bytes must be retained; their coverage is not equated with
+connector coverage. One retained response plus `attempts_used=1` proves exactly
+one request. The failed first search returned no PMID and could not enter the
+fetch branch; the exact layout also contains no `acquisition-0001`.
+
+The exclusively created recovery record is
+`acceptance/pubmed-live-run-001-recovery.json` under the approved external root:
+3,032 bytes, SHA-256
+`1d90d931620952c0a0ea62aaa29d9b9a8c3ed952b3cef8860accf9db1e9f37cf`.
+It is structurally validated and contains no sensitive value, raw content,
+header, complete URL, or source payload. See
+[M1A-LIVE-RUN-001-RECOVERY](M1A-LIVE-RUN-001-RECOVERY.md) for the sanitized
+inventory and disposition. This is not `M1A_LIVE_ACCEPTANCE_PASS`.
 
 ## Required redacted acceptance record
 
@@ -63,27 +95,46 @@ no-result claim.
 
 ## Offline constructibility
 
-`tests/e2e/test_live_pubmed.py` contains no-live synthetic shape and retry-bound
-tests. It
-uses the existing `capture_acquisition`, `SnapshotManifest`, `ArtifactLink`,
-`AcquisitionIntent`, and `AcquisitionRegistrationEnvelope` contracts and a
-temporary external root. It does not instantiate a real transport, select the
-live marker, or contact NCBI. The actual live test remains skipped by default.
+Under the exceptional Owner authorization for
+`M1A-LIVE-RUN-001-RECOVERY-AND-REDACTION-HARNESS-FIX`, cycle 4 changes only the
+test harness and disposition documents. The live test now retains only safe
+marker/opt-in gating, calls one traceback-hidden sensitive executor, and
+asserts a frozen closed scalar result. The executor alone reads the Owner email
+and external root, constructs and closes the connector, owns all provider/raw
+values, persists evidence, and translates every ordinary failure to a new
+fixed-code redacted harness exception with its original chain suppressed.
 
-The final evidence decision must bind to the exact candidate and must include
-fresh focused no-live tests, the sockets-disabled unit/contract suite, Ruff,
-format, MyPy, diff-check, and changed-path checks. No live acceptance result is
-claimed here. The focused suite completed with `43 passed, 1 skipped`; the
-full offline unit/contract suite completed with `713 passed` and 79% reported
-coverage. Ruff, format, MyPy, lock, diff-check, exact baseline/ancestor, and
-authorized-path checks passed. The earlier worktree review passed before the
-marker-gate remediation; post-remediation PR-head review and terminal audit
-remain pending.
+`tests/e2e/test_live_pubmed.py` also contains offline synthetic shape,
+retry-bound, normalized closed-schema privacy, harmless rate-limit collision,
+nested forbidden-key variants, `-vv --showlocals` pytest-output disclosure,
+AST/source-contract, typed recovery, parser-failure, fetch non-execution, and
+no-clobber tests. The AST gate derives the complete local-helper closure from
+the sensitive executor, rejects every reference to the `pytest` module or a
+propagated alias anywhere in that closure, detects imported/aliased
+`pytest.fail`, and infers newly introduced raw-bearing helpers even when they
+are absent from the supplementary sensitive-function registry. These tests use the existing `capture_acquisition`,
+`SnapshotManifest`, `ArtifactLink`, `RunIntent`, `AcquisitionIntent`,
+`AcquisitionRegistrationEnvelope`, and `replay_manifest` contracts with
+synthetic data and temporary roots. Offline validation does not instantiate a
+real transport, select the live marker, or contact NCBI. The live test remains
+skipped by default and still requires both explicit marker selection and the
+Owner environment opt-in.
 
-## Owner gate still required
+The earlier readiness and recovery results remain historical evidence. After
+reviewer-triggered mechanical rework pass 2, cycle 4 has fresh sockets-disabled
+evidence of `38 passed, 8 deselected` for the privacy/static/subprocess
+selection and `44 passed, 2 skipped` for the complete E2E module; one skip is
+the directly unselected child probe and one is the default-disabled live test.
+Ruff and format checks pass on the test file. Reviewer-triggered internal
+rework passes consumed: `2` of maximum `2`.
+Applicable integration validation, independent review, terminal evidence
+audit, candidate identity, and any later Git action remain pending. No reviewer
+PASS, audit PASS, commit, PR, merge, or live acceptance PASS is claimed here.
 
-This record does not authorize a live request. Before any live execution, the
-Project Owner must approve the exact query, NCBI email, execution UTC window,
-external snapshot root, command, and final acceptance review. A source outage
-or unavailable live response must remain unavailable/partial evidence, never a
-claim that no PubMed result exists.
+## Unresolved Owner gate
+
+The prior authorization was consumed by live run 001 and does not authorize a
+rerun. Acceptance remains unresolved pending independent review and terminal
+evidence audit of this recovery candidate. A failed/unavailable source outcome
+remains indeterminate and is never a claim that PubMed has no results. Do not
+claim M1A completion or begin M1B Owner planning from this record.

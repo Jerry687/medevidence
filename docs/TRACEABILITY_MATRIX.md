@@ -16,20 +16,40 @@ Rules:
 
 ### Current M1A integration status
 
-M1A-005 is offline-integrated in approved `main` at
-`47504a4016f968ed0a0dd10e4280b1a957c15461`, the merge commit for PR #7. Any
-row below that cites the earlier `14a38d4...` baseline or describes PR #7 as a
-Draft, pending merge, or unintegrated is historical pre-merge evidence and is
-superseded for current status by
-[M1A-005 integration reconciliation](../.delivery/M1A-005-INTEGRATION-RECONCILIATION.md).
-The live PubMed acceptance gate remains `LIVE_GATE_NOT_RUN`; M1B has not begun.
+M1A remains offline-integrated in approved `main` at
+`09cc42838475a4c1bab62050fbfeac14c5dd6761`, the merge commit for PR #8. Any row
+below that cites an earlier baseline or describes PR #7/PR #8 as pending merge
+is historical evidence and is superseded for current status by the integration
+records. The separately authorized first live run is
+`M1A_LIVE_RUN_001_EXECUTED`; its acceptance is
+`LIVE_GATE_ACCEPTANCE_UNRESOLVED`, and `NO_RERUN_AUTHORIZED` applies. The
+immutable-evidence recovery is recorded in
+[M1A-LIVE-RUN-001-RECOVERY](../.delivery/M1A-LIVE-RUN-001-RECOVERY.md). It is not
+`M1A_LIVE_ACCEPTANCE_PASS`; M1B has not begun.
+
+The exceptional Owner-authorized cycle-4 candidate is an offline privacy
+correction only. The live-test frame owns only safe gating and a frozen scalar
+result; a traceback-hidden executor owns all credentials, provider objects,
+raw values, persistence, and close behavior. Fixed-code chain-suppressed
+failures, normalized recursive forbidden-key checks, a `-vv --showlocals`
+subprocess disclosure regression, and an AST/source gate have fresh
+sockets-disabled node-local coverage. Reviewer-triggered mechanical rework pass
+1 made the AST gate derive the executor-reachable local-helper closure, reject
+direct or aliased `pytest.fail`, and infer newly raw-bearing helpers omitted
+from the supplementary registry. Final authorized mechanical pass 2 rejects
+every `pytest` module reference or propagated alias inside that closure,
+including local/module aliases and `getattr`. Both authorized rework passes are
+consumed. Independent review, terminal evidence audit, candidate identity, and
+integration remain pending. The immutable
+external recovery record and its recovered outcomes are unchanged, and no live
+rerun occurred.
 
 ## 2. Functional requirements
 
 | PRD requirement ID | Architecture section/anchor | Data-source policy section/anchor | Security section/anchor | Evaluation section/anchor | Governing ADR | Milestone | Test/evaluation evidence | Acceptance criterion |
 |---|---|---|---|---|---|---|---|---|
 | [`V1-FR-001`](PRD.md#v1-fr-001--configurable-research-scope) | [§7.1 Research and terminology](ARCHITECTURE.md#71-research-and-terminology) | [§7 Terminology normalization](DATA_SOURCES.md#7-terminology-normalization) | [§9 Medical-boundary handling](SECURITY.md#9-medical-boundary-handling) | [§3 Evaluation item schema](EVALUATION_PLAN.md#3-evaluation-item-schema) | [ADR-001](decisions/ADR-001-v1-reference-domain.md), [ADR-007](decisions/ADR-007-domain-contracts-and-schema-versioning.md) | M1A | Domain schema, API contract, and second synthetic-scope tests | Reference scenario loads through typed configuration; a second scope uses the same path without drug/ADR branches |
-| [`V1-FR-002`](PRD.md#v1-fr-002--pubmed-vertical-slice) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§2 PubMed](DATA_SOURCES.md#2-pubmed) | [§2 PubMed source policy](SECURITY.md#pubmed) | [§2.1 Gold-10](EVALUATION_PLAN.md#21-gold-10-calibration-subset) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-009](decisions/ADR-009-m1a-pubmed-vertical-slice-contracts.md) | M1A | M1A-005 is integrated in approved baseline `47504a4016f968ed0a0dd10e4280b1a957c15461`, the PR #7 merge commit. Its exact API/OpenAPI/catalog/composition and offline/PostgreSQL acceptance path, hosted checks, independent review, and terminal audit are preserved; live PubMed remains not run. | Draft contains PMID/version and exact available-abstract locator; no-match, partial, failed, and unavailable outcomes remain distinct |
+| [`V1-FR-002`](PRD.md#v1-fr-002--pubmed-vertical-slice) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§2 PubMed](DATA_SOURCES.md#2-pubmed) | [§2 PubMed source policy](SECURITY.md#pubmed) | [§2.1 Gold-10](EVALUATION_PLAN.md#21-gold-10-calibration-subset) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-009](decisions/ADR-009-m1a-pubmed-vertical-slice-contracts.md) | M1A | M1A remains offline-integrated at PR #8 merge `09cc42838475a4c1bab62050fbfeac14c5dd6761`. Live run 001 executed one bounded search request. Immutable evidence reconstructs `failed / unavailable / indeterminate` after invalid XML on the first response, while the manifest/envelope separately preserve received bytes as `failed / partial / indeterminate`; fetch was not executed. The original acceptance record was not written due a harness false positive, so acceptance remains unresolved and no rerun is authorized. Cycle 4 has fresh offline scalar-boundary, structural-redaction, traceback-disclosure, and source-AST regression evidence; review/audit/integration are pending. | Draft contains PMID/version and exact available-abstract locator; no-match, partial, failed, and unavailable outcomes remain distinct |
 | [`V1-FR-003`](PRD.md#v1-fr-003--dailymed-labeling) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§3 DailyMed](DATA_SOURCES.md#3-dailymed) | [§2 DailyMed source policy](SECURITY.md#dailymed) | [§5 Question taxonomy](EVALUATION_PLAN.md#5-question-taxonomy) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md) | M1B | Candidate-selection units, SPL contracts, version/section integration case | Every label claim identifies product, SETID, SPL version, section, date, URI, and selection provenance; ambiguity never silently resolves |
 | [`V1-FR-004`](PRD.md#v1-fr-004--faers-descriptive-query) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§4 FAERS/openFDA](DATA_SOURCES.md#4-faersopenfda) | [§2 FAERS/openFDA source policy](SECURITY.md#faersopenfda) | [§8 Agent and safety evaluation](EVALUATION_PLAN.md#8-agent-and-safety-evaluation) | [ADR-002](decisions/ADR-002-source-semantics.md) | M1B | Query/limit units; timeout, 429, truncation, partial fixtures; Gold-10 FAERS case | Output exposes statistical unit, query/time/limits/role/version policy and mandatory limitations; zero unqualified incidence, causal, relative-risk, or ranking claims |
 | [`V1-FR-005`](PRD.md#v1-fr-005--cadec-auxiliary-corpus) | [§5.4 Chunking and indexing](ARCHITECTURE.md#54-chunking-and-indexing) | [§5 CADEC](DATA_SOURCES.md#5-cadec) | [§2 CADEC source policy](SECURITY.md#cadec) | [§4.2 Retrieval relevance](EVALUATION_PLAN.md#42-retrieval-relevance) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md) | M1B | License/manifest check, gold/predicted parse tests, prohibited-claim case | Corpus/version/split and gold/predicted origin remain visible; CADEC cannot support prohibited risk, incidence, causal, regulatory, or clinical claims |
