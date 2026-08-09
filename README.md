@@ -8,11 +8,12 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 ## Repository status
 
 **The approved `main` baseline is
-`09cc42838475a4c1bab62050fbfeac14c5dd6761`, the merge commit for PR #8. M1A
-offline integration remains complete (`M1A_OFFLINE_INTEGRATED`). The separately
-authorized first live run executed (`M1A_LIVE_RUN_001_EXECUTED`), but its
-acceptance remains unresolved (`LIVE_GATE_ACCEPTANCE_UNRESOLVED`) and no rerun
-is authorized (`NO_RERUN_AUTHORIZED`).**
+`e8e28ffbde7fa3994ff8aa71dd62a956250147c1`, the merge commit for PR #9. M1A
+offline integration remains complete (`M1A_OFFLINE_INTEGRATED`). Live run 001
+retains `M1A_LIVE_RUN_001_EXECUTED`, `LIVE_GATE_ACCEPTANCE_UNRESOLVED`, and
+`NO_RERUN_AUTHORIZED`. It is additionally accepted as failed interoperability
+evidence with root cause `CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`; it is not a
+live PASS. No rerun occurred, and any second live run remains Owner-controlled.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -32,8 +33,8 @@ M0 and `ME-000A` are complete and approved. The approved baselines are:
   `14a38d48416e8a4b63fe72b91ceb083f1d895473`; and
 - M1A-005-integrated approved `main` identity:
   `47504a4016f968ed0a0dd10e4280b1a957c15461`; and
-- current PR #8 merge identity:
-  `09cc42838475a4c1bab62050fbfeac14c5dd6761`.
+- current PR #9 merge identity:
+  `e8e28ffbde7fa3994ff8aa71dd62a956250147c1`.
 
 The original independent M0 review returned **FAIL**. The frozen remediation
 later received an unconditional independent **PASS**, and the Project Owner
@@ -190,8 +191,8 @@ content. Its tests are offline and injectable; the implementation has not
 contacted PubMed/NCBI or run Docker. Hosted `compose-config` and
 `windows-quality` succeeded, and final PR-head review and terminal audit both
 returned PASS with P0 0 / P1 0 / P2 0. M1A-005 is integrated and remains an
-ancestor of the current PR #8 merge baseline
-`09cc42838475a4c1bab62050fbfeac14c5dd6761`.
+ancestor of the current PR #9 merge baseline
+`e8e28ffbde7fa3994ff8aa71dd62a956250147c1`.
 
 The separately authorized M1A live run executed one bounded PubMed ESearch
 request at the PR #8 baseline and exited `1`. Immutable evidence reconstructs
@@ -200,12 +201,21 @@ invalid XML on the first search response; fetch was not executed. The persisted
 manifest/envelope uses `failed / partial / indeterminate` solely to retain the
 received bytes. A redaction-harness numeric substring false positive prevented
 the original acceptance record from being written. A structurally validated
-no-clobber recovery record preserves the reconstructable facts, but it is not
-`M1A_LIVE_ACCEPTANCE_PASS`, does not complete M1A, and does not make the project
-ready for M1B Owner planning. See
-[the recovery record](.delivery/M1A-LIVE-RUN-001-RECOVERY.md).
+no-clobber recovery record preserves the reconstructable facts. Offline
+reproduction now identifies `CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`: the
+response bytes were received, and the historical parser rejected the official
+external provider DOCTYPE. The exact retained bytes parse under the bounded
+candidate as `PubMedSearchPage` with provider `count=676`, 100 returned
+identifiers, and zero socket or external file-open calls. This was not an NCBI
+outage. Live run 001 is dispositioned as
+`M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE`; its historical
+outcomes remain immutable. No rerun occurred, no live PASS is claimed, and any
+second live run remains Owner-controlled. See [the recovery
+record](.delivery/M1A-LIVE-RUN-001-RECOVERY.md) and [the interoperability
+record](.delivery/M1A-PUBMED-DTD-INTEROPERABILITY.md).
 
-An exceptional Owner-authorized cycle-4 offline correction candidate now
+The exceptional Owner-authorized cycle-4 offline correction is integrated at
+PR #9 merge `e8e28ffbde7fa3994ff8aa71dd62a956250147c1` and
 confines all live credentials, transport/provider objects, raw content,
 headers, complete URLs, and query parameters to one traceback-hidden sensitive
 executor. The live test receives only a frozen closed scalar result. Recursive
@@ -216,15 +226,17 @@ mechanical rework pass 1 made the source gate derive every local helper
 reachable from the sensitive executor and reject direct or aliased
 `pytest.fail` plus an omitted newly raw-bearing helper. Final authorized pass 2
 rejects every `pytest` module reference or propagated alias in that closure,
-including local/module aliases and `getattr`. Current node-local checks are
-green, but independent review and terminal audit are pending. The external
+including local/module aliases and `getattr`. Its node-local checks were green
+before integration. The external
 recovery record is unchanged at 3,032 bytes with SHA-256
 `1d90d931620952c0a0ea62aaa29d9b9a8c3ed952b3cef8860accf9db1e9f37cf`.
-This candidate adds no live result, rerun authority, M1A completion, M1B
-readiness, reviewer/audit PASS, commit, PR, or merge claim.
+The current provider-DTD compatibility candidate adds no live result, rerun
+authority, M1A completion, M1B readiness, reviewer/audit PASS, commit, PR, or
+merge claim.
 
-The live-artifact policy `M1A-LIVE-RETENTION-v1` remains approved. No rerun is
-authorized. Default CI and recovery validation remain offline. No standalone
+The live-artifact policy `M1A-LIVE-RETENTION-v1` remains approved. A second live
+run requires exact Owner authorization. Default CI and recovery validation
+remain offline. No standalone
 ASGI server dependency is authorized for M1A; `M1A-005` may use an in-process
 ASGI test client.
 

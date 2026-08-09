@@ -186,6 +186,40 @@ def test_one_page_success_uses_fixed_endpoint_and_bounded_parameters() -> None:
     assert request.headers["accept-encoding"] == "identity"
 
 
+def test_provider_external_dtd_search_and_fetch_stay_within_mock_transport() -> None:
+    requests: list[httpx.Request] = []
+    search_body = (
+        b'<!DOCTYPE eSearchResult SYSTEM "https://eutils.ncbi.nlm.nih.gov/eutils/dtd/esearch.dtd">'
+        + search_xml("111")
+    )
+    fetch_body = (
+        b"<!DOCTYPE PubmedArticleSet PUBLIC "
+        b'"-//NLM//DTD PubMedArticle, 1st January 2025//EN" '
+        b'"https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd">'
+        + fetch_xml(article_xml("111"))
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == PUBMED_ESEARCH_PATH:
+            return httpx.Response(200, content=search_body)
+        if request.url.path == PUBMED_EFETCH_PATH:
+            return httpx.Response(200, content=fetch_body)
+        raise AssertionError("unexpected mock request path")
+
+    with connector(handler) as client:
+        search_result = client.search("provider DTD contract")
+        fetch_result = client.fetch(("111",), query_id="query:provider-dtd")
+
+    assert search_result.state is PubMedResultState.COMPLETE_SUCCESS
+    assert search_result.pmids == ("111",)
+    assert search_result.request_count == 1
+    assert fetch_result.state is PubMedResultState.COMPLETE_SUCCESS
+    assert tuple(record.pmid for record in fetch_result.publications) == ("111",)
+    assert fetch_result.request_count == 1
+    assert [request.url.path for request in requests] == [PUBMED_ESEARCH_PATH, PUBMED_EFETCH_PATH]
+
+
 def test_multi_page_success_advances_retstart_and_preserves_order() -> None:
     offsets: list[int] = []
 

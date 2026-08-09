@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from itertools import islice
 from typing import cast
+from urllib.parse import urlsplit
 
 from defusedxml import ElementTree as safe_etree  # type: ignore[import-untyped]
 from defusedxml.common import DefusedXmlException  # type: ignore[import-untyped]
@@ -22,6 +23,24 @@ _XML_ENCODING_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SUPPORTED_XML_ENCODINGS = frozenset({b"ascii", b"us-ascii", b"utf-8", b"utf8"})
+_MAX_DOCTYPE_BYTES = 1024
+_ALLOWED_DTD_HOSTS = frozenset({"dtd.nlm.nih.gov", "eutils.ncbi.nlm.nih.gov"})
+_DOCTYPE_PATTERN = re.compile(
+    rb"""<!DOCTYPE[\x20\t\r\n]+(?P<root>[A-Za-z_:][A-Za-z0-9_.:-]*)
+    [\x20\t\r\n]+(?:
+        SYSTEM[\x20\t\r\n]+(?P<system_quote>['"])
+        (?P<system_url>[^'"]+)(?P=system_quote)
+        |
+        PUBLIC[\x20\t\r\n]+(?P<public_quote>['"])
+        (?P<public_id>[^'"]+)(?P=public_quote)
+        [\x20\t\r\n]+(?P<public_url_quote>['"])
+        (?P<public_url>[^'"]+)(?P=public_url_quote)
+    )[\x20\t\r\n]*>\Z""",
+    re.VERBOSE,
+)
+_CANONICAL_NLM_PUBLIC_ID_PATTERN = re.compile(
+    r"-//NLM//DTD [A-Za-z0-9](?:[A-Za-z0-9 .,'()+_:-]*[A-Za-z0-9)])?//EN\Z"
+)
 
 
 class PubMedXmlErrorCode(StrEnum):
@@ -180,7 +199,7 @@ def parse_search_page(
     ):
         raise ValueError("expected_retstart must be nonnegative")
 
-    root = _parse_root(payload)
+    root = _parse_root(payload, expected_root="eSearchResult")
     if root.tag != "eSearchResult":
         raise IncompletePubMedXmlError("expected eSearchResult document root")
 
@@ -230,7 +249,7 @@ def parse_fetch_response(
         _validate_expected_pmid(pmid)
     expected_set = set(expected)
 
-    root = _parse_root(payload)
+    root = _parse_root(payload, expected_root="PubmedArticleSet")
     if root.tag != "PubmedArticleSet":
         raise IncompletePubMedXmlError("expected PubmedArticleSet document root")
 
@@ -296,16 +315,26 @@ def parse_fetch_response(
     )
 
 
-def _parse_root(payload: bytes) -> stdlib_etree.Element:
+def _parse_root(payload: bytes, *, expected_root: str) -> stdlib_etree.Element:
     if not isinstance(payload, bytes):
         raise TypeError("PubMed XML payload must be bytes")
     _reject_unsupported_xml_encoding(payload)
+    declared_root = _validated_external_doctype_root(payload, expected_root=expected_root)
+    root = _parse_defused_root(payload)
+    if root is None:
+        raise InvalidPubMedXmlError("PubMed XML is malformed or unsafe")
+    if declared_root is not None and root.tag != declared_root:
+        raise InvalidPubMedXmlError("PubMed XML document roots do not match")
+    return root
+
+
+def _parse_defused_root(payload: bytes) -> stdlib_etree.Element | None:
     try:
         return cast(
             stdlib_etree.Element,
             safe_etree.fromstring(
                 payload,
-                forbid_dtd=True,
+                forbid_dtd=False,
                 forbid_entities=True,
                 forbid_external=True,
             ),
@@ -315,8 +344,100 @@ def _parse_root(payload: bytes) -> stdlib_etree.Element:
         LookupError,
         ValueError,
         stdlib_etree.ParseError,
-    ) as error:
-        raise InvalidPubMedXmlError("PubMed XML is malformed or unsafe") from error
+    ):
+        return None
+
+
+def _validated_external_doctype_root(payload: bytes, *, expected_root: str) -> str | None:
+    marker = b"<!DOCTYPE"
+    marker_index = payload.find(marker)
+    if marker_index < 0:
+        return None
+    if payload.find(marker, marker_index + len(marker)) >= 0:
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+    if not _doctype_is_in_document_prolog(payload, marker_index):
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+
+    declaration_end = payload.find(b">", marker_index, marker_index + _MAX_DOCTYPE_BYTES)
+    if declaration_end < 0:
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+    declaration = payload[marker_index : declaration_end + 1]
+    if len(declaration) > _MAX_DOCTYPE_BYTES:
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+    declaration_is_ascii = True
+    try:
+        declaration.decode("ascii")
+    except UnicodeDecodeError:
+        declaration_is_ascii = False
+    if not declaration_is_ascii:
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+
+    match = _DOCTYPE_PATTERN.fullmatch(declaration)
+    if match is None:
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+    declared_root = match.group("root").decode("ascii")
+    if declared_root != expected_root:
+        raise InvalidPubMedXmlError("PubMed XML document roots do not match")
+
+    public_id_bytes = match.group("public_id")
+    if public_id_bytes is not None:
+        public_id = public_id_bytes.decode("ascii")
+        if _CANONICAL_NLM_PUBLIC_ID_PATTERN.fullmatch(public_id) is None:
+            raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+
+    url_bytes = match.group("system_url") or match.group("public_url")
+    if url_bytes is None:
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+    _validate_external_dtd_url(url_bytes.decode("ascii"))
+    return declared_root
+
+
+def _doctype_is_in_document_prolog(payload: bytes, marker_index: int) -> bool:
+    prefix = payload[:marker_index]
+    if prefix.startswith(b"\xef\xbb\xbf"):
+        prefix = prefix[3:]
+    prefix = re.sub(rb"\A[\x20\t\r\n]+", b"", prefix)
+    xml_declaration = re.match(rb"<\?xml\b[^?]{0,256}\?>", prefix)
+    if xml_declaration is not None:
+        prefix = prefix[xml_declaration.end() :]
+    while True:
+        prefix = re.sub(rb"\A[\x20\t\r\n]+", b"", prefix)
+        comment = re.match(rb"<!--[\s\S]*?-->", prefix)
+        if comment is not None:
+            prefix = prefix[comment.end() :]
+            continue
+        processing_instruction = re.match(rb"<\?(?!xml\b)[\s\S]*?\?>", prefix)
+        if processing_instruction is not None:
+            prefix = prefix[processing_instruction.end() :]
+            continue
+        return not prefix
+
+
+def _validate_external_dtd_url(value: str) -> None:
+    if any(
+        character.isspace() or ord(character) < 0x21 or ord(character) == 0x7F
+        for character in value
+    ):
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+    parsed = None
+    port = None
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        pass
+    if parsed is None:
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in _ALLOWED_DTD_HOSTS
+        or parsed.netloc != parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.fragment
+    ):
+        raise InvalidPubMedXmlError("PubMed XML contains an unsupported DOCTYPE")
 
 
 def _reject_unsupported_xml_encoding(payload: bytes) -> None:
