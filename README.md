@@ -8,11 +8,11 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 ## Repository status
 
 **The approved `main` baseline is
-`47504a4016f968ed0a0dd10e4280b1a957c15461`, the merge commit for PR #7. The
-M1A-005 implementation, review, terminal audit, and hosted checks are
-integrated. M1A offline integration is complete
-(`M1A_OFFLINE_INTEGRATED`); live PubMed acceptance remains unexecuted
-(`LIVE_GATE_NOT_RUN`).**
+`09cc42838475a4c1bab62050fbfeac14c5dd6761`, the merge commit for PR #8. M1A
+offline integration remains complete (`M1A_OFFLINE_INTEGRATED`). The separately
+authorized first live run executed (`M1A_LIVE_RUN_001_EXECUTED`), but its
+acceptance remains unresolved (`LIVE_GATE_ACCEPTANCE_UNRESOLVED`) and no rerun
+is authorized (`NO_RERUN_AUTHORIZED`).**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -31,7 +31,9 @@ M0 and `ME-000A` are complete and approved. The approved baselines are:
 - M1A-004-integrated historical `main` identity:
   `14a38d48416e8a4b63fe72b91ceb083f1d895473`; and
 - M1A-005-integrated approved `main` identity:
-  `47504a4016f968ed0a0dd10e4280b1a957c15461`.
+  `47504a4016f968ed0a0dd10e4280b1a957c15461`; and
+- current PR #8 merge identity:
+  `09cc42838475a4c1bab62050fbfeac14c5dd6761`.
 
 The original independent M0 review returned **FAIL**. The frozen remediation
 later received an unconditional independent **PASS**, and the Project Owner
@@ -162,11 +164,13 @@ monolithic M1A implementation PR is not authorized.
 ADR-009 Revision 2 and the owner-authorization package are approved and
 effective. M1A-001B, M1A-002, M1A-003A PR `#4`, and M1A-003B PR `#5` are
 reviewed, merged, and integrated into approved `main` baseline
-`5102d56c73b6714d3608a93a47aa31f70ffa1097`. Live NCBI/TLS behavior remains
-intentionally unverified. M1A-003A's historical CRLF failure and M1A-003B's
-historical failed review/database evidence remain visible in their immutable
-records. The integrated M1A-003B gates passed 532 offline unit/contract tests,
-236 PostgreSQL integration tests, and left zero Docker residue.
+`5102d56c73b6714d3608a93a47aa31f70ffa1097`. At that historical integration
+point, live NCBI/TLS behavior was intentionally unverified; live run 001 is the
+later bounded execution described below. M1A-003A's historical CRLF failure and
+M1A-003B's historical failed review/database evidence remain visible in their
+immutable records. The integrated M1A-003B gates passed 532 offline
+unit/contract tests, 236 PostgreSQL integration tests, and left zero Docker
+residue.
 
 `M1A-004` is committed at `2f6cb0a2aa65c5c9e2292fb6e3010d5d14d767a0`
 and pushed on `feat/m1a-004-pubmed-tools-report` to Draft PR
@@ -185,16 +189,44 @@ downstream use. Failure diagnostics reject credential-like or multiline
 content. Its tests are offline and injectable; the implementation has not
 contacted PubMed/NCBI or run Docker. Hosted `compose-config` and
 `windows-quality` succeeded, and final PR-head review and terminal audit both
-returned PASS with P0 0 / P1 0 / P2 0. M1A-005 is integrated in approved
-baseline `47504a4016f968ed0a0dd10e4280b1a957c15461`, the merge commit for PR #7.
-Live PubMed acceptance was not run and remains behind the separate Owner gate.
+returned PASS with P0 0 / P1 0 / P2 0. M1A-005 is integrated and remains an
+ancestor of the current PR #8 merge baseline
+`09cc42838475a4c1bab62050fbfeac14c5dd6761`.
 
-The live-artifact policy `M1A-LIVE-RETENTION-v1` is approved. Live PubMed
-execution remains unauthorized until the Project Owner separately approves the
-exact query, NCBI client-identification values, execution time, and final
-acceptance command. Default CI remains offline. No standalone ASGI server
-dependency is authorized for M1A; `M1A-005` may use an in-process ASGI test
-client.
+The separately authorized M1A live run executed one bounded PubMed ESearch
+request at the PR #8 baseline and exited `1`. Immutable evidence reconstructs
+the terminal connector outcome as `failed / unavailable / indeterminate` after
+invalid XML on the first search response; fetch was not executed. The persisted
+manifest/envelope uses `failed / partial / indeterminate` solely to retain the
+received bytes. A redaction-harness numeric substring false positive prevented
+the original acceptance record from being written. A structurally validated
+no-clobber recovery record preserves the reconstructable facts, but it is not
+`M1A_LIVE_ACCEPTANCE_PASS`, does not complete M1A, and does not make the project
+ready for M1B Owner planning. See
+[the recovery record](.delivery/M1A-LIVE-RUN-001-RECOVERY.md).
+
+An exceptional Owner-authorized cycle-4 offline correction candidate now
+confines all live credentials, transport/provider objects, raw content,
+headers, complete URLs, and query parameters to one traceback-hidden sensitive
+executor. The live test receives only a frozen closed scalar result. Recursive
+structural redaction uses punctuation/case-insensitive key normalization;
+fixed-code harness failures suppress original chains; offline subprocess and
+AST gates check pytest output and source structure. Reviewer-triggered
+mechanical rework pass 1 made the source gate derive every local helper
+reachable from the sensitive executor and reject direct or aliased
+`pytest.fail` plus an omitted newly raw-bearing helper. Final authorized pass 2
+rejects every `pytest` module reference or propagated alias in that closure,
+including local/module aliases and `getattr`. Current node-local checks are
+green, but independent review and terminal audit are pending. The external
+recovery record is unchanged at 3,032 bytes with SHA-256
+`1d90d931620952c0a0ea62aaa29d9b9a8c3ed952b3cef8860accf9db1e9f37cf`.
+This candidate adds no live result, rerun authority, M1A completion, M1B
+readiness, reviewer/audit PASS, commit, PR, or merge claim.
+
+The live-artifact policy `M1A-LIVE-RETENTION-v1` remains approved. No rerun is
+authorized. Default CI and recovery validation remain offline. No standalone
+ASGI server dependency is authorized for M1A; `M1A-005` may use an in-process
+ASGI test client.
 
 ## Bounded PubMed connector
 

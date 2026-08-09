@@ -1,25 +1,49 @@
-# Delivery state: M1A-005 offline integration and live-gate readiness
+# Delivery state: M1A offline integration and live-run recovery
 
 Updated: `2026-08-08`
 Repository: `D:\Projects\medevidence`
-Branch: `docs/m1a-offline-integration-live-readiness`
-Current status: `M1A_OFFLINE_INTEGRATED`
-Live gate: `LIVE_GATE_NOT_RUN`
+Branch: `fix/m1a-live-run-001-recovery`
+Current status: `M1A_OFFLINE_INTEGRATED`; `M1A_LIVE_RUN_001_EXECUTED`
+Live gate: `LIVE_GATE_ACCEPTANCE_UNRESOLVED`; `NO_RERUN_AUTHORIZED`;
+`CYCLE_4_OFFLINE_PRIVACY_CORRECTION_CANDIDATE`
 
 ## Current M1A-005 state
 
 The current approved `main` identity is
-`47504a4016f968ed0a0dd10e4280b1a957c15461`, the merge commit for PR #7.
-M1A-005 is offline-integrated. PR #7 is merged and is not an open, Draft,
-pending, or unintegrated change. The historical M1A-002 ledger below remains
-preserved for provenance; its old active-candidate wording is not the current
-M1A state. The live PubMed acceptance gate remains unexecuted, and M1B has not
-begun.
+`09cc42838475a4c1bab62050fbfeac14c5dd6761`, the merge commit for PR #8.
+M1A remains offline-integrated. The separately authorized M1A live command
+executed one bounded PubMed search request at that revision and exited `1`.
+The connector produced `failed / unavailable / indeterminate` after invalid
+XML on the first search response; the immutable manifest/envelope separately
+persisted `failed / partial / indeterminate` so received bytes were retained.
+The original acceptance record was not written because the redaction harness
+raised a numeric response-header substring false positive. No rerun was
+performed or authorized. The live acceptance gate is unresolved, and M1B has
+not begun.
+
+The exceptional Owner-authorized cycle-4 write node is an offline privacy
+correction candidate only. It confines all live inputs, transport/provider
+objects, and raw-bearing values to one traceback-hidden executor; the live test
+receives only a frozen scalar result. Normalized recursive redaction, fixed-code
+chain-suppressed failures, a `-vv --showlocals` child disclosure regression,
+and an AST/source gate are covered by fresh sockets-disabled tests.
+Reviewer-triggered mechanical rework pass 1 made that source gate derive all
+local helpers reachable from the sensitive executor, detect aliased
+`pytest.fail`, and infer an omitted new raw-bearing helper. Final authorized
+mechanical rework pass 2 rejects every `pytest` module reference or propagated
+alias in the executor-reachable closure, including local/module aliases and
+`getattr`. Current node-local results are `38 passed, 8 deselected` for the
+focused privacy/static selection and `44 passed, 2 skipped` for the full E2E
+module; Ruff and format pass on the test file. Reviewer-triggered rework passes
+consumed: `2` of maximum `2`.
+Independent review, terminal evidence audit, and candidate integration remain
+pending.
 
 Current integration and readiness records:
 
 - [M1A-005 integration reconciliation](M1A-005-INTEGRATION-RECONCILIATION.md)
 - [M1A live-gate readiness](M1A-LIVE-GATE-READINESS.md)
+- [M1A live run 001 recovery](M1A-LIVE-RUN-001-RECOVERY.md)
 - [M1A-005 Owner integration approval](../docs/reviews/M1A-005-OWNER-INTEGRATION-APPROVAL-001.md)
 - [M1A live-gate readiness review](../docs/reviews/M1A-LIVE-GATE-READINESS-001.md)
 
@@ -205,8 +229,10 @@ Remote operations: none
   phases; it cannot preempt a malicious injected transport or parser while that
   callable is blocked, but it rejects completeness immediately after control
   returns.
-- Live TLS/NCBI behavior is intentionally unverified because the exact live
-  query and command remain Owner-gated.
+- At this historical M1A-002 ledger cutoff, live TLS/NCBI behavior was
+  intentionally unverified because the exact live query and command remained
+  Owner-gated. Live run 001 is recorded separately in the current-state section
+  above and does not rewrite this historical evidence boundary.
 - The final dependency evidence is an external temporary artifact; its manifest
   and candidate identity are recorded here, but the artifact is not committed.
 - M1A-002 is locally integrated into the approved `main` baseline at
@@ -253,14 +279,18 @@ Files modified in this reconciliation: docs/reviews/M1A-002-OWNER-INTEGRATION-AP
 Recommended next action: independent re-review and terminal audit, then on PASS execute the already-authorized exact four-path commit and fast-forward-only local integration flow; do not begin M1A-003A or later work
 ```
 
-## Current M1A-005 handoff
+## Current M1A handoff
 
 ```text
-Task: M1A-OFFLINE-INTEGRATION-RECONCILIATION-AND-LIVE-READINESS
-Status: M1A_OFFLINE_INTEGRATED; LIVE_GATE_NOT_RUN; focused/full offline validation PASS; post-remediation PR-head review and terminal audit pending
-Baseline: local main, cached origin/main, and live origin/main resolved to 47504a4016f968ed0a0dd10e4280b1a957c15461 at preflight
-Integration: PR #7 merged with merge-commit semantics at 47504a4016f968ed0a0dd10e4280b1a957c15461; M1A-005 implementation/evidence ancestors are recorded in the reconciliation record
-Scope: authorized delivery/readiness records and conditional tests/e2e/test_live_pubmed.py only; no production source, dependency, schema, or public-interface change
-Network: no PubMed/NCBI/DailyMed/FAERS request; the live gate remains disabled by default
-Next action: post-remediation PR-head review, terminal evidence audit, then the authorized GitHub lifecycle only if every gate passes
+Task: M1A-LIVE-RUN-001-RECOVERY-AND-REDACTION-HARNESS-FIX
+Status: M1A_OFFLINE_INTEGRATED; M1A_LIVE_RUN_001_EXECUTED; LIVE_GATE_ACCEPTANCE_UNRESOLVED; NO_RERUN_AUTHORIZED; CYCLE_4_OFFLINE_PRIVACY_CORRECTION_CANDIDATE
+Baseline: PR #8 merge 09cc42838475a4c1bab62050fbfeac14c5dd6761
+Execution: one bounded PubMed ESearch request occurred; command exit 1; invalid_xml reconstructed terminal connector outcome failed/unavailable/indeterminate; fetch not executed
+Recovery: original acceptance record absent; immutable evidence validated; exclusive external recovery record written and hashed; this is not M1A_LIVE_ACCEPTANCE_PASS
+Cycle 4: frozen scalar-only live-test boundary, hidden sensitive executor, fixed safe harness exception, normalized recursive structural redaction, subprocess disclosure test, and executor-reachable AST/source gate rejecting all pytest module/alias references; current node-local validation green; reviewer rework passes consumed 2 of maximum 2
+Recovery record: unchanged at 3032 bytes and SHA-256 1d90d931620952c0a0ea62aaa29d9b9a8c3ed952b3cef8860accf9db1e9f37cf
+Scope: exactly the authorized test harness and five milestone/disposition documents; no production source, dependency, schema, or public-interface change
+Network in cycle 4: none; live opt-in unset; sockets disabled; no rerun and no live medical-source request
+Pending: independent review, terminal audit, candidate identity, and any authorized Git lifecycle; no PASS/commit/PR/merge claim
+Next action: independent review of the cycle-4 candidate; do not begin M1B planning
 ```
