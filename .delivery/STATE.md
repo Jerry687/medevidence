@@ -1,55 +1,53 @@
-# Delivery state: M1A PubMed provider-DTD interoperability
+# Delivery state: M1A complete after live PubMed run 002 acceptance
 
-Updated: `2026-08-08`
-Repository: `D:\Projects\medevidence`
-Branch: `fix/m1a-pubmed-provider-dtd-compatibility`
-Current status: `M1A_OFFLINE_INTEGRATED`; `M1A_LIVE_RUN_001_EXECUTED`
-Live gate: `LIVE_GATE_ACCEPTANCE_UNRESOLVED`; `NO_RERUN_AUTHORIZED`;
-`M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE`;
-`CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`; `NO_LIVE_PASS`;
-`SECOND_RUN_OWNER_CONTROLLED`
+Updated: `2026-08-09`
+Repository: `MedEvidence`
+Branch: `docs/m1a-live-run-002-acceptance`
+Current status: `M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE`;
+`M1A_LIVE_RUN_002_ACCEPTED`; `M1A_LIVE_ACCEPTANCE_PASS`; `M1A_COMPLETE`;
+`READY_FOR_M1B_OWNER_PLANNING`
 
-## Current M1A-005 state
+## Current M1A state
 
-The current approved `main` identity is
-`e8e28ffbde7fa3994ff8aa71dd62a956250147c1`, the merge commit for PR #9.
-M1A remains offline-integrated. The separately authorized M1A live command
-executed one bounded PubMed search request at PR #8 merge
-`09cc42838475a4c1bab62050fbfeac14c5dd6761` and exited `1`.
-The connector produced `failed / unavailable / indeterminate` after invalid
-XML on the first search response; the immutable manifest/envelope separately
-persisted `failed / partial / indeterminate` so received bytes were retained.
-The original acceptance record was not written because the redaction harness
-raised a numeric response-header substring false positive. No rerun was
-performed. Live run 001 is accepted as failed interoperability evidence, not a
-live PASS, and M1B has not begun.
+The approved `main` baseline and accepted live-run code revision are
+`531f867006f3d01ebbc14633ad6e5509e4e70a47`.
+The integrated offline M1A vertical slice and the validated live run 002 now
+satisfy the frozen M1A acceptance. M1A is complete and ready for a separately
+Owner-authorized M1B planning work item. M1B has not begun.
 
-Offline reproduction now identifies
-`CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`: the exact retained response bytes
-were received and contain an official external provider DOCTYPE rejected by
-the historical parser. The bounded compatibility candidate parses those exact
-2,205 bytes as `PubMedSearchPage` with `count=676` and 100 returned identifiers,
-with zero socket and external file-open calls. This was not an NCBI outage. The
-historical connector and persisted evidence outcomes remain unchanged. No
-rerun occurred; any second live run remains Owner-controlled.
+Live run 002 executed the exact frozen query at
+`2026-08-09T05:13:33.284549Z` under schema `1.0`, connector `m1a-002`, and
+retention policy `M1A-LIVE-RETENTION-v1`. One run used exactly two requests and
+two contiguous acquisitions: search was `succeeded / partial / matches` with
+100 valid results, one page, and `truncated=true`; fetch was
+`succeeded / complete / matches` with one valid retained publication, one page,
+and `truncated=false`. The partial search is explicitly bounded and
+non-exhaustive.
 
-The exceptional Owner-authorized cycle-4 offline privacy correction is
-integrated in PR #9. It confines all live inputs, transport/provider
-objects, and raw-bearing values to one traceback-hidden executor; the live test
-receives only a frozen scalar result. Normalized recursive redaction, fixed-code
-chain-suppressed failures, a `-vv --showlocals` child disclosure regression,
-and an AST/source gate are covered by fresh sockets-disabled tests.
-Reviewer-triggered mechanical rework pass 1 made that source gate derive all
-local helpers reachable from the sensitive executor, detect aliased
-`pytest.fail`, and infer an omitted new raw-bearing helper. Final authorized
-mechanical rework pass 2 rejects every `pytest` module reference or propagated
-alias in the executor-reachable closure, including local/module aliases and
-`getattr`. Current node-local results are `38 passed, 8 deselected` for the
-focused privacy/static selection and `44 passed, 2 skipped` for the full E2E
-module; Ruff and format pass on the test file. Reviewer-triggered rework passes
-consumed: `2` of maximum `2`.
-Independent review and terminal evidence audit for the provider-DTD
-interoperability candidate remain pending.
+The redacted acceptance record is retained outside Git beneath external root
+label `OWNER_EXTERNAL_M1A_LIVE_RUN_002_ROOT`, at relative label
+`acceptance/pubmed-live-b1ab911398624933ab8fc06de2e08596.json`. It is 3,223
+bytes with SHA-256
+`008770e8155eee608aa71fab08cdd2a223f1e9ec92824427cc7a3409c6f69f25`.
+Closed-contract validation passed identity recomputation, containment,
+redaction, and unexpected-file checks. No rerun occurred; the medical-source
+authority is consumed and `rerun_authorized=false`.
+
+Operator-supplied command evidence reports that the exact live test exited `0`
+with `1 passed`, wrote the acceptance record, cleared the supplied environment
+values, and left the repository clean immediately after the live run. This
+documentation node did not independently rerun the live test, instantiate
+transport, or contact a medical source.
+
+Live run 001 remains historical `failed / unavailable / indeterminate`
+interoperability evidence, with received bytes retained separately as
+`failed / partial / indeterminate` and no fetch. It never established a live
+PASS and is not rewritten by run 002.
+
+The Run 002 acceptance is a bounded engineering acceptance result, not a
+clinical conclusion. It establishes no causality, incidence, comparative risk,
+diagnosis, treatment, dosage, or individualized advice. The report remains a
+research-only, non-exportable, non-clinical draft.
 
 Current integration and readiness records:
 
@@ -57,6 +55,8 @@ Current integration and readiness records:
 - [M1A live-gate readiness](M1A-LIVE-GATE-READINESS.md)
 - [M1A live run 001 recovery](M1A-LIVE-RUN-001-RECOVERY.md)
 - [M1A PubMed provider-DTD interoperability](M1A-PUBMED-DTD-INTEROPERABILITY.md)
+- [M1A live run 002 acceptance](M1A-LIVE-RUN-002-ACCEPTANCE.md)
+- [M1A live run 002 acceptance review candidate](../docs/reviews/M1A-LIVE-RUN-002-ACCEPTANCE-001.md)
 - [M1A-005 Owner integration approval](../docs/reviews/M1A-005-OWNER-INTEGRATION-APPROVAL-001.md)
 - [M1A live-gate readiness review](../docs/reviews/M1A-LIVE-GATE-READINESS-001.md)
 
@@ -295,14 +295,16 @@ Recommended next action: independent re-review and terminal audit, then on PASS 
 ## Current M1A handoff
 
 ```text
-Task: M1A-PUBMED-DTD-INTEROPERABILITY
-Status: M1A_LIVE_RUN_001_EXECUTED; LIVE_GATE_ACCEPTANCE_UNRESOLVED; NO_RERUN_AUTHORIZED; M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE; CLIENT_XML_DTD_INTEROPERABILITY_FAILURE; READY_FOR_INDEPENDENT_REVIEW; NO_LIVE_PASS
-Baseline: PR #9 merge e8e28ffbde7fa3994ff8aa71dd62a956250147c1
-Historical execution: one bounded PubMed ESearch request occurred at PR #8; command exit 1; historical connector outcome failed/unavailable/indeterminate; persisted evidence failed/partial/indeterminate; fetch not executed
-After-state: exact retained 2205 bytes parse offline as PubMedSearchPage; count=676; returned_identifier_count=100; socket_calls=0; external_open_calls=0; raw/recovery/manifest identities unchanged
-Recovery record: unchanged at 3032 bytes and SHA-256 1d90d931620952c0a0ea62aaa29d9b9a8c3ed952b3cef8860accf9db1e9f37cf
-Scope: exactly nine authorized paths; parser, unit/contract tests, and six delivery/status documents; no dependency, client, domain, schema, or public-interface change
-Network in this node: none; sockets disabled; no rerun and no live medical-source request
-Pending: independent review, terminal audit, candidate identity, and any authorized Git lifecycle; no PASS/commit/PR/merge claim
-Next action: independent review of the provider-DTD candidate; any second live run remains Owner-controlled; do not begin M1B planning
+Task: M1A-LIVE-RUN-002-ACCEPTANCE
+Status: M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE; M1A_LIVE_RUN_002_ACCEPTED; M1A_LIVE_ACCEPTANCE_PASS; M1A_COMPLETE; READY_FOR_M1B_OWNER_PLANNING
+Baseline and live code revision: 531f867006f3d01ebbc14633ad6e5509e4e70a47
+Accepted execution: 2026-08-09T05:13:33.284549Z; exact frozen query; one run; two contiguous acquisitions; total requests 2 = search 1 + fetch 1
+Outcomes: search succeeded/partial/matches, 100 valid results, one page, truncated true and non-exhaustive; fetch succeeded/complete/matches, one retained publication, one page, truncated false
+Acceptance record: external root label OWNER_EXTERNAL_M1A_LIVE_RUN_002_ROOT; relative label acceptance/pubmed-live-b1ab911398624933ab8fc06de2e08596.json; 3223 bytes; SHA-256 008770e8155eee608aa71fab08cdd2a223f1e9ec92824427cc7a3409c6f69f25
+Historical separation: Run 001 remains accepted only as failed-interoperability evidence and never passed
+Authority: no rerun occurred; medical-source authority consumed; rerun_authorized=false; M1B not started
+Safety: bounded non-exhaustive engineering evidence only; no causal, incidence, comparative-risk, or clinical conclusion; draft remains non-exportable and non-clinical
+Docs candidate: exactly six authorized paths; independent diff review, terminal audit, hosted CI, and later Git lifecycle remain pending
+Network in this docs node: none; no live test, transport construction, medical-source request, or environment-value read
+Next action: independently review and audit this six-path candidate; after authorized integration, begin only a separate Owner-approved M1B planning item
 ```

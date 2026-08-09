@@ -1,21 +1,20 @@
 # M1A live PubMed gate readiness
 
-Updated: `2026-08-08`
+Updated: `2026-08-09`
 
-Status: **M1A_LIVE_RUN_001_EXECUTED; LIVE_GATE_ACCEPTANCE_UNRESOLVED;
-NO_RERUN_AUTHORIZED;
-M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE;
-CLIENT_XML_DTD_INTEROPERABILITY_FAILURE; NO_LIVE_PASS;
-SECOND_RUN_OWNER_CONTROLLED**
+Status: **M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE;
+M1A_LIVE_RUN_002_ACCEPTED; M1A_LIVE_ACCEPTANCE_PASS; M1A_COMPLETE;
+READY_FOR_M1B_OWNER_PLANNING**
 
-Current baseline: PR #9 merge
-`e8e28ffbde7fa3994ff8aa71dd62a956250147c1`
+Current approved baseline and accepted live code revision:
+`531f867006f3d01ebbc14633ad6e5509e4e70a47`
 
 ## Frozen gate
 
-ADR-009 §14 and the current `tests/e2e/test_live_pubmed.py` define a separate
-single-shot gate for the bounded PubMed smoke query. The gate remains disabled
-unless all of the following are true:
+ADR-009 Section 14 and `tests/e2e/test_live_pubmed.py` define a separate
+single-shot gate for the bounded PubMed smoke query. The gate is disabled by
+default. The separately authorized live run could execute only when all of the
+following were true:
 
 - the `-m live_api` pytest marker expression is explicitly selected (the live
   test also carries the `live_api` marker);
@@ -36,6 +35,46 @@ The executable query derived from the frozen `REQUEST_EXAMPLE` is:
 ```text
 ("semaglutide"[Title/Abstract]) AND ("gastrointestinal"[Title/Abstract])
 ```
+
+## Live run 002 accepted disposition
+
+The separately authorized live run 002 executed at
+`2026-08-09T05:13:33.284549Z` on code revision
+`531f867006f3d01ebbc14633ad6e5509e4e70a47`. It used schema `1.0`, connector
+`m1a-002`, and retention policy `M1A-LIVE-RETENTION-v1`.
+
+One run comprised two contiguous acquisitions and exactly two requests:
+
+- search: `succeeded / partial / matches`, 100 valid results, one page,
+  `truncated=true`;
+- fetch: `succeeded / complete / matches`, one valid retained publication,
+  one page, `truncated=false`.
+
+The search is explicitly bounded and non-exhaustive. The successful fetch of
+one retained publication does not upgrade search coverage to complete.
+
+The external redacted acceptance record uses root label
+`OWNER_EXTERNAL_M1A_LIVE_RUN_002_ROOT` and relative label
+`acceptance/pubmed-live-b1ab911398624933ab8fc06de2e08596.json`. It is 3,223
+bytes with SHA-256
+`008770e8155eee608aa71fab08cdd2a223f1e9ec92824427cc7a3409c6f69f25`.
+The closed-contract validation passed raw, manifest, linkage, and envelope
+identity recomputation; containment outside Git; schema and redaction checks;
+and unexpected-file checks. It found zero reparse points, zero unexpected
+absolute references, no temporary or unexpected files, exact false redaction
+flags, and no forbidden normalized key, complete URL, raw XML, or abstract
+field.
+
+Operator-supplied evidence reports that the exact live test exited `0` with
+`1 passed`, wrote the acceptance record, cleared supplied environment values,
+and left the repository clean immediately after the live run. This
+documentation node did not independently rerun that command. No rerun occurred;
+the medical-source authority is consumed and `rerun_authorized=false`.
+
+See [the Run 002 acceptance record](M1A-LIVE-RUN-002-ACCEPTANCE.md). The
+validated disposition is `M1A_LIVE_RUN_002_ACCEPTED` and
+`M1A_LIVE_ACCEPTANCE_PASS`. With offline M1A already integrated, M1A is
+`M1A_COMPLETE` and `READY_FOR_M1B_OWNER_PLANNING`. M1B has not started.
 
 ## Live run 001 recovery disposition
 
@@ -63,8 +102,9 @@ returned identifiers, zero socket calls, and zero external file-open calls.
 The root cause is therefore `CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`, not an
 NCBI outage. Live run 001 is accepted as failed interoperability evidence; its
 historical connector and persisted evidence outcomes remain unchanged. This is
-not a rerun or a live PASS. Any second live run remains Owner-controlled and
-requires exact new authorization. See
+not a rerun or a live PASS. At that historical disposition a second live run
+remained Owner-controlled; the later separately authorized Run 002 is the
+accepted execution described above. See
 [the interoperability record](M1A-PUBMED-DTD-INTEROPERABILITY.md).
 
 The exclusively created recovery record is
@@ -76,7 +116,7 @@ header, complete URL, or source payload. See
 [M1A-LIVE-RUN-001-RECOVERY](M1A-LIVE-RUN-001-RECOVERY.md) for the sanitized
 inventory and disposition. This is not `M1A_LIVE_ACCEPTANCE_PASS`.
 
-## Required redacted acceptance record
+## Accepted redacted acceptance contract
 
 An authorized run must write its raw response bytes, journal records, and
 canonical manifests beneath the Owner-supplied external root. It must also
@@ -134,22 +174,20 @@ real transport, select the live marker, or contact NCBI. The live test remains
 skipped by default and still requires both explicit marker selection and the
 Owner environment opt-in.
 
-The earlier readiness and recovery results remain historical evidence. After
-reviewer-triggered mechanical rework pass 2, cycle 4 has fresh sockets-disabled
-evidence of `38 passed, 8 deselected` for the privacy/static/subprocess
-selection and `44 passed, 2 skipped` for the complete E2E module; one skip is
-the directly unselected child probe and one is the default-disabled live test.
-Ruff and format checks pass on the test file. Reviewer-triggered internal
-rework passes consumed: `2` of maximum `2`.
-Applicable integration validation, independent review, terminal evidence
-audit, candidate identity, and any later Git action remain pending. No reviewer
-PASS, audit PASS, commit, PR, merge, or live acceptance PASS is claimed here.
+The earlier readiness and recovery results remain historical evidence. The
+cycle-4 privacy correction and provider-DTD interoperability work are integrated
+in the accepted code revision. Their historical sockets-disabled evidence and
+review records remain unchanged. Run 002 is the later separately authorized
+live acceptance described above; it does not rewrite the failed Run 001
+outcomes.
 
-## Owner-controlled next live gate
+## Owner-controlled future boundary
 
-The prior authorization was consumed by live run 001 and does not authorize a
-rerun or second live execution. The failed interoperability disposition does
-not establish live acceptance PASS. A failed/unavailable source outcome remains
-indeterminate and is never a claim that PubMed has no results. Do not claim M1A
-completion or begin M1B Owner planning from this record. A second live run may
-occur only under a new exact Owner authorization.
+The Run 002 authorization is consumed. No rerun or further live execution is
+authorized, and `rerun_authorized=false`. Every future medical-source request
+requires a new exact Owner authorization. M1A completion authorizes only the
+transition to a separately approved M1B planning item; it does not start M1B.
+
+The partial search is non-exhaustive and establishes no causal, incidence,
+comparative-risk, diagnostic, treatment, dosage, or individualized clinical
+conclusion. The draft remains research-only, non-exportable, and non-clinical.

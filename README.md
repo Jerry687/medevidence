@@ -7,13 +7,13 @@ treatment, dosage, emergency guidance, or individualized medical advice.
 
 ## Repository status
 
-**The approved `main` baseline is
-`e8e28ffbde7fa3994ff8aa71dd62a956250147c1`, the merge commit for PR #9. M1A
-offline integration remains complete (`M1A_OFFLINE_INTEGRATED`). Live run 001
-retains `M1A_LIVE_RUN_001_EXECUTED`, `LIVE_GATE_ACCEPTANCE_UNRESOLVED`, and
-`NO_RERUN_AUTHORIZED`. It is additionally accepted as failed interoperability
-evidence with root cause `CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`; it is not a
-live PASS. No rerun occurred, and any second live run remains Owner-controlled.**
+**The approved `main` baseline and accepted live-run code revision are
+`531f867006f3d01ebbc14633ad6e5509e4e70a47`.
+Run 001 remains
+`M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE` and never
+passed. The separately authorized Run 002 is `M1A_LIVE_RUN_002_ACCEPTED` and
+establishes `M1A_LIVE_ACCEPTANCE_PASS`. M1A is `M1A_COMPLETE` and
+`READY_FOR_M1B_OWNER_PLANNING`; M1B has not begun.**
 
 M0 and `ME-000A` are complete and approved. The approved baselines are:
 
@@ -33,8 +33,8 @@ M0 and `ME-000A` are complete and approved. The approved baselines are:
   `14a38d48416e8a4b63fe72b91ceb083f1d895473`; and
 - M1A-005-integrated approved `main` identity:
   `47504a4016f968ed0a0dd10e4280b1a957c15461`; and
-- current PR #9 merge identity:
-  `e8e28ffbde7fa3994ff8aa71dd62a956250147c1`.
+- current approved `main` identity:
+  `531f867006f3d01ebbc14633ad6e5509e4e70a47`.
 
 The original independent M0 review returned **FAIL**. The frozen remediation
 later received an unconditional independent **PASS**, and the Project Owner
@@ -61,8 +61,9 @@ request/error contracts, an explicit composition boundary, normalized OpenAPI
 evidence, and disabled-by-default live-smoke code. Ordinary validation remains
 offline. PR #7 is merged at
 `47504a4016f968ed0a0dd10e4280b1a957c15461`; hosted checks and final review/
-audit were green before merge. The live gate remains disabled by default and
-M1B has not begun.
+audit were green before merge. The live gate remains disabled by default.
+Run 002 later passed its separately authorized bounded live acceptance at the
+current baseline. M1A is complete and M1B has not begun.
 DailyMed, FAERS/openFDA, CADEC, retrieval, LangGraph, LLM, Streamlit, MCP,
 export, and HITL capabilities remain planned.
 
@@ -191,10 +192,10 @@ content. Its tests are offline and injectable; the implementation has not
 contacted PubMed/NCBI or run Docker. Hosted `compose-config` and
 `windows-quality` succeeded, and final PR-head review and terminal audit both
 returned PASS with P0 0 / P1 0 / P2 0. M1A-005 is integrated and remains an
-ancestor of the current PR #9 merge baseline
-`e8e28ffbde7fa3994ff8aa71dd62a956250147c1`.
+ancestor of the current approved baseline
+`531f867006f3d01ebbc14633ad6e5509e4e70a47`.
 
-The separately authorized M1A live run executed one bounded PubMed ESearch
+The separately authorized M1A live run 001 executed one bounded PubMed ESearch
 request at the PR #8 baseline and exited `1`. Immutable evidence reconstructs
 the terminal connector outcome as `failed / unavailable / indeterminate` after
 invalid XML on the first search response; fetch was not executed. The persisted
@@ -209,10 +210,38 @@ candidate as `PubMedSearchPage` with provider `count=676`, 100 returned
 identifiers, and zero socket or external file-open calls. This was not an NCBI
 outage. Live run 001 is dispositioned as
 `M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE`; its historical
-outcomes remain immutable. No rerun occurred, no live PASS is claimed, and any
-second live run remains Owner-controlled. See [the recovery
+outcomes remain immutable. No rerun occurred within Run 001, and it never
+established a live PASS. See [the recovery
 record](.delivery/M1A-LIVE-RUN-001-RECOVERY.md) and [the interoperability
 record](.delivery/M1A-PUBMED-DTD-INTEROPERABILITY.md).
+
+The later, separately authorized live run 002 executed the same exact frozen
+query at `2026-08-09T05:13:33.284549Z` on code revision
+`531f867006f3d01ebbc14633ad6e5509e4e70a47`, using schema `1.0`, connector
+`m1a-002`, and retention policy `M1A-LIVE-RETENTION-v1`. One run used exactly
+two requests and two contiguous acquisitions. Search returned
+`succeeded / partial / matches`, 100 valid results, one page, and
+`truncated=true`; fetch returned `succeeded / complete / matches`, one valid
+retained publication, one page, and `truncated=false`.
+
+The accepted redacted record is 3,223 bytes with SHA-256
+`008770e8155eee608aa71fab08cdd2a223f1e9ec92824427cc7a3409c6f69f25`.
+It remains outside Git under the safe external root label
+`OWNER_EXTERNAL_M1A_LIVE_RUN_002_ROOT` and relative label
+`acceptance/pubmed-live-b1ab911398624933ab8fc06de2e08596.json`.
+Closed-contract validation passed identity, containment, schema, redaction,
+and unexpected-file checks. Operator-supplied evidence reports exit `0`,
+`1 passed`, acceptance written, supplied environment values cleared, and a
+clean repository immediately after the live run. This documentation did not
+independently rerun the live test. No rerun occurred; live authority is
+consumed and `rerun_authorized=false`.
+
+Run 002 establishes `M1A_LIVE_ACCEPTANCE_PASS`; Run 001 remains historical
+failed-interoperability evidence. The partial search is bounded and
+non-exhaustive, and neither outcome supports causal, incidence,
+comparative-risk, or clinical conclusions. The draft remains research-only,
+non-exportable, and non-clinical. See [the Run 002 acceptance
+record](.delivery/M1A-LIVE-RUN-002-ACCEPTANCE.md).
 
 The exceptional Owner-authorized cycle-4 offline correction is integrated at
 PR #9 merge `e8e28ffbde7fa3994ff8aa71dd62a956250147c1` and
@@ -230,12 +259,11 @@ including local/module aliases and `getattr`. Its node-local checks were green
 before integration. The external
 recovery record is unchanged at 3,032 bytes with SHA-256
 `1d90d931620952c0a0ea62aaa29d9b9a8c3ed952b3cef8860accf9db1e9f37cf`.
-The current provider-DTD compatibility candidate adds no live result, rerun
-authority, M1A completion, M1B readiness, reviewer/audit PASS, commit, PR, or
-merge claim.
+The provider-DTD compatibility work is integrated in the accepted Run 002 code
+revision. The later live acceptance does not rewrite Run 001.
 
-The live-artifact policy `M1A-LIVE-RETENTION-v1` remains approved. A second live
-run requires exact Owner authorization. Default CI and recovery validation
+The live-artifact policy `M1A-LIVE-RETENTION-v1` remains approved. Every further
+live run requires exact Owner authorization. Default CI and recovery validation
 remain offline. No standalone
 ASGI server dependency is authorized for M1A; `M1A-005` may use an in-process
 ASGI test client.
@@ -256,8 +284,9 @@ XML through `defusedxml`, preserves verified earlier results after a later
 failure, and exposes typed connector and source-neutral terminal outcomes.
 
 The explicitly named production factory requires a client email and is not
-used by the default test or validation path. Live PubMed execution remains
-unauthorized under the separate Owner gate above.
+used by the default test or validation path. The Run 002 authority is consumed;
+any further live PubMed execution remains unauthorized without a new exact
+Owner approval.
 
 ## Windows Python and quality toolchain
 
