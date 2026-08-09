@@ -3,9 +3,14 @@
 Updated: `2026-08-08`
 
 Status: `M1A_LIVE_RUN_001_EXECUTED`; `LIVE_GATE_ACCEPTANCE_UNRESOLVED`;
-`NO_RERUN_AUTHORIZED`; `CYCLE_4_OFFLINE_PRIVACY_CORRECTION_CANDIDATE`
+`NO_RERUN_AUTHORIZED`;
+`M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE`;
+`CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`; `NO_LIVE_PASS`;
+`SECOND_RUN_OWNER_CONTROLLED`
 
-Baseline: PR #8 merge `09cc42838475a4c1bab62050fbfeac14c5dd6761`
+Current baseline: PR #9 merge `e8e28ffbde7fa3994ff8aa71dd62a956250147c1`
+Historical live-run code revision: PR #8 merge
+`09cc42838475a4c1bab62050fbfeac14c5dd6761`
 
 ## Disposition
 
@@ -17,10 +22,30 @@ numeric summary text. This was a harness false positive, not evidence that a
 credential, response body, header, complete URL, or source payload entered the
 summary.
 
-No rerun was performed or authorized. The existing raw response, journal,
-artifact link, canonical manifest, and registration envelope remain immutable.
-This recovery does **not** establish `M1A_LIVE_ACCEPTANCE_PASS`, complete M1A, or
-authorize M1B planning.
+No rerun was performed. The existing raw response, journal, artifact link,
+canonical manifest, and registration envelope remain immutable. The accepted
+disposition is failed interoperability evidence, not a live PASS. This recovery
+does **not** establish `M1A_LIVE_ACCEPTANCE_PASS`, complete M1A, authorize M1B
+planning, or authorize a second live run.
+
+## Interoperability root cause and offline after-state
+
+The root cause is `CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`: the historical
+client rejected the official external provider DOCTYPE before processing the
+otherwise valid ESearch document. Raw response bytes were received; this was
+not an NCBI outage.
+
+After focused sockets-disabled parser and connector tests passed, the exact
+retained 2,205 bytes were read offline without printing their content. The
+bounded compatibility parser returned `PubMedSearchPage` with `count=676` and
+`returned_identifier_count=100`; socket calls and external file-open calls were
+zero. The raw, recovery, and manifest sizes and SHA-256 identities remain
+unchanged. This after-state reclassifies the cause; it does not rewrite the
+historical connector or persisted evidence outcomes. No rerun occurred, no
+live PASS is claimed, and any second live run remains Owner-controlled.
+
+See [M1A PubMed provider-DTD interoperability](M1A-PUBMED-DTD-INTEROPERABILITY.md)
+for the bounded parser candidate and offline validation evidence.
 
 ## Recovered execution evidence
 

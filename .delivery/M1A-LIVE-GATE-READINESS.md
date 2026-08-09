@@ -2,11 +2,14 @@
 
 Updated: `2026-08-08`
 
-Status: **M1A_LIVE_RUN_001_EXECUTED - LIVE_GATE_ACCEPTANCE_UNRESOLVED;
-NO_RERUN_AUTHORIZED; CYCLE_4_OFFLINE_PRIVACY_CORRECTION_CANDIDATE**
+Status: **M1A_LIVE_RUN_001_EXECUTED; LIVE_GATE_ACCEPTANCE_UNRESOLVED;
+NO_RERUN_AUTHORIZED;
+M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE;
+CLIENT_XML_DTD_INTEROPERABILITY_FAILURE; NO_LIVE_PASS;
+SECOND_RUN_OWNER_CONTROLLED**
 
-Current baseline: PR #8 merge
-`09cc42838475a4c1bab62050fbfeac14c5dd6761`
+Current baseline: PR #9 merge
+`e8e28ffbde7fa3994ff8aa71dd62a956250147c1`
 
 ## Frozen gate
 
@@ -36,11 +39,12 @@ The executable query derived from the frozen `REQUEST_EXAMPLE` is:
 
 ## Live run 001 recovery disposition
 
-The separately authorized command executed one bounded ESearch request and
-exited `1`. It did not write the original acceptance record: the former
+The separately authorized command executed one bounded ESearch request at PR
+#8 merge `09cc42838475a4c1bab62050fbfeac14c5dd6761` and exited `1`. It did not
+write the original acceptance record: the former
 redaction assertion compared every response-header value as a substring and a
 harmless numeric rate-limit value collided with unrelated safe summary text.
-No rerun was performed or authorized.
+No rerun was performed.
 
 The immutable evidence was recovered and validated without another source
 request. Typed canonical parsing, identity recomputation, manifest replay, raw
@@ -52,6 +56,16 @@ because received bytes must be retained; their coverage is not equated with
 connector coverage. One retained response plus `attempts_used=1` proves exactly
 one request. The failed first search returned no PMID and could not enter the
 fetch branch; the exact layout also contains no `acquisition-0001`.
+
+The exact retained bytes now parse offline under the bounded external-provider
+DOCTYPE compatibility candidate as `PubMedSearchPage`, with `count=676`, 100
+returned identifiers, zero socket calls, and zero external file-open calls.
+The root cause is therefore `CLIENT_XML_DTD_INTEROPERABILITY_FAILURE`, not an
+NCBI outage. Live run 001 is accepted as failed interoperability evidence; its
+historical connector and persisted evidence outcomes remain unchanged. This is
+not a rerun or a live PASS. Any second live run remains Owner-controlled and
+requires exact new authorization. See
+[the interoperability record](M1A-PUBMED-DTD-INTEROPERABILITY.md).
 
 The exclusively created recovery record is
 `acceptance/pubmed-live-run-001-recovery.json` under the approved external root:
@@ -131,10 +145,11 @@ Applicable integration validation, independent review, terminal evidence
 audit, candidate identity, and any later Git action remain pending. No reviewer
 PASS, audit PASS, commit, PR, merge, or live acceptance PASS is claimed here.
 
-## Unresolved Owner gate
+## Owner-controlled next live gate
 
 The prior authorization was consumed by live run 001 and does not authorize a
-rerun. Acceptance remains unresolved pending independent review and terminal
-evidence audit of this recovery candidate. A failed/unavailable source outcome
-remains indeterminate and is never a claim that PubMed has no results. Do not
-claim M1A completion or begin M1B Owner planning from this record.
+rerun or second live execution. The failed interoperability disposition does
+not establish live acceptance PASS. A failed/unavailable source outcome remains
+indeterminate and is never a claim that PubMed has no results. Do not claim M1A
+completion or begin M1B Owner planning from this record. A second live run may
+occur only under a new exact Owner authorization.
