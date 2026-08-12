@@ -9,7 +9,15 @@ from pydantic import Field, StringConstraints, model_validator
 
 from medevidence.domain import (
     AdverseEventConcept,
+    ArtifactId,
+    CandidateId,
+    CanonicalSetId,
+    CanonicalSplVersion,
+    DailyMedSelectionMode,
+    DailyMedSelectionRequestV1,
+    DecisionId,
     DrugConcept,
+    LabelSelectionStatus,
     Pmid,
     PublicationRecord,
     QueryId,
@@ -17,7 +25,9 @@ from medevidence.domain import (
     ResearchScope,
     RunId,
     Sha256Digest,
+    SnapshotId,
     SourceOutcome,
+    SourceOutcomeId,
     SourceType,
     UtcDateTime,
 )
@@ -25,11 +35,181 @@ from medevidence.domain.identifiers import (
     AcquisitionIntentId,
     AttemptId,
     DurableModel,
+    LabelVersionId,
     RunIntentId,
     derive_m1a_journal_identity,
 )
 
 type CodeRevision = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
+
+
+class DailyMedDiscoveryRequest(DurableModel):
+    """Closed source-neutral request for one executed DailyMed discovery."""
+
+    schema_version: Literal["m1b.dailymed.discovery-tool-request.v1"] = (
+        "m1b.dailymed.discovery-tool-request.v1"
+    )
+    selection_request: DailyMedSelectionRequestV1
+    query_id: QueryId
+
+
+class DailyMedDiscoveryResponse(DurableModel):
+    """Bounded discovery result without provider- or adapter-native objects."""
+
+    schema_version: Literal["m1b.dailymed.discovery-tool-response.v1"] = (
+        "m1b.dailymed.discovery-tool-response.v1"
+    )
+    selection_request: DailyMedSelectionRequestV1
+    query_id: QueryId
+    source_outcome_id: SourceOutcomeId
+    source_outcome: SourceOutcome
+    candidate_set_snapshot_id: SnapshotId
+    discovery_manifest_id: ArtifactId
+    candidate_ids: tuple[CandidateId, ...] = Field(max_length=100)
+    decision_id: DecisionId | None = None
+    selection_status: LabelSelectionStatus | None = None
+    selected_candidate_id: CandidateId | None = None
+    selected_setid: CanonicalSetId | None = None
+    selected_spl_version: CanonicalSplVersion | None = None
+
+    @model_validator(mode="after")
+    def validate_discovery_shape(self) -> Self:
+        if self.source_outcome.source is not SourceType.DAILYMED:
+            raise ValueError("discovery outcome must be DailyMed")
+        if self.source_outcome.query_id != self.query_id:
+            raise ValueError("discovery query identity must equal its outcome")
+        if self.candidate_ids != tuple(sorted(set(self.candidate_ids))):
+            raise ValueError("candidate IDs must be unique and canonically sorted")
+        if self.source_outcome.valid_result_count != len(self.candidate_ids):
+            raise ValueError("discovery candidate count must equal the outcome count")
+
+        decision_fields = (self.decision_id, self.selection_status)
+        outcome_triple = (
+            self.source_outcome.execution_status.value,
+            self.source_outcome.coverage_status.value,
+            self.source_outcome.result_status.value,
+        )
+        if self.source_outcome.result_status.value == "indeterminate":
+            if self.candidate_ids or any(value is not None for value in decision_fields):
+                raise ValueError("indeterminate zero-result discovery has no decision row")
+        elif any(value is None for value in decision_fields):
+            raise ValueError("determinate discovery requires its persisted decision identity")
+
+        if outcome_triple == ("succeeded", "complete", "no_match"):
+            if self.selection_status is not LabelSelectionStatus.NO_CANDIDATE:
+                raise ValueError("complete no-match maps only to no_candidate")
+        elif outcome_triple in {
+            ("succeeded", "partial", "matches"),
+            ("failed", "partial", "matches"),
+        }:
+            if self.selection_status is not LabelSelectionStatus.REVIEW_REQUIRED:
+                raise ValueError(
+                    "every partial match maps to review_required; "
+                    "partial DailyMed discovery may never select"
+                )
+        elif outcome_triple == ("succeeded", "complete", "matches"):
+            if self.selection_status not in {
+                LabelSelectionStatus.SELECTED,
+                LabelSelectionStatus.REVIEW_REQUIRED,
+            }:
+                raise ValueError("complete matches requires selected or review_required")
+            if (
+                self.selection_status is LabelSelectionStatus.REVIEW_REQUIRED
+                and len(self.candidate_ids) < 2
+            ):
+                raise ValueError(
+                    "complete-match review requires at least two unresolved candidates"
+                )
+
+        selected_fields = (
+            self.selected_candidate_id,
+            self.selected_setid,
+            self.selected_spl_version,
+        )
+        selected = self.selection_status is LabelSelectionStatus.SELECTED
+        if selected != all(value is not None for value in selected_fields):
+            raise ValueError("selected identity fields exist exactly for selected status")
+        if not selected and any(value is not None for value in selected_fields):
+            raise ValueError("non-selected discovery cannot expose a selected identity")
+        if selected and self.selected_candidate_id not in self.candidate_ids:
+            raise ValueError("selected candidate must belong to the exact candidate set")
+        if self.source_outcome.coverage_status.value == "partial" and selected:
+            raise ValueError("partial DailyMed discovery may never select")
+        if self.selection_status is LabelSelectionStatus.NO_CANDIDATE and outcome_triple != (
+            "succeeded",
+            "complete",
+            "no_match",
+        ):
+            raise ValueError("only succeeded/complete/no_match is no_candidate")
+        if (
+            selected
+            and self.selection_request.selection_mode is DailyMedSelectionMode.PINNED_VERSION
+            and (
+                self.selected_setid != self.selection_request.pinned_setid
+                or self.selected_spl_version != self.selection_request.pinned_spl_version
+            )
+        ):
+            raise ValueError("selected identity must equal the exact request pin")
+        return self
+
+
+class DailyMedFetchRequest(DurableModel):
+    """Closed exact selected-label fetch request for the structured tool."""
+
+    schema_version: Literal["m1b.dailymed.fetch-tool-request.v1"] = (
+        "m1b.dailymed.fetch-tool-request.v1"
+    )
+    selection_request: DailyMedSelectionRequestV1
+    query_id: QueryId
+    decision_id: DecisionId
+    selected_candidate_id: CandidateId
+    selected_setid: CanonicalSetId
+    selected_spl_version: CanonicalSplVersion
+
+    @model_validator(mode="after")
+    def validate_selected_request(self) -> Self:
+        if self.selection_request.selection_mode is DailyMedSelectionMode.PINNED_VERSION and (
+            self.selected_setid != self.selection_request.pinned_setid
+            or self.selected_spl_version != self.selection_request.pinned_spl_version
+        ):
+            raise ValueError("fetch identity must equal the exact request pin")
+        return self
+
+
+class DailyMedFetchResponse(DurableModel):
+    """Source-neutral fetch result with immutable evidence identities only."""
+
+    schema_version: Literal["m1b.dailymed.fetch-tool-response.v1"] = (
+        "m1b.dailymed.fetch-tool-response.v1"
+    )
+    request: DailyMedFetchRequest
+    source_outcome_id: SourceOutcomeId
+    source_outcome: SourceOutcome
+    fetch_snapshot_id: SnapshotId
+    fetch_manifest_id: ArtifactId
+    retained_response_id: str | None = None
+    label_version_id: LabelVersionId | None = None
+    section_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_fetch_shape(self) -> Self:
+        if self.source_outcome.source is not SourceType.DAILYMED:
+            raise ValueError("fetch outcome must be DailyMed")
+        if self.source_outcome.query_id != self.request.query_id:
+            raise ValueError("fetch query identity must equal its outcome")
+        if self.section_ids != tuple(sorted(set(self.section_ids))):
+            raise ValueError("section IDs must be unique and canonically sorted")
+        stable_fields = (self.retained_response_id, self.label_version_id)
+        usable = (
+            self.source_outcome.execution_status.value,
+            self.source_outcome.coverage_status.value,
+            self.source_outcome.result_status.value,
+        ) == ("succeeded", "complete", "matches")
+        if usable != all(value is not None for value in stable_fields):
+            raise ValueError("stable label identities require succeeded/complete/matches")
+        if not usable and (any(value is not None for value in stable_fields) or self.section_ids):
+            raise ValueError("unusable fetch cannot expose stable label evidence")
+        return self
 
 
 class ResolvedConceptCatalog(DurableModel):

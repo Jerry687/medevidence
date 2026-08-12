@@ -1,10 +1,15 @@
-"""Immutable M1A ingestion contracts and storage."""
+"""Immutable M1A and additive DailyMed ingestion contracts and storage."""
 
 from .artifacts import (
     CapturedAcquisition,
+    CapturedDailyMedSnapshot,
+    DailyMedManifestMember,
+    DailyMedSnapshotManifest,
     RawResponseObservation,
     SnapshotManifest,
     capture_acquisition,
+    capture_dailymed_snapshot,
+    replay_dailymed_snapshot,
     replay_manifest,
     response_observation,
 )
@@ -26,11 +31,16 @@ __all__ = [
     "AcquisitionRegistrationEnvelope",
     "ArtifactLink",
     "CapturedAcquisition",
+    "CapturedDailyMedSnapshot",
+    "DailyMedManifestMember",
+    "DailyMedSnapshotManifest",
     "RawResponseObservation",
     "RunIntent",
     "RunRegistrationEnvelope",
     "SnapshotManifest",
     "capture_acquisition",
+    "capture_dailymed_snapshot",
+    "replay_dailymed_snapshot",
     "replay_manifest",
     "response_observation",
     "with_computed_identity",

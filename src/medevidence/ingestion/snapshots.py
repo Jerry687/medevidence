@@ -30,6 +30,9 @@ TEMP_PREFIX: Final = ".m1a-incomplete-"
 type ArtifactClass = Literal["raw", "journal", "manifest"]
 
 
+type DailyMedSplValidator = Callable[[bytes, str, str], None]
+
+
 class SnapshotError(RuntimeError):
     """Base immutable-publication error."""
 
@@ -110,12 +113,14 @@ class SnapshotStore:
         committed_bytes: Callable[[], int] | None = None,
         committed_files: Callable[[], int] | None = None,
         raw_bytes: Callable[[], int] | None = None,
+        dailymed_spl_validator: DailyMedSplValidator | None = None,
     ) -> None:
         self.root = root.absolute()
         self._free_bytes = free_bytes
         self._committed_bytes_probe = committed_bytes
         self._committed_files_probe = committed_files
         self._raw_bytes_probe = raw_bytes
+        self._dailymed_spl_validator = dailymed_spl_validator
         self._lock_handle: BinaryIO | None = None
         self._initialized = False
 
@@ -209,6 +214,97 @@ class SnapshotStore:
             raise SnapshotCapacityError("raw response exceeds 5,242,880 bytes")
         digest = sha256(body).hexdigest()
         relative = f"pubmed/sha256/{digest[:2]}/{digest}.bin"
+        published = self.publish_bytes(relative, body, artifact_class="raw")
+        return SnapshotWrite(
+            artifact_id=f"sha256:{digest}",
+            path=published.path,
+            byte_size=published.byte_size,
+            reused_existing=published.reused_existing,
+        )
+
+    def store_dailymed_response(self, body: bytes) -> SnapshotWrite:
+        """Publish one exact bounded DailyMed response outside Git."""
+
+        return self._store_dailymed_bytes(body, stable_spl=False)
+
+    def store_dailymed_spl(
+        self,
+        body: bytes,
+        *,
+        selected_setid: str,
+        selected_spl_version: str,
+    ) -> SnapshotWrite:
+        """Publish one run-independent content-addressed SPL XML artifact."""
+
+        if not body:
+            raise SnapshotCapacityError("a stable SPL artifact must be structurally nonempty")
+        self.validate_dailymed_spl(body, selected_setid, selected_spl_version)
+        return self._store_dailymed_bytes(body, stable_spl=True)
+
+    def verify_dailymed(
+        self,
+        artifact_id: Sha256Digest,
+        *,
+        stable_spl: bool,
+        selected_setid: str | None = None,
+        selected_spl_version: str | None = None,
+    ) -> Path:
+        """Verify one exact DailyMed raw-response or stable-SPL artifact."""
+
+        digest = artifact_id.removeprefix("sha256:")
+        relative = (
+            f"dailymed/sha256/{digest}.xml"
+            if stable_spl
+            else f"dailymed/raw/sha256/{digest[:2]}/{digest}.bin"
+        )
+        target = self.root.joinpath(*PurePosixPath(relative).parts)
+        self._require_safe_path(target, allow_missing_leaf=False)
+        if not target.is_file():
+            raise SnapshotIntegrityError("DailyMed snapshot file is missing")
+        self._verify_file(target, digest, target.stat().st_size)
+        if stable_spl:
+            if selected_setid is None or selected_spl_version is None:
+                raise SnapshotIntegrityError(
+                    "stable SPL verification requires the selected SETID/version"
+                )
+            try:
+                self.validate_dailymed_spl(
+                    target.read_bytes(), selected_setid, selected_spl_version
+                )
+            except ValueError as error:
+                raise SnapshotIntegrityError(
+                    "stable SPL content is not the exact selected label"
+                ) from error
+        return target
+
+    def validate_dailymed_spl(
+        self,
+        body: bytes,
+        selected_setid: str,
+        selected_spl_version: str,
+    ) -> None:
+        """Invoke the injected connector-owned frozen SPL validator."""
+
+        if self._dailymed_spl_validator is None:
+            raise SnapshotIntegrityError("stable SPL validation dependency is not configured")
+        try:
+            self._dailymed_spl_validator(body, selected_setid, selected_spl_version)
+        except SnapshotIntegrityError:
+            raise
+        except Exception as error:
+            raise SnapshotIntegrityError(
+                "stable SPL content is not the exact selected label"
+            ) from error
+
+    def _store_dailymed_bytes(self, body: bytes, *, stable_spl: bool) -> SnapshotWrite:
+        if len(body) > RAW_RESPONSE_BYTE_CAPACITY:
+            raise SnapshotCapacityError("DailyMed artifact exceeds 5,242,880 bytes")
+        digest = sha256(body).hexdigest()
+        relative = (
+            f"dailymed/sha256/{digest}.xml"
+            if stable_spl
+            else f"dailymed/raw/sha256/{digest[:2]}/{digest}.bin"
+        )
         published = self.publish_bytes(relative, body, artifact_class="raw")
         return SnapshotWrite(
             artifact_id=f"sha256:{digest}",

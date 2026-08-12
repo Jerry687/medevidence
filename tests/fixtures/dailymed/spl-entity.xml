@@ -1,0 +1,2 @@
+<!DOCTYPE document [<!ENTITY unsafe SYSTEM "file:///forbidden">]>
+<document xmlns="urn:hl7-org:v3"><setId root="11111111-1111-1111-1111-111111111111"/><versionNumber value="3"/><component>&unsafe;</component></document>

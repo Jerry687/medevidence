@@ -12,10 +12,16 @@ from typing import Annotated, Literal, Self, cast
 from pydantic import Field, StringConstraints, model_validator
 
 from medevidence.domain.identifiers import (
+    AcquisitionId,
     AcquisitionIntentId,
     ArtifactLinkId,
+    CanonicalSetId,
+    CanonicalSplVersion,
     DurableModel,
+    QueryId,
+    RunId,
     Sha256Digest,
+    SnapshotId,
     UtcDateTime,
     WarningCode,
     m1a_canonical_json_bytes,
@@ -90,6 +96,178 @@ class CapturedAcquisition:
     manifest_path: Path
     artifact_links: tuple[ArtifactLink, ...]
     artifact_link_paths: tuple[Path, ...]
+
+
+class DailyMedManifestMember(DurableModel):
+    """One exact response or stable SPL member in a DailyMed manifest."""
+
+    ordinal: int = Field(ge=0, le=127)
+    link_id: ArtifactLinkId
+    artifact_id: Sha256Digest
+    content_hash: Sha256Digest
+    artifact_kind: Literal["dailymed_http_response", "dailymed_spl_xml"]
+    relative_path: str
+    byte_size: int = Field(ge=0, le=RAW_RESPONSE_BYTE_CAPACITY)
+    media_type: MediaType
+    http_status: int = Field(ge=100, le=599)
+    body_complete: bool
+    termination_reason: TerminationReason
+
+    @model_validator(mode="after")
+    def validate_member(self) -> Self:
+        if self.artifact_id != self.content_hash:
+            raise ValueError("DailyMed member artifact and content identities must match")
+        digest = self.artifact_id.removeprefix("sha256:")
+        expected = (
+            f"dailymed/sha256/{digest}.xml"
+            if self.artifact_kind == "dailymed_spl_xml"
+            else f"dailymed/raw/sha256/{digest[:2]}/{digest}.bin"
+        )
+        if self.relative_path != expected:
+            raise ValueError("DailyMed member path must match its exact content identity")
+        if self.body_complete != (self.termination_reason == "complete_response"):
+            raise ValueError("DailyMed member completion must match termination reason")
+        if self.artifact_kind == "dailymed_spl_xml" and (
+            self.byte_size == 0 or not self.body_complete
+        ):
+            raise ValueError("stable SPL evidence must be nonempty and complete")
+        return self
+
+
+class DailyMedSnapshotManifest(DurableModel):
+    """Canonical immutable manifest for one bounded DailyMed acquisition."""
+
+    manifest_schema_version: Literal["m1b.dailymed.snapshot-manifest.v1"] = (
+        "m1b.dailymed.snapshot-manifest.v1"
+    )
+    source_type: Literal["dailymed"] = "dailymed"
+    run_id: RunId
+    acquisition_id: AcquisitionId
+    acquisition_intent_id: AcquisitionIntentId
+    acquisition_ordinal: int = Field(ge=0, le=7)
+    query_id: QueryId
+    snapshot_id: SnapshotId
+    operation: Literal["search", "fetch"]
+    request_identity: Annotated[str, StringConstraints(min_length=1, max_length=1024)]
+    selected_setid: CanonicalSetId | None = None
+    selected_spl_version: CanonicalSplVersion | None = None
+    started_at_utc: UtcDateTime
+    completed_at_utc: UtcDateTime
+    execution_status: ExecutionStatus
+    coverage_status: CoverageStatus
+    result_status: ResultStatus
+    record_count: int = Field(ge=0, le=100)
+    pages_completed: int = Field(ge=0, le=5)
+    attempts_used: int = Field(ge=1, le=2)
+    truncated: bool
+    warning_codes: tuple[WarningCode, ...] = Field(max_length=128)
+    members: tuple[DailyMedManifestMember, ...] = Field(max_length=6)
+    connector_name: Literal["medevidence.connectors.dailymed"] = "medevidence.connectors.dailymed"
+    connector_version: Literal["m1b-dm-002"] = "m1b-dm-002"
+    source_record_schema_version: Literal["m1b.dailymed.label.v1"] = "m1b.dailymed.label.v1"
+    code_revision: CodeRevision
+
+    @classmethod
+    def from_json_bytes(cls, raw: bytes) -> Self:
+        """Parse strict JSON and require exact complete canonical bytes."""
+
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise ValueError("DailyMed manifest exceeds 1,048,576 bytes")
+        parsed = parse_m1a_json_bytes(raw)
+        manifest = cls.model_validate_json(
+            json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+        )
+        if manifest.canonical_bytes() != raw:
+            raise ValueError("DailyMed manifest bytes are not canonical JSON")
+        return manifest
+
+    def canonical_bytes(self) -> bytes:
+        """Return exact canonical UTF-8 bytes with one terminal LF."""
+
+        raw = m1a_canonical_json_bytes(self)
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise ValueError("DailyMed manifest exceeds 1,048,576 bytes")
+        return raw
+
+    @property
+    def manifest_id(self) -> Sha256Digest:
+        """Identify the exact complete canonical manifest bytes."""
+
+        return f"sha256:{sha256(self.canonical_bytes()).hexdigest()}"
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> Self:
+        triple = (
+            self.execution_status.value,
+            self.coverage_status.value,
+            self.result_status.value,
+        )
+        if triple not in {
+            ("succeeded", "complete", "matches"),
+            ("succeeded", "complete", "no_match"),
+            ("succeeded", "partial", "matches"),
+            ("succeeded", "partial", "indeterminate"),
+            ("failed", "partial", "matches"),
+            ("failed", "partial", "indeterminate"),
+            ("failed", "unavailable", "indeterminate"),
+        }:
+            raise ValueError("DailyMed manifest has an invalid terminal outcome triple")
+        if self.completed_at_utc < self.started_at_utc:
+            raise ValueError("DailyMed manifest completion precedes start")
+        if self.warning_codes != tuple(sorted(set(self.warning_codes))):
+            raise ValueError("DailyMed manifest warnings must be sorted and unique")
+        ordinals = tuple(member.ordinal for member in self.members)
+        if ordinals != tuple(range(len(self.members))):
+            raise ValueError("DailyMed manifest members must be contiguous from zero")
+        if len({member.link_id for member in self.members}) != len(self.members):
+            raise ValueError("DailyMed manifest member links must be unique")
+        selected = self.selected_setid is not None or self.selected_spl_version is not None
+        if selected != (self.selected_setid is not None and self.selected_spl_version is not None):
+            raise ValueError("selected DailyMed SETID/version are both-or-neither")
+        stable_members = tuple(
+            member for member in self.members if member.artifact_kind == "dailymed_spl_xml"
+        )
+        if selected != (len(stable_members) == 1):
+            raise ValueError("selected identity exists exactly with one stable SPL member")
+        if selected and self.operation != "fetch":
+            raise ValueError("only a fetch manifest may retain stable SPL evidence")
+        if self.coverage_status is CoverageStatus.COMPLETE and self.truncated:
+            raise ValueError("complete DailyMed coverage forbids truncation")
+        response_members = tuple(
+            member for member in self.members if member.artifact_kind == "dailymed_http_response"
+        )
+        if sum(member.byte_size for member in response_members) > RAW_RESPONSE_BYTE_CAPACITY:
+            raise ValueError("DailyMed response bodies exceed the cumulative 5,242,880-byte bound")
+        if self.coverage_status is CoverageStatus.UNAVAILABLE and (
+            self.record_count != 0 or self.pages_completed != 0 or response_members
+        ):
+            raise ValueError("unavailable DailyMed manifest has no retained response")
+        if self.coverage_status is CoverageStatus.COMPLETE:
+            if self.pages_completed < 1 or not response_members:
+                raise ValueError("complete DailyMed coverage requires a completed response")
+            effective = response_members[-1]
+            if (
+                effective.byte_size == 0
+                or not effective.body_complete
+                or not 200 <= effective.http_status <= 299
+            ):
+                raise ValueError("complete DailyMed coverage requires nonempty complete 2xx")
+        if self.result_status is ResultStatus.MATCHES and self.record_count == 0:
+            raise ValueError("DailyMed matches requires at least one valid record")
+        if self.result_status is not ResultStatus.MATCHES and self.record_count != 0:
+            raise ValueError("DailyMed non-match outcome requires zero valid records")
+        if stable_members and triple != ("succeeded", "complete", "matches"):
+            raise ValueError("stable SPL evidence requires succeeded/complete/matches")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedDailyMedSnapshot:
+    """Verified immutable files for one DailyMed acquisition."""
+
+    manifest: DailyMedSnapshotManifest
+    manifest_path: Path
+    member_paths: tuple[Path, ...]
 
 
 class ManifestFile(DurableModel):
@@ -459,3 +637,187 @@ def replay_manifest(
         if relative != item.relative_path or path.stat().st_size != item.byte_size:
             raise SnapshotIntegrityError("manifest file metadata differs from snapshot")
     return manifest
+
+
+def capture_dailymed_snapshot(
+    store: SnapshotStore,
+    *,
+    run_id: RunId,
+    acquisition_id: AcquisitionId,
+    acquisition_intent_id: AcquisitionIntentId,
+    acquisition_ordinal: int,
+    query_id: QueryId,
+    snapshot_id: SnapshotId,
+    operation: Literal["search", "fetch"],
+    request_identity: str,
+    started_at_utc: datetime,
+    completed_at_utc: datetime,
+    execution_status: ExecutionStatus,
+    coverage_status: CoverageStatus,
+    result_status: ResultStatus,
+    record_count: int,
+    pages_completed: int,
+    attempts_used: int,
+    truncated: bool,
+    warning_codes: tuple[WarningCode, ...],
+    observations: tuple[RawResponseObservation, ...],
+    stable_spl_bytes: bytes | None,
+    selected_setid: CanonicalSetId | None,
+    selected_spl_version: CanonicalSplVersion | None,
+    code_revision: CodeRevision,
+) -> CapturedDailyMedSnapshot:
+    """Publish exact DailyMed responses, stable SPL bytes, and one manifest."""
+
+    if len(observations) > 5:
+        raise ValueError("DailyMed capture accepts at most five response observations")
+    members: list[DailyMedManifestMember] = []
+    for ordinal, observation in enumerate(observations):
+        digest = sha256(observation.body).hexdigest()
+        member = _dailymed_member(
+            ordinal=ordinal,
+            artifact_id=f"sha256:{digest}",
+            artifact_kind="dailymed_http_response",
+            relative_path=f"dailymed/raw/sha256/{digest[:2]}/{digest}.bin",
+            byte_size=len(observation.body),
+            media_type=observation.media_type,
+            http_status=observation.http_status,
+            body_complete=observation.body_complete,
+            termination_reason=observation.termination_reason,
+        )
+        members.append(member)
+
+    if stable_spl_bytes is not None:
+        if selected_setid is None or selected_spl_version is None:
+            raise ValueError("stable SPL capture requires the selected SETID/version")
+        store.validate_dailymed_spl(
+            stable_spl_bytes,
+            selected_setid,
+            selected_spl_version,
+        )
+        digest = sha256(stable_spl_bytes).hexdigest()
+        status = observations[-1].http_status if observations else 200
+        member = _dailymed_member(
+            ordinal=len(members),
+            artifact_id=f"sha256:{digest}",
+            artifact_kind="dailymed_spl_xml",
+            relative_path=f"dailymed/sha256/{digest}.xml",
+            byte_size=len(stable_spl_bytes),
+            media_type="application/xml",
+            http_status=status,
+            body_complete=True,
+            termination_reason="complete_response",
+        )
+        members.append(member)
+
+    manifest = DailyMedSnapshotManifest(
+        run_id=run_id,
+        acquisition_id=acquisition_id,
+        acquisition_intent_id=acquisition_intent_id,
+        acquisition_ordinal=acquisition_ordinal,
+        query_id=query_id,
+        snapshot_id=snapshot_id,
+        operation=operation,
+        request_identity=request_identity,
+        selected_setid=selected_setid,
+        selected_spl_version=selected_spl_version,
+        started_at_utc=started_at_utc,
+        completed_at_utc=completed_at_utc,
+        execution_status=execution_status,
+        coverage_status=coverage_status,
+        result_status=result_status,
+        record_count=record_count,
+        pages_completed=pages_completed,
+        attempts_used=attempts_used,
+        truncated=truncated,
+        warning_codes=warning_codes,
+        members=tuple(members),
+        code_revision=code_revision,
+    )
+    paths: list[Path] = []
+    for observation in observations:
+        paths.append(store.store_dailymed_response(observation.body).path)
+    if stable_spl_bytes is not None:
+        if selected_setid is None or selected_spl_version is None:
+            raise RuntimeError("validated stable SPL identity unexpectedly became absent")
+        paths.append(
+            store.store_dailymed_spl(
+                stable_spl_bytes,
+                selected_setid=selected_setid,
+                selected_spl_version=selected_spl_version,
+            ).path
+        )
+    digest = manifest.manifest_id.removeprefix("sha256:")
+    manifest_path = store.publish_bytes(
+        f"dailymed/manifests/sha256/{digest[:2]}/{digest}.json",
+        manifest.canonical_bytes(),
+        artifact_class="manifest",
+    ).path
+    return CapturedDailyMedSnapshot(manifest, manifest_path, tuple(paths))
+
+
+def replay_dailymed_snapshot(
+    raw: bytes,
+    store: SnapshotStore,
+    *,
+    expected_manifest_id: Sha256Digest,
+    expected_members: tuple[DailyMedManifestMember, ...],
+) -> DailyMedSnapshotManifest:
+    """Revalidate canonical manifest bytes and every immutable member."""
+
+    manifest = DailyMedSnapshotManifest.from_json_bytes(raw)
+    if manifest.manifest_id != expected_manifest_id:
+        raise SnapshotIntegrityError("DailyMed manifest identity differs from expected")
+    if manifest.members != expected_members:
+        raise SnapshotIntegrityError("DailyMed manifest members differ from expected")
+    for member in manifest.members:
+        path = store.verify_dailymed(
+            member.artifact_id,
+            stable_spl=member.artifact_kind == "dailymed_spl_xml",
+            selected_setid=manifest.selected_setid,
+            selected_spl_version=manifest.selected_spl_version,
+        )
+        if (
+            path.relative_to(store.root).as_posix() != member.relative_path
+            or path.stat().st_size != member.byte_size
+        ):
+            raise SnapshotIntegrityError("DailyMed manifest member metadata differs")
+    return manifest
+
+
+def _dailymed_member(
+    *,
+    ordinal: int,
+    artifact_id: Sha256Digest,
+    artifact_kind: Literal["dailymed_http_response", "dailymed_spl_xml"],
+    relative_path: str,
+    byte_size: int,
+    media_type: str,
+    http_status: int,
+    body_complete: bool,
+    termination_reason: TerminationReason,
+) -> DailyMedManifestMember:
+    payload = {
+        "ordinal": ordinal,
+        "artifact_id": artifact_id,
+        "artifact_kind": artifact_kind,
+        "relative_path": relative_path,
+        "byte_size": byte_size,
+        "media_type": media_type,
+        "http_status": http_status,
+        "body_complete": body_complete,
+        "termination_reason": termination_reason,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return DailyMedManifestMember(
+        ordinal=ordinal,
+        link_id=f"artifact-link:sha256:{sha256(encoded).hexdigest()}",
+        artifact_id=artifact_id,
+        content_hash=artifact_id,
+        artifact_kind=artifact_kind,
+        relative_path=relative_path,
+        byte_size=byte_size,
+        media_type=media_type,
+        http_status=http_status,
+        body_complete=body_complete,
+        termination_reason=termination_reason,
+    )
