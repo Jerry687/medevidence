@@ -37,9 +37,57 @@ page, and `truncated=false`. The partial search is explicitly bounded and
 non-exhaustive. The redacted acceptance record and validated identities are
 recorded in [M1A-LIVE-RUN-002-ACCEPTANCE](../.delivery/M1A-LIVE-RUN-002-ACCEPTANCE.md).
 
-The durable state is `M1A_COMPLETE` and `READY_FOR_M1B_OWNER_PLANNING`. M1B has
-not begun. The Run 002 authority is consumed, `rerun_authorized=false`, and
-every further medical-source request requires new exact Owner authorization.
+The durable M1A state remains `M1A_COMPLETE`. The Owner-authorized
+`M1B-DM-001` additive domain-contract implementation is now a local candidate
+whose first independent review returned `P0/P1/P2 = 0/4/1` and whose final
+remediation 3/3 review returned `FAIL — P0 0 / P1 2 / P2 0`. The Owner then
+authorized one extra remediation cycle limited to both P1 findings. Extra
+remediation 1/1 and fresh offline validation completed, but Review 002 returned
+`FAIL — P0 0 / P1 1 / P2 1` on candidate manifest
+`f8c9cb5b13a93d4c15847855785afac80d16e0332462a9b0734e9cb576769ffe`.
+Same-class P1-02 remediation and dependent P2 evidence were implemented with
+fresh offline validation, but Review 003 returned
+`FAIL — P0 0 / P1 2 / P2 0` on exact 20-path manifest
+`06b77e138ed4f87b2ddc749ef8eb67fd214b61512714f56b95e881afbbeeb6b3`.
+The extra cycle 1/1 is consumed and status is `OWNER_DECISION_REQUIRED` for
+another bounded mechanical cycle. Terminal audit and Git integration were not
+run. The Owner subsequently authorized exactly one new cycle limited to Review
+003 P1-01/P1-02. The implementation and fresh validation completed, but Review
+004 returned `FAIL — P0 0 / P1 1 / P2 0` on canonical ordinal manifest
+`e4f3ec8e43e2292ffe1c9c6206892f61d7111eb5c27392a21022122b14b5819e`.
+Same-class batch remediation was authorized under the explicit do-not-stop
+clause. The implementation and fresh root validation completed, but Review 005
+returned `FAIL — P0 0 / P1 2 / P2 0` on exact 22-path manifest
+`420cfd5a5ec52a30d53dee54d5bac2cfff2a11c0b450e03031434d4ea1881bca`.
+Same-class batch remediation and fresh root validation completed, but Review
+006 returned `FAIL — P0 0 / P1 1 / P2 0` on exact candidate manifest
+`75416c4fb6a3df9bbcf40783bcc4aab9f12e3d3c8df9118fdaebfe7f756dbeef`.
+It accepted cross-request reuse of acquisition, snapshot, and source-outcome
+IDs because global uniqueness was enforced only for acquisition ordinals.
+Owner-authorized same-class remediation now enforces global uniqueness of
+`acquisition_id`, `snapshot_id`, and `source_outcome_id` while preserving valid
+`acquisition_intent_id` reuse. Fresh root validation passed, but Review 007
+returned `FAIL — P0 0 / P1 1 / P2 0` on manifest
+`9a1ad8c2d2850c2b5ffcff67d5e19017beee740eb183c6b222270d1bdee258ca`.
+The exported `DailyMedTrustPath` accepts non-frozen standalone rows even though
+the parent policy rejects them. Same Owner-authorized security P1-01
+remediation now restricts standalone validation to exactly one of the six
+frozen rows with direct drift negatives; parent validation is unchanged and no
+schema/public concept changed. Fresh root validation passes; Review 008 and
+terminal audit were the next gates. Review 008 returned
+`FAIL — P0 0 / P1 2 / P2 0` on manifest
+`939e99998c63dfe3ae664aa5ef6e265bc28e0e2787ea7cb73a32002dfb29e93e`.
+It found existing-instance security-policy revalidation bypasses and
+standalone/mutated LOINC drift. Same Owner-frozen non-weakenability and LOINC
+mechanical remediation now revalidates all six security model instance types,
+including nested connector drift, and enforces exact one-of-four LOINC rows
+plus row/oracle instance revalidation. Frozen values remain unchanged. Fresh
+root validation passes; Review 009 and terminal audit are pending. This is not
+an integrated M1B completion claim.
+The Run 002
+authority is consumed, `rerun_authorized=false`, and every further
+medical-source request requires new exact Owner authorization. No medical-source
+request is authorized or performed by `M1B-DM-001`.
 The acceptance establishes no causal, incidence, comparative-risk, or clinical
 conclusion; the draft remains research-only, non-exportable, and non-clinical.
 
@@ -49,7 +97,7 @@ conclusion; the draft remains research-only, non-exportable, and non-clinical.
 |---|---|---|---|---|---|---|---|---|
 | [`V1-FR-001`](PRD.md#v1-fr-001--configurable-research-scope) | [§7.1 Research and terminology](ARCHITECTURE.md#71-research-and-terminology) | [§7 Terminology normalization](DATA_SOURCES.md#7-terminology-normalization) | [§9 Medical-boundary handling](SECURITY.md#9-medical-boundary-handling) | [§3 Evaluation item schema](EVALUATION_PLAN.md#3-evaluation-item-schema) | [ADR-001](decisions/ADR-001-v1-reference-domain.md), [ADR-007](decisions/ADR-007-domain-contracts-and-schema-versioning.md) | M1A | Domain schema, API contract, and second synthetic-scope tests | Reference scenario loads through typed configuration; a second scope uses the same path without drug/ADR branches |
 | [`V1-FR-002`](PRD.md#v1-fr-002--pubmed-vertical-slice) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§2 PubMed](DATA_SOURCES.md#2-pubmed) | [§2 PubMed source policy](SECURITY.md#pubmed) | [§2.1 Gold-10](EVALUATION_PLAN.md#21-gold-10-calibration-subset) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-009](decisions/ADR-009-m1a-pubmed-vertical-slice-contracts.md) | M1A | M1A is integrated at accepted code revision `531f867006f3d01ebbc14633ad6e5509e4e70a47`. Run 001 remains `M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE`: historical connector outcome `failed / unavailable / indeterminate`, received bytes preserved separately as `failed / partial / indeterminate`, fetch not executed, and no live PASS. Run 002 is `M1A_LIVE_RUN_002_ACCEPTED`: the redacted closed-contract record at external root label `OWNER_EXTERNAL_M1A_LIVE_RUN_002_ROOT` and relative label `acceptance/pubmed-live-b1ab911398624933ab8fc06de2e08596.json` is 3,223 bytes with SHA-256 `008770e8155eee608aa71fab08cdd2a223f1e9ec92824427cc7a3409c6f69f25`. One run used two contiguous acquisitions and two total requests. Search is `succeeded / partial / matches`, 100 valid results, one page, `truncated=true`, explicitly bounded and non-exhaustive; fetch is `succeeded / complete / matches`, one valid retained publication, one page, `truncated=false`. This establishes `M1A_LIVE_ACCEPTANCE_PASS`, `M1A_COMPLETE`, and `READY_FOR_M1B_OWNER_PLANNING`; M1B has not started, no rerun occurred, the authority is consumed, and `rerun_authorized=false`. | Draft contains PMID/version and exact available-abstract locator; no-match, partial, failed, and unavailable outcomes remain distinct; partial search supports no exhaustive, causal, incidence, comparative-risk, or clinical conclusion and the draft remains non-exportable |
-| [`V1-FR-003`](PRD.md#v1-fr-003--dailymed-labeling) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§3 DailyMed](DATA_SOURCES.md#3-dailymed) | [§2 DailyMed source policy](SECURITY.md#dailymed) | [§5 Question taxonomy](EVALUATION_PLAN.md#5-question-taxonomy) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md) | M1B | Candidate-selection units, SPL contracts, version/section integration case | Every label claim identifies product, SETID, SPL version, section, date, URI, and selection provenance; ambiguity never silently resolves |
+| [`V1-FR-003`](PRD.md#v1-fr-003--dailymed-labeling) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities), [§16 M1B-DM-001](ARCHITECTURE.md#16-m1b-dm-001-additive-dailymed-contract-architecture) | [§3 DailyMed](DATA_SOURCES.md#3-dailymed), [§11 M1B-DM-001](DATA_SOURCES.md#11-m1b-dm-001-exact-dailymed-source-contract) | [§2 DailyMed source policy](SECURITY.md#dailymed), [§18 M1B-DM-001](SECURITY.md#18-m1b-dm-001-dailymed-trust-and-parser-contract) | [§5 Question taxonomy](EVALUATION_PLAN.md#5-question-taxonomy), [§13 M1B-DM-001](EVALUATION_PLAN.md#13-m1b-dm-001-deterministic-contract-evaluation) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-011](decisions/ADR-011-m1b-dailymed-contracts.md), [Review 001](reviews/M1B-DM-001-INDEPENDENT-REVIEW-001.md), [Review 002](reviews/M1B-DM-001-INDEPENDENT-REVIEW-002.md), [Review 003](reviews/M1B-DM-001-INDEPENDENT-REVIEW-003.md), [Review 004](reviews/M1B-DM-001-INDEPENDENT-REVIEW-004.md), [Review 005](reviews/M1B-DM-001-INDEPENDENT-REVIEW-005.md), [Review 006](reviews/M1B-DM-001-INDEPENDENT-REVIEW-006.md), [Review 007](reviews/M1B-DM-001-INDEPENDENT-REVIEW-007.md), [Review 008](reviews/M1B-DM-001-INDEPENDENT-REVIEW-008.md) | M1B | Reviews 001-008 remain immutable failure history. Review 008 verified direct trust-path closure, then found existing-instance security-policy bypasses and standalone/mutated LOINC drift. Manifest `939e99998c63dfe3ae664aa5ef6e265bc28e0e2787ea7cb73a32002dfb29e93e`; verdict `FAIL — P0 0 / P1 2 / P2 0`. Post-Review 008 remediation revalidates all six security model instance types and nested connector drift, and enforces exact one-of-four LOINC rows plus row/oracle instance revalidation; frozen values are unchanged. Fresh evidence: focused `301/0.46s`; combined DailyMed/OpenAPI `335/0.74s`; Ruff/format/MyPy PASS; full `949`, two warnings, `80%/7.33s`; exact 26-path scope/diff PASS. Review 009/audit pending; no PASS, Git, network, integration, or DM-002 claim | Only `succeeded/complete/matches` may select after deterministic exact/equivalent-group resolution; partial matches always require review; the only `no_candidate` state is `succeeded/complete/no_match`; every retained section locator binds the selected label identity and a successful complete usable fetch |
 | [`V1-FR-004`](PRD.md#v1-fr-004--faers-descriptive-query) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§4 FAERS/openFDA](DATA_SOURCES.md#4-faersopenfda) | [§2 FAERS/openFDA source policy](SECURITY.md#faersopenfda) | [§8 Agent and safety evaluation](EVALUATION_PLAN.md#8-agent-and-safety-evaluation) | [ADR-002](decisions/ADR-002-source-semantics.md) | M1B | Query/limit units; timeout, 429, truncation, partial fixtures; Gold-10 FAERS case | Output exposes statistical unit, query/time/limits/role/version policy and mandatory limitations; zero unqualified incidence, causal, relative-risk, or ranking claims |
 | [`V1-FR-005`](PRD.md#v1-fr-005--cadec-auxiliary-corpus) | [§5.4 Chunking and indexing](ARCHITECTURE.md#54-chunking-and-indexing) | [§5 CADEC](DATA_SOURCES.md#5-cadec) | [§2 CADEC source policy](SECURITY.md#cadec) | [§4.2 Retrieval relevance](EVALUATION_PLAN.md#42-retrieval-relevance) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md) | M1B | License/manifest check, gold/predicted parse tests, prohibited-claim case | Corpus/version/split and gold/predicted origin remain visible; CADEC cannot support prohibited risk, incidence, causal, regulatory, or clinical claims |
 | [`V1-FR-006`](PRD.md#v1-fr-006--reproducible-ingestion) | [§5.2 Raw snapshot and manifest](ARCHITECTURE.md#52-raw-snapshot-and-manifest) | [§8 Snapshot and manifest policy](DATA_SOURCES.md#8-snapshot-and-manifest-policy) | [§10 Snapshot and data integrity](SECURITY.md#10-snapshot-and-data-integrity) | [§11 Reproducibility](EVALUATION_PLAN.md#11-reproducibility-and-artifact-policy) | [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-010](decisions/ADR-010-m1a-remainder-freeze-amendment.md) | M1A/M1B | M1A-003A, M1A-003B, and M1A-004 are preserved ancestors of the current M1A-005-integrated baseline `47504a4016f968ed0a0dd10e4280b1a957c15461`; their final review, audit, hosted-CI, and historical evidence remain preserved. M1A-004 owns exact ADR-010 acquisition-intent validation and rejects malformed, reused, or cross-acquisition persistence results. | Every run emits required manifest fields; verified replay gives stable IDs; integrity failure blocks normalization/index publication |
@@ -79,6 +127,125 @@ conclusion; the draft remains research-only, non-exportable, and non-clinical.
 
 ## 4. Invariant acceptance scenarios
 
+### M1B-DM-001 Review 009 status
+
+Independent Review 009 binds manifest
+`1cfb367f52576a765f7ccf5e3ef5d80053906dd7a8e4dffecb0066728350d3d4`
+and returned `FAIL - P0 0 / P1 2 / P2 0`. It verified Review 008 closure, then
+reproduced accepted instance drift in 18/35 candidate fields, stable-section
+title/ID, locator schema/kind/snapshot/fetch operation, and retained-response
+schema/ID/media/bytes/time. Same-class implementation now revalidates all 14
+new closed DM-001 model types at public/trusted and nested report/request
+boundaries and preserves candidate completeness/termination values without
+normalization. Implementation-node gates are focused `335`, domain/OpenAPI
+`372`, Ruff/format, MyPy `34`, and diff PASS. Root full validation, Review 010,
+and terminal audit remain pending; no PASS, Git, network, integration, or
+DM-002 claim is made.
+
+Fresh post-Review 009 root validation completed on the exact 27-path candidate,
+including Review 009: domain plus byte-exact OpenAPI `372 passed in 0.76s`;
+Ruff PASS; format `67` files; MyPy `34` source files; full offline `951 passed`,
+two expected warnings, `80%` coverage in `6.64s`; and diff check PASS. Fresh
+complete Review 010 and terminal audit remain pending; no PASS, Git, network,
+integration, or DM-002 claim is made.
+
+Review 015 remediation constructs positive trusted-fetch authority from explicit
+fixture constants and independent stable-label evidence, with no retained/
+locator reads. Fresh evidence is report-focused `137 passed`, domain plus
+byte-exact OpenAPI `380 passed in 0.90s`, Ruff/format PASS, MyPy `34` source
+files, and full offline `959 passed`, two expected warnings, `80%` coverage in
+`7.06s`; diff check passed. Review 016 and terminal audit remain pending; no
+PASS, Git, network, integration, or DM-002 claim is made.
+
+### M1B-DM-001 Review 016 PASS
+
+[Review 016](reviews/M1B-DM-001-INDEPENDENT-REVIEW-016.md) binds pre-finalization
+manifest `567f4663669759a82fc67ccf25419a443b6f2e200e5e5a36226b15c81549d700`
+and records `PASS — P0 0 / P1 0 / P2 0`. All prior findings and the full
+offline/static/scope boundary passed independent review. Evidence-finalized
+bytes now require exact terminal audit; no Git, network, integration or DM-002
+claim is made.
+
+### M1B-DM-001 Terminal Audit 001 PASS
+
+[Terminal Audit 001](reviews/M1B-DM-001-TERMINAL-AUDIT-001.md) binds the
+pre-audit-record 34-path manifest
+`8b0781a741163703467d7c96e732bee24c3854cdacde26405de886b6e1364405`
+and records `PASS — P0 0 / P1 0 / P2 0`. All evidence, scope, lock, security,
+provenance, compatibility and zero-network gates passed. This record's final
+bytes require terminal rebind before staging; no Git/integration or DM-002 claim
+is made.
+
+Review 011 same-class remediation removes the public intrinsic-only decision
+bypass, requires complete trusted discovery context throughout downstream
+comparison, and reconstructs SourceOutcome at the classifier and every report
+construction/validation boundary. Fresh evidence is focused `281 passed`,
+domain plus byte-exact OpenAPI `380 passed in 0.86s`, Ruff/format PASS, MyPy
+`34` source files, and full offline `959 passed`, two expected warnings, `80%`
+coverage in `6.85s`; diff check passed. Review 012 and terminal audit remain
+pending; no PASS, Git, network, integration, or DM-002 claim is made.
+
+### M1B-DM-001 Review 015 status
+
+[Review 015](reviews/M1B-DM-001-INDEPENDENT-REVIEW-015.md) binds exact 32-path
+manifest `9f71d93bf5710043697edfd848dc0a4d7bbb4232729edbcc3a939395f44bcd64`
+and records `FAIL — P0 0 / P1 0 / P2 1`. Runtime closure passes; the remaining
+P2 is independent positive trusted-fetch fixture construction. Mechanical
+fixture closure and Review 016 remain pending; no audit, PASS, Git, network,
+integration, or DM-002 claim is made.
+
+### M1B-DM-001 Review 012 status
+
+[Review 012](reviews/M1B-DM-001-INDEPENDENT-REVIEW-012.md) binds exact 29-path
+manifest `8445fb3a9c2bed48819b03c8989f4d9ef593f3d7ede874f9010b417697f1d188`
+and records `FAIL — P0 0 / P1 1 / P2 0`. The remaining same-class gap permits
+omission of authoritative decision/candidate/outcome/manifest context at the
+public locator comparator. Mechanical closure and Review 013 remain pending;
+no audit, PASS, Git, network, integration, or DM-002 claim is made.
+
+Review 012 remediation makes complete authoritative selection context mandatory
+for locator comparison and removes the incomplete intrinsic-report call.
+Fresh evidence is locator-focused `137 passed`, domain plus byte-exact OpenAPI
+`380 passed in 0.82s`, Ruff/format PASS, MyPy `34` source files, and full
+offline `959 passed`, two expected warnings, `80%` coverage in `6.59s`; diff
+check passed. Review 013 and terminal audit remain pending; no PASS, Git,
+network, integration, or DM-002 claim is made.
+
+### M1B-DM-001 Review 013 status
+
+[Review 013](reviews/M1B-DM-001-INDEPENDENT-REVIEW-013.md) binds exact 30-path
+manifest `c5ac09050724eab58b489b859d6a34d9e355ecca2adfd74bc843faf72396b959`
+and records `FAIL — P0 0 / P1 1 / P2 0`. Public retained/locator comparators
+still require the existing trusted fetch acquisition reference to reject a
+coherently forged chain. Mechanical closure and Review 014 remain pending; no
+audit, PASS, Git, network, integration, or DM-002 claim is made.
+
+Review 013 remediation supplies a canonical request-owned nonserialized trusted
+fetch-evidence row of existing identity types and closes acquisition, attempt,
+manifest, member, link, raw-artifact, and raw-hash binding without mutual
+self-authentication. Fresh evidence is focused `281 passed`, domain plus
+byte-exact OpenAPI `380 passed in 0.86s`, Ruff/format PASS, MyPy `34` source
+files, and full offline `959 passed`, two expected warnings, `80%` coverage in
+`6.80s`; diff check passed. Review 014 and terminal audit remain pending; no
+PASS, Git, network, integration, or DM-002 claim is made.
+
+### M1B-DM-001 Review 014 status
+
+[Review 014](reviews/M1B-DM-001-INDEPENDENT-REVIEW-014.md) binds exact 31-path
+manifest `7ba32e4738a45f990b3b6f0fde6c2d34b9a1062aed8d6f638824479739f61274`
+and records `FAIL — P0 0 / P1 1 / P2 0`. Public retained/locator comparison
+must reassert the frozen distinct acquisition, distinct snapshot, and strictly
+later fetch ordinal relationship. Mechanical closure and Review 015 remain
+pending; no audit, PASS, Git, network, integration, or DM-002 claim is made.
+
+Review 014 remediation makes public retained/locator comparison require a
+different fetch acquisition ID, different snapshot, and strictly later ordinal
+than authoritative discovery. Fresh evidence is focused `281 passed`, domain
+plus byte-exact OpenAPI `380 passed in 0.88s`, Ruff/format PASS, MyPy `34`
+source files, and full offline `959 passed`, two expected warnings, `80%`
+coverage in `7.16s`; diff check passed. Review 015 and terminal audit remain
+pending; no PASS, Git, network, integration, or DM-002 claim is made.
+
 | Invariant | PRD requirements | Architecture anchor | Policy anchors | Evidence | Acceptance |
 |---|---|---|---|---|---|
 | Online research does not publish or mutate the offline index | FR-006, FR-008, FR-012; NFR-005 | [INV-001](ARCHITECTURE.md#inv-001--online-research-cannot-mutate-the-offline-index) | [Storage ADR](decisions/ADR-003-storage-and-snapshots.md) | Online-flow integration test with index mutation spy/permissions | No publish/rebuild/delete/mutation call; missing/stale index yields bounded operational outcome |
@@ -104,3 +271,30 @@ M0 remediation is ready for independent re-review when:
 - unresolved executable decisions remain behind `ME-000A` through `ME-000D`;
 - no MedEvidence business implementation exists;
 - independent re-review records PASS before owner approval becomes effective.
+
+### M1B-DM-001 Review 010 status
+
+[Review 010](reviews/M1B-DM-001-INDEPENDENT-REVIEW-010.md) binds exact manifest
+`6955add1ad6e5f0d58517a749fb8b9f7b41fc1c384784ca8e11da8194b97e8e0`
+and records `FAIL - P0 0 / P1 1 / P2 0`. Public method calls still accepted
+drifted warning, candidate, trusted outcome/decision, retained, locator, and
+report-context instances. The mechanically dependent remediation reconstructs
+complete self and argument data at each affected DM-001 factory, projection,
+and comparator. No schema, dependency, network authority, or DM-002 scope is
+added. Fresh validation, Review 011, and terminal audit remain pending.
+
+Fresh post-remediation evidence is: domain plus byte-exact OpenAPI `373 passed
+in 0.82s`; Ruff PASS; format `67` files; MyPy `--no-incremental` PASS for `34`
+source files; full offline `952 passed`, two expected warnings, `80%` coverage
+in `6.64s`; and diff check PASS. Review 011 and terminal audit remain pending;
+no PASS, Git, network, integration, or DM-002 claim is made.
+
+### M1B-DM-001 Review 011 status
+
+[Review 011](reviews/M1B-DM-001-INDEPENDENT-REVIEW-011.md) binds exact 28-path
+manifest `564e352be9ad2470c58be20156036c9f66f8aa90ad9964048f085dc6d5de254b`
+and records `FAIL — P0 0 / P1 2 / P2 0`. The remaining same-class defects are
+caller-controlled intrinsic decision validation and invalid existing
+`SourceOutcome` acceptance by the classifier/report-construction boundary.
+Remediation and Review 012 remain pending; no audit, PASS, Git, network,
+integration, or DM-002 claim is made.

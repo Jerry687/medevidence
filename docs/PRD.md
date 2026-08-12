@@ -407,3 +407,53 @@ resolved by the stated gate.
 | `M3-MEDICAL-BOUNDARY` | Clinical-boundary and emergency-message wording | Project owner with designated medical reviewer | Before M3 safety-policy implementation |
 | `M2-ADJUDICATION` | Medical/pharmacovigilance adjudicator for Gold-10, conflict, and safety cases | Boqi Niu, Project Owner | Before Gold-10 adjudication in M2 |
 | `M3-EXPORT` | V1 export formats, local destinations, and retention periods | Boqi Niu, Project Owner | Before M3 export implementation |
+
+## 12. M1B-DM-001 DailyMed contract freeze
+
+M1B-DM-001 implements the additive domain/public-contract portion of
+V1-FR-003 under [ADR-011](decisions/ADR-011-m1b-dailymed-contracts.md). It does
+not implement or authorize DailyMed transport, parsing, persistence, API
+routes, live smoke, or any medical-source network request.
+
+The frozen acceptance behavior is:
+
+- SETID is the exact lowercase, non-nil canonical UUID string; UUID version and
+  variant are unrestricted. SPL version is a positive canonical integer
+  string. Exact identity parity is required across request, discovery,
+  decision, fetch, and parsed SPL surfaces.
+- `succeeded/complete/matches` may select only after deterministic exact or
+  equivalent-group resolution. Every positive-count
+  `succeeded/partial/matches` and `failed/partial/matches` is
+  `review_required`, including count one, resolved-equivalent, and pinned
+  requests. Partial discovery never selects.
+- only zero-count `succeeded/complete/no_match` is `no_candidate`. The three
+  zero-count indeterminate triples create no decision row.
+- source-indexed DailyMed sections remain visible for no-candidate, review, and
+  decisionless indeterminate discovery. They have no authoritative stable
+  label result or label locator.
+- stable label versions and sections are fetch-independent; a label locator is
+  admitted only after selected plus a distinct successful, complete, usable
+  fetch.
+- marketing state is closed to `active|archived|unknown`. Stable label-version
+  identity derives only from schema, source, SETID, SPL version, and content
+  hash; dates, marketing state, and artifact binding do not change that ID.
+- `RetainedSplResponse` and `LabelSelectionWarning` close the fetch and warning
+  evidence bindings. Requested sections absent after a usable fetch remain
+  visible as `section_absent:<LOINC-code>` and never gain an unbound locator.
+- the section registry is the exact four Active LOINC 2.82 code/title pairs in
+  ADR-011. No fuzzy title matching or expansion is allowed.
+- `connector_trust_allowlist` stores the six closed DailyMed HTTPS path/query
+  designs but authorizes no network I/O. Ordinary/runtime host lists are empty
+  and medical-source network execution is false for this work item.
+- future XML/ZIP implementations must use the frozen fail-closed bounds,
+  direct HL7 selector attributes, inert additional safe attributes, no
+  filesystem extraction, and pre-normalization rejection of every ASCII C0
+  control and DEL.
+- the typed connector oracle also freezes all denied classes, `5/10/5/5`
+  second phase timeouts, 30-second deadline, two attempts, retry/backoff/
+  Retry-After limits, five-page/100-candidate/5,242,880-byte discovery bounds,
+  immutable fixed-version cache, and no discovery cache or stale fallback.
+
+The additive `M1BResearchRequestV1`/`M1BResearchReportV1` schemas do not mutate
+the existing M1A request/report schemas or `/v1/research/pubmed` behavior.
+M1B-DM-002 remains separately unauthorized.

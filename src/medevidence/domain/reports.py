@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Final, Literal, Self, cast
+from typing import Any, Final, Literal, Self, cast
 
-from pydantic import model_validator
+from pydantic import ConfigDict, Field, model_validator
 
-from .claims import Citation, EvidenceClaim
+from .claims import Citation, DailyMedLocatorV1, EvidenceClaim
 from .identifiers import (
+    AcquisitionId,
+    AcquisitionIntentId,
     AcquisitionRegistrationEnvelopeId,
+    ArtifactId,
+    ArtifactLinkId,
+    AttemptId,
     ClaimId,
+    DecisionId,
     DurableModel,
     LongText,
     Pmid,
@@ -17,10 +23,13 @@ from .identifiers import (
     PublicationVersionId,
     QueryId,
     ReportId,
+    RequestId,
     RunId,
     RunIntentId,
     SchemaVersion,
     Sha256Digest,
+    SnapshotId,
+    SourceOutcomeId,
     UtcDateTime,
     WarningCode,
     canonical_json,
@@ -28,11 +37,27 @@ from .identifiers import (
     sha256_digest,
 )
 from .publications import PublicationRecord, PublicationStatusValue
-from .scope import ExecutionBounds, ResearchScope, SourceType
+from .scope import (
+    DailyMedSelectionMode,
+    DailyMedSelectionRequestV1,
+    ExecutionBounds,
+    M1BResearchRequestV1,
+    ResearchScope,
+    SourceType,
+)
 from .sources import (
     CoverageStatus,
+    DailyMedCandidateLabel,
+    DailyMedLabelVersion,
+    DomainWarning,
+    ExecutionStatus,
+    LabelSection,
+    LabelSelectionDecision,
+    LabelSelectionStatus,
+    M1BSourcePlanEntryV1,
     PlanningStatus,
     ResultStatus,
+    RetainedSplResponse,
     SourceOutcome,
     SourcePlanEntry,
 )
@@ -542,3 +567,791 @@ class ResearchReport(DurableModel):
         if self.report_artifact_id != sha256_digest(self.artifact_bytes()):
             raise ValueError("report_artifact_id does not match canonical report artifact bytes")
         return self
+
+
+class AcquisitionOutcomeRef(DurableModel):
+    """Closed inline reference to one executed source acquisition outcome."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    run_id: RunId
+    source: SourceType
+    acquisition_id: AcquisitionId
+    acquisition_intent_id: AcquisitionIntentId
+    acquisition_ordinal: int = Field(ge=0, le=7)
+    operation: Literal["search", "fetch"]
+    query_id: QueryId
+    source_outcome_id: SourceOutcomeId
+    snapshot_id: SnapshotId
+
+
+class DailyMedLabelSectionV1(DurableModel):
+    """Truthful source-indexed DailyMed section for one selection request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.dailymed.report-section.v1"] = "m1b.dailymed.report-section.v1"
+    report_id: ReportId
+    run_id: RunId
+    source: Literal[SourceType.DAILYMED] = SourceType.DAILYMED
+    ordinal: int = Field(ge=0, le=3)
+    section_kind: Literal["dailymed_label"] = "dailymed_label"
+    request: DailyMedSelectionRequestV1
+    selection_decision_id: DecisionId | None = None
+    selection_status: LabelSelectionStatus | None = None
+    acquisition_outcome_refs: tuple[AcquisitionOutcomeRef, ...] = Field(
+        min_length=1,
+        max_length=2,
+    )
+    label_version: DailyMedLabelVersion | None = None
+    retained_response: RetainedSplResponse | None = None
+    label_sections: tuple[LabelSection, ...] = ()
+    locators: tuple[DailyMedLocatorV1, ...] = ()
+    limitations: tuple[LongText, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_section_shape(self) -> Self:
+        if (self.selection_decision_id is None) != (self.selection_status is None):
+            raise ValueError("selection decision identity and status are nullable together")
+        refs = self.acquisition_outcome_refs
+        if refs[0].operation != "search":
+            raise ValueError("DailyMed section begins with exactly one discovery reference")
+        if len(refs) == 2:
+            discovery_ref, fetch_ref = refs
+            if fetch_ref.operation != "fetch":
+                raise ValueError("the optional second DailyMed reference must be a fetch")
+            if discovery_ref.acquisition_id == fetch_ref.acquisition_id:
+                raise ValueError("DailyMed discovery and fetch acquisition IDs must be distinct")
+            if discovery_ref.snapshot_id == fetch_ref.snapshot_id:
+                raise ValueError("DailyMed discovery and fetch snapshot IDs must be distinct")
+            if fetch_ref.acquisition_ordinal <= discovery_ref.acquisition_ordinal:
+                raise ValueError(
+                    "DailyMed fetch acquisition ordinal must be strictly greater than discovery"
+                )
+        if len({ref.query_id for ref in refs}) != len(refs):
+            raise ValueError("DailyMed acquisition refs must be unique")
+        if any(ref.run_id != self.run_id or ref.source is not SourceType.DAILYMED for ref in refs):
+            raise ValueError("DailyMed acquisition refs must match section run and source")
+
+        if self.selection_status in {
+            LabelSelectionStatus.NO_CANDIDATE,
+            LabelSelectionStatus.REVIEW_REQUIRED,
+        }:
+            if (
+                len(refs) != 1
+                or self.label_version is not None
+                or self.retained_response is not None
+                or self.label_sections
+            ):
+                raise ValueError("degraded DailyMed decisions are discovery-only with no result")
+            if self.locators or not self.limitations:
+                raise ValueError("degraded DailyMed decisions need a limitation and no locator")
+        elif self.selection_status is LabelSelectionStatus.SELECTED:
+            if self.label_version is not None and len(refs) != 2:
+                raise ValueError("a stable label result requires a distinct fetch reference")
+            if self.label_version is None and (
+                self.retained_response is not None or self.label_sections or self.locators
+            ):
+                raise ValueError("sections and locators require a stable label result")
+            if self.label_version is not None and self.retained_response is None:
+                raise ValueError("stable label result requires its exact retained response")
+            if len(refs) == 2 and self.label_version is None and not self.limitations:
+                raise ValueError("a selected failed fetch requires a visible limitation")
+        else:
+            if (
+                len(refs) != 1
+                or self.label_version is not None
+                or self.retained_response is not None
+                or self.label_sections
+            ):
+                raise ValueError("decisionless indeterminate discovery has no stable result")
+            if self.locators or not self.limitations:
+                raise ValueError("decisionless indeterminate discovery requires a limitation")
+
+        if self.label_version is not None:
+            assert self.retained_response is not None
+            if self.retained_response.candidate_set_snapshot_id != refs[0].snapshot_id:
+                raise ValueError("retained response must equal the discovery snapshot")
+            for section in self.label_sections:
+                if (
+                    section.setid != self.label_version.setid
+                    or section.label_version_id != self.label_version.label_version_id
+                    or section.spl_version != self.label_version.spl_version
+                    or section.spl_artifact_id != self.label_version.spl_artifact_id
+                ):
+                    raise ValueError("reported section must belong to the exact stable label")
+            section_ordinals = tuple(section.section_ordinal for section in self.label_sections)
+            if section_ordinals != tuple(range(len(self.label_sections))):
+                raise ValueError("label section ordinals must be unique, contiguous, and canonical")
+            if self.retained_response.section_ids != tuple(
+                section.section_id for section in self.label_sections
+            ):
+                raise ValueError("retained response must bind the exact ordered sections")
+            if (
+                self.retained_response.run_id != self.run_id
+                or self.retained_response.selection_decision_id != self.selection_decision_id
+                or self.retained_response.label_version_id != self.label_version.label_version_id
+                or self.retained_response.setid != self.label_version.setid
+                or self.retained_response.spl_version != self.label_version.spl_version
+                or self.retained_response.content_hash != self.label_version.content_hash
+                or self.retained_response.artifact_id != self.label_version.spl_artifact_id
+            ):
+                raise ValueError("retained response must equal the section stable label")
+            reported_codes = {section.section_code for section in self.label_sections}
+            missing_codes = set(self.request.requested_section_codes) - reported_codes
+            expected_absence = {f"section_absent:{code}" for code in missing_codes}
+            actual_absence = {
+                limitation
+                for limitation in self.limitations
+                if limitation.startswith("section_absent:")
+            }
+            if actual_absence != expected_absence:
+                raise ValueError("requested section absence requires exact visible limitations")
+        if tuple(
+            (locator.section_ordinal, locator.start_char, locator.end_char)
+            for locator in self.locators
+        ) != tuple(
+            sorted(
+                {
+                    (locator.section_ordinal, locator.start_char, locator.end_char)
+                    for locator in self.locators
+                }
+            )
+        ):
+            raise ValueError("DailyMed locators must be unique and canonically sorted")
+        if any(
+            locator.report_id != self.report_id
+            or locator.run_id != self.run_id
+            or locator.selection_decision_id != self.selection_decision_id
+            for locator in self.locators
+        ):
+            raise ValueError("DailyMed locators must match section report/run/decision")
+        if self.retained_response is not None and any(
+            locator.selected_candidate_id != self.retained_response.selected_candidate_id
+            or locator.fetch_attempt_id != self.retained_response.fetch_attempt_id
+            or locator.fetch_acquisition_id != self.retained_response.fetch_acquisition_id
+            or locator.fetch_acquisition_intent_id
+            != self.retained_response.fetch_acquisition_intent_id
+            or locator.fetch_acquisition_ordinal != self.retained_response.fetch_acquisition_ordinal
+            or locator.fetch_query_id != self.retained_response.fetch_query_id
+            or locator.fetch_snapshot_id != self.retained_response.fetch_snapshot_id
+            or locator.fetch_manifest_id != self.retained_response.fetch_manifest_id
+            or locator.fetch_source_outcome_id != self.retained_response.fetch_source_outcome_id
+            or locator.fetch_member_ordinal != self.retained_response.fetch_member_ordinal
+            or locator.fetch_link_id != self.retained_response.fetch_link_id
+            or locator.fetch_raw_artifact_id != self.retained_response.fetch_raw_artifact_id
+            or locator.fetch_raw_content_hash != self.retained_response.fetch_raw_content_hash
+            or locator.stable_content_hash != self.retained_response.content_hash
+            or locator.spl_artifact_id != self.retained_response.artifact_id
+            for locator in self.locators
+        ):
+            raise ValueError("DailyMed locator fetch evidence must equal retained response")
+        if self.limitations != tuple(sorted(set(self.limitations))):
+            raise ValueError("DailyMed limitations must be unique and canonically sorted")
+        return self
+
+
+type M1BSourceSection = DailyMedLabelSectionV1
+
+
+class M1BResearchReportV1(DurableModel):
+    """Parallel additive M1B draft report; M1A ResearchReport remains unchanged."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.report.v1"] = "m1b.report.v1"
+    report_id: ReportId
+    run_id: RunId
+    request_id: RequestId
+    scope: ResearchScope
+    source_plan: tuple[M1BSourcePlanEntryV1, ...] = Field(min_length=1, max_length=4)
+    source_outcomes: tuple[SourceOutcome, ...]
+    source_sections: tuple[M1BSourceSection, ...]
+    warnings: tuple[DomainWarning, ...] = ()
+    limitations: tuple[LongText, ...] = ()
+    retrieved_as_of: UtcDateTime
+    status: Literal["draft"] = "draft"
+    exportable: Literal[False] = False
+    safety_notice: Literal[
+        "Research assistance only. This draft summarizes public-source evidence and "
+        "does not provide diagnosis, treatment, dosage, individualized medical advice, "
+        "or a product-safety ranking."
+    ] = RESEARCH_ONLY_NOTICE
+
+    @classmethod
+    def create(cls, **values: Any) -> Self:
+        """Canonicalize M1B collections around the caller-supplied report identity."""
+
+        data: dict[str, Any] = dict(values)
+        data["source_outcomes"] = tuple(
+            SourceOutcome.model_validate(
+                outcome.model_dump(mode="python") if isinstance(outcome, SourceOutcome) else outcome
+            )
+            for outcome in data.get("source_outcomes", ())
+        )
+        sections = tuple(
+            sorted(
+                data.get("source_sections", ()),
+                key=lambda item: (item.source.value, item.ordinal),
+            )
+        )
+        data["source_sections"] = sections
+        data["source_plan"] = tuple(sorted(data["source_plan"], key=lambda item: item.source.value))
+        ref_order = {
+            (ref.source, ref.query_id): (ref.source.value, ref.acquisition_ordinal, ref.query_id)
+            for section in sections
+            for ref in section.acquisition_outcome_refs
+        }
+        data["source_outcomes"] = tuple(
+            sorted(
+                data.get("source_outcomes", ()),
+                key=lambda item: ref_order[(item.source, item.query_id)],
+            )
+        )
+        data["warnings"] = tuple(
+            sorted(
+                set(data.get("warnings", ())),
+                key=lambda item: (item.code, item.message),
+            )
+        )
+        data["limitations"] = tuple(sorted(set(data.get("limitations", ()))))
+        return cls.model_validate(data)
+
+    @model_validator(mode="after")
+    def validate_m1b_report(self) -> Self:
+        validated_outcomes = tuple(
+            SourceOutcome.model_validate(outcome.model_dump(mode="python"))
+            for outcome in self.source_outcomes
+        )
+        if validated_outcomes != self.source_outcomes:
+            raise ValueError("M1B source outcomes differ from closed validation")
+
+        plan_by_source = {entry.source: entry for entry in self.source_plan}
+        if len(plan_by_source) != len(self.source_plan):
+            raise ValueError("M1B source plan entries must be unique")
+        if set(plan_by_source) != set(self.scope.selected_sources):
+            raise ValueError("M1B source plan must exactly equal the scope source set")
+        if self.source_plan != tuple(sorted(self.source_plan, key=lambda item: item.source.value)):
+            raise ValueError("M1B source plan must be canonically sorted")
+        if any(
+            entry.planning_status not in {PlanningStatus.SELECTED, PlanningStatus.SKIPPED_BY_POLICY}
+            for entry in self.source_plan
+        ):
+            raise ValueError("in-scope M1B plan entries are selected or skipped_by_policy")
+
+        if self.source_sections != tuple(
+            sorted(self.source_sections, key=lambda item: (item.source.value, item.ordinal))
+        ):
+            raise ValueError("M1B source sections must be canonically sorted")
+        if any(
+            section.report_id != self.report_id or section.run_id != self.run_id
+            for section in self.source_sections
+        ):
+            raise ValueError("every source section must match the report identity")
+        if tuple(section.ordinal for section in self.source_sections) != tuple(
+            range(len(self.source_sections))
+        ):
+            raise ValueError("M1B source section ordinals must be contiguous and canonical")
+        request_keys = [canonical_json(section.request) for section in self.source_sections]
+        if len(request_keys) != len(set(request_keys)):
+            raise ValueError("each DailyMed request may have exactly one source section")
+        scope_drug_ids = {drug.concept_id for drug in self.scope.drugs}
+        if any(
+            section.request.drug_concept_id not in scope_drug_ids
+            for section in self.source_sections
+        ):
+            raise ValueError("every DailyMed section request drug must belong to report scope")
+
+        refs = tuple(
+            ref for section in self.source_sections for ref in section.acquisition_outcome_refs
+        )
+        ref_keys = tuple((ref.source, ref.query_id) for ref in refs)
+        if len(set(ref_keys)) != len(ref_keys):
+            raise ValueError("source-section acquisition references must be disjoint")
+        for field_name in ("acquisition_id", "snapshot_id", "source_outcome_id"):
+            identities = tuple(getattr(ref, field_name) for ref in refs)
+            if len(set(identities)) != len(identities):
+                raise ValueError(f"source-section {field_name} values must be globally unique")
+        dailymed_refs = tuple(ref for ref in refs if ref.source is SourceType.DAILYMED)
+        if len(dailymed_refs) > 8:
+            raise ValueError("executed DailyMed report acquisitions are bounded to eight")
+        ordinal_keys = tuple(
+            (ref.run_id, ref.source, ref.acquisition_ordinal) for ref in dailymed_refs
+        )
+        if len(set(ordinal_keys)) != len(ordinal_keys):
+            raise ValueError(
+                "DailyMed acquisition ordinals must be unique under run/source ownership"
+            )
+        outcome_keys = tuple((outcome.source, outcome.query_id) for outcome in self.source_outcomes)
+        if len(set(outcome_keys)) != len(outcome_keys) or set(outcome_keys) != set(ref_keys):
+            raise ValueError("report outcomes must equal the exact section-reference union")
+        ref_by_key = {(ref.source, ref.query_id): ref for ref in refs}
+        expected_outcome_order = tuple(
+            sorted(
+                self.source_outcomes,
+                key=lambda item: (
+                    item.source.value,
+                    ref_by_key[(item.source, item.query_id)].acquisition_ordinal,
+                    item.query_id,
+                ),
+            )
+        )
+        if self.source_outcomes != expected_outcome_order:
+            raise ValueError("M1B source outcomes must use source/ordinal/query order")
+
+        outcomes_by_key = {
+            (outcome.source, outcome.query_id): outcome for outcome in self.source_outcomes
+        }
+        for source, entry in plan_by_source.items():
+            has_outcome = any(outcome.source is source for outcome in self.source_outcomes)
+            has_section = any(section.source is source for section in self.source_sections)
+            if entry.planning_status is PlanningStatus.SKIPPED_BY_POLICY and (
+                has_outcome or has_section
+            ):
+                raise ValueError("skipped source cannot have a section or outcome")
+            if (
+                entry.planning_status is PlanningStatus.SELECTED
+                and source is SourceType.DAILYMED
+                and (not has_outcome or not has_section)
+            ):
+                raise ValueError("executed DailyMed source needs outcomes and truthful sections")
+
+        for section in self.source_sections:
+            discovery_ref = section.acquisition_outcome_refs[0]
+            discovery = outcomes_by_key[(SourceType.DAILYMED, discovery_ref.query_id)]
+            if section.selection_status is LabelSelectionStatus.NO_CANDIDATE:
+                expected = (
+                    ExecutionStatus.SUCCEEDED,
+                    CoverageStatus.COMPLETE,
+                    ResultStatus.NO_MATCH,
+                )
+            elif section.selection_status is LabelSelectionStatus.REVIEW_REQUIRED:
+                expected = None
+                if discovery.result_status is not ResultStatus.MATCHES or (
+                    discovery.execution_status,
+                    discovery.coverage_status,
+                ) not in {
+                    (ExecutionStatus.SUCCEEDED, CoverageStatus.COMPLETE),
+                    (ExecutionStatus.SUCCEEDED, CoverageStatus.PARTIAL),
+                    (ExecutionStatus.FAILED, CoverageStatus.PARTIAL),
+                }:
+                    raise ValueError("review_required must bind an admitted matches discovery")
+                if (
+                    discovery.coverage_status is CoverageStatus.COMPLETE
+                    and discovery.valid_result_count < 2
+                ):
+                    raise ValueError("complete review requires multiple non-equivalent candidates")
+            elif section.selection_status is LabelSelectionStatus.SELECTED:
+                expected = (
+                    ExecutionStatus.SUCCEEDED,
+                    CoverageStatus.COMPLETE,
+                    ResultStatus.MATCHES,
+                )
+            else:
+                expected = None
+                if (
+                    discovery.result_status is not ResultStatus.INDETERMINATE
+                    or discovery.valid_result_count != 0
+                ):
+                    raise ValueError("decisionless DailyMed discovery must be indeterminate")
+            if (
+                expected is not None
+                and (
+                    discovery.execution_status,
+                    discovery.coverage_status,
+                    discovery.result_status,
+                )
+                != expected
+            ):
+                raise ValueError("DailyMed section status contradicts its discovery outcome")
+
+            fetch: SourceOutcome | None = None
+            if len(section.acquisition_outcome_refs) == 2:
+                fetch_ref = section.acquisition_outcome_refs[1]
+                fetch = outcomes_by_key[(SourceType.DAILYMED, fetch_ref.query_id)]
+                if section.retained_response is not None and (
+                    section.retained_response.fetch_acquisition_id != fetch_ref.acquisition_id
+                    or section.retained_response.fetch_acquisition_intent_id
+                    != fetch_ref.acquisition_intent_id
+                    or section.retained_response.fetch_acquisition_ordinal
+                    != fetch_ref.acquisition_ordinal
+                    or section.retained_response.fetch_query_id != fetch_ref.query_id
+                    or section.retained_response.fetch_snapshot_id != fetch_ref.snapshot_id
+                    or section.retained_response.fetch_source_outcome_id
+                    != fetch_ref.source_outcome_id
+                ):
+                    raise ValueError("retained response/fetch reference binding drift")
+            if section.label_version is not None:
+                if fetch is None or (
+                    fetch.execution_status,
+                    fetch.coverage_status,
+                    fetch.result_status,
+                ) != (
+                    ExecutionStatus.SUCCEEDED,
+                    CoverageStatus.COMPLETE,
+                    ResultStatus.MATCHES,
+                ):
+                    raise ValueError("stable DailyMed result requires a successful complete fetch")
+                section_by_key = {
+                    (item.section_code, item.section_ordinal): item
+                    for item in section.label_sections
+                }
+                for locator in section.locators:
+                    if (
+                        locator.discovery_acquisition_intent_id
+                        != discovery_ref.acquisition_intent_id
+                        or locator.discovery_acquisition_ordinal
+                        != discovery_ref.acquisition_ordinal
+                        or locator.discovery_query_id != discovery_ref.query_id
+                        or locator.discovery_snapshot_id != discovery_ref.snapshot_id
+                        or locator.discovery_source_outcome_id != discovery_ref.source_outcome_id
+                    ):
+                        raise ValueError("DailyMed locator discovery evidence binding drift")
+                    stable_section = section_by_key.get(
+                        (locator.section_code, locator.section_ordinal)
+                    )
+                    if stable_section is None:
+                        raise ValueError("DailyMed locator must resolve to a reported section")
+                    if (
+                        locator.setid != section.label_version.setid
+                        or locator.label_version_id != section.label_version.label_version_id
+                        or locator.spl_version != section.label_version.spl_version
+                        or locator.stable_content_hash != section.label_version.content_hash
+                        or locator.spl_artifact_id != section.label_version.spl_artifact_id
+                        or locator.section_code != stable_section.section_code
+                        or locator.section_ordinal != stable_section.section_ordinal
+                        or locator.xml_path != stable_section.xml_path
+                        or locator.start_char != stable_section.text_start
+                        or locator.end_char != stable_section.text_end
+                        or locator.section_hash != stable_section.text_hash
+                    ):
+                        raise ValueError("DailyMed locator intrinsic stable-section binding drift")
+            elif fetch is not None and (
+                fetch.execution_status,
+                fetch.coverage_status,
+                fetch.result_status,
+            ) == (
+                ExecutionStatus.SUCCEEDED,
+                CoverageStatus.COMPLETE,
+                ResultStatus.MATCHES,
+            ):
+                raise ValueError("successful usable fetch cannot suppress its stable result")
+
+        if self.warnings != tuple(
+            sorted(set(self.warnings), key=lambda item: (item.code, item.message))
+        ):
+            raise ValueError("M1B report warnings must be unique and canonically sorted")
+        if self.limitations != tuple(sorted(set(self.limitations))):
+            raise ValueError("M1B report limitations must be unique and canonically sorted")
+        return self
+
+    def validate_against(
+        self,
+        request: M1BResearchRequestV1,
+        *,
+        trusted_acquisition_outcomes: tuple[
+            tuple[DailyMedSelectionRequestV1, AcquisitionOutcomeRef, SourceOutcome], ...
+        ],
+        trusted_selection_decisions: tuple[
+            tuple[
+                DailyMedSelectionRequestV1,
+                LabelSelectionDecision,
+                tuple[DailyMedCandidateLabel, ...],
+                Sha256Digest,
+            ],
+            ...,
+        ],
+        trusted_fetch_evidence: tuple[
+            tuple[
+                DailyMedSelectionRequestV1,
+                AcquisitionOutcomeRef,
+                AttemptId,
+                ArtifactId,
+                int,
+                ArtifactLinkId,
+                ArtifactId,
+                Sha256Digest,
+            ],
+            ...,
+        ] = (),
+    ) -> None:
+        """Fail closed on request, acquisition, outcome, or selection identity drift."""
+
+        if type(self).model_validate(self.model_dump(mode="python")) != self:
+            raise ValueError("M1B report differs from closed validation")
+        if M1BResearchRequestV1.model_validate(request.model_dump(mode="python")) != request:
+            raise ValueError("M1B request differs from closed validation")
+        for owned_request, ref, outcome in trusted_acquisition_outcomes:
+            if (
+                DailyMedSelectionRequestV1.model_validate(owned_request.model_dump(mode="python"))
+                != owned_request
+                or AcquisitionOutcomeRef.model_validate(ref.model_dump(mode="python")) != ref
+                or SourceOutcome.model_validate(outcome.model_dump(mode="python")) != outcome
+            ):
+                raise ValueError("trusted acquisition context differs from closed validation")
+        for owned_request, _decision, candidates, _manifest_hash in trusted_selection_decisions:
+            if (
+                DailyMedSelectionRequestV1.model_validate(owned_request.model_dump(mode="python"))
+                != owned_request
+            ):
+                raise ValueError("trusted selection request differs from closed validation")
+            if (
+                tuple(
+                    DailyMedCandidateLabel.model_validate(item.model_dump(mode="python"))
+                    for item in candidates
+                )
+                != candidates
+            ):
+                raise ValueError("trusted selection candidates differ from closed validation")
+
+        if self.request_id != request.request_id:
+            raise ValueError("M1B report request_id must equal its exact request")
+        if self.scope != request.scope:
+            raise ValueError("M1B report scope must equal its exact request scope")
+        report_sources = tuple(entry.source for entry in self.source_plan)
+        if report_sources != request.requested_sources:
+            raise ValueError("M1B report source ownership must equal its exact request")
+        echoed_requests = tuple(
+            sorted(
+                (section.request for section in self.source_sections),
+                key=lambda item: item.drug_concept_id,
+            )
+        )
+        if echoed_requests != request.dailymed_selection_requests:
+            raise ValueError(
+                "M1B report DailyMed section requests must exactly echo the canonical request"
+            )
+
+        report_ref_owners = tuple(
+            (section.request, ref)
+            for section in self.source_sections
+            for ref in section.acquisition_outcome_refs
+        )
+        trusted_ref_owners = tuple(
+            (owned_request, ref) for owned_request, ref, _outcome in trusted_acquisition_outcomes
+        )
+        if len(set(trusted_ref_owners)) != len(trusted_ref_owners):
+            raise ValueError("trusted acquisition outcomes must be unique and unambiguous")
+        if trusted_ref_owners != report_ref_owners:
+            raise ValueError(
+                "trusted acquisition outcomes must equal the exact canonical request-owned union"
+            )
+
+        for owned_request, ref, outcome in trusted_acquisition_outcomes:
+            if (
+                owned_request not in request.dailymed_selection_requests
+                or ref.run_id != self.run_id
+                or ref.source is not outcome.source
+                or ref.query_id != outcome.query_id
+            ):
+                raise ValueError("trusted acquisition request ownership or query identity drift")
+        canonical_trusted_outcomes = tuple(
+            outcome
+            for _owned_request, _ref, outcome in sorted(
+                trusted_acquisition_outcomes,
+                key=lambda item: (
+                    item[1].source.value,
+                    item[1].acquisition_ordinal,
+                    item[1].query_id,
+                ),
+            )
+        )
+        if self.source_outcomes != canonical_trusted_outcomes:
+            raise ValueError("report outcomes must exactly equal trusted acquisition outcomes")
+
+        decision_sections = tuple(
+            section for section in self.source_sections if section.selection_decision_id is not None
+        )
+        expected_decision_owners = tuple(
+            (section.request, cast(DecisionId, section.selection_decision_id))
+            for section in decision_sections
+        )
+        trusted_decision_owners = tuple(
+            (owned_request, decision.decision_id)
+            for owned_request, decision, _candidates, _manifest_hash in trusted_selection_decisions
+        )
+        if len(set(trusted_decision_owners)) != len(trusted_decision_owners):
+            raise ValueError("trusted selection decisions must be unique and unambiguous")
+        if trusted_decision_owners != expected_decision_owners:
+            raise ValueError(
+                "trusted selection decisions must equal the exact canonical request-owned union"
+            )
+
+        trusted_outcome_by_owner = {
+            (owned_request, ref): outcome
+            for owned_request, ref, outcome in trusted_acquisition_outcomes
+        }
+        trusted_decision_by_owner = {
+            (owned_request, decision.decision_id): (decision, candidates, manifest_hash)
+            for owned_request, decision, candidates, manifest_hash in trusted_selection_decisions
+        }
+        expected_fetch_owners = tuple(
+            (section.request, section.acquisition_outcome_refs[1])
+            for section in self.source_sections
+            if section.retained_response is not None
+        )
+        trusted_fetch_owners = tuple(
+            (owned_request, fetch_ref)
+            for (
+                owned_request,
+                fetch_ref,
+                _attempt_id,
+                _manifest_id,
+                _member_ordinal,
+                _link_id,
+                _raw_artifact_id,
+                _raw_content_hash,
+            ) in trusted_fetch_evidence
+        )
+        if len(set(trusted_fetch_owners)) != len(trusted_fetch_owners):
+            raise ValueError("trusted fetch evidence must be unique and unambiguous")
+        if trusted_fetch_owners != expected_fetch_owners:
+            raise ValueError(
+                "trusted fetch evidence must equal the exact canonical request-owned union"
+            )
+        for index, field_name in (
+            (2, "attempt_id"),
+            (3, "manifest_id"),
+            (5, "link_id"),
+        ):
+            identities = tuple(row[index] for row in trusted_fetch_evidence)
+            if len(set(identities)) != len(identities):
+                raise ValueError(f"trusted fetch {field_name} values must be globally unique")
+        trusted_fetch_by_owner = {
+            (owned_request, fetch_ref): (
+                attempt_id,
+                manifest_id,
+                member_ordinal,
+                link_id,
+                raw_artifact_id,
+                raw_content_hash,
+            )
+            for (
+                owned_request,
+                fetch_ref,
+                attempt_id,
+                manifest_id,
+                member_ordinal,
+                link_id,
+                raw_artifact_id,
+                raw_content_hash,
+            ) in trusted_fetch_evidence
+        }
+        for section in decision_sections:
+            assert section.selection_decision_id is not None
+            decision, decision_candidates, discovery_manifest_content_hash = (
+                trusted_decision_by_owner[(section.request, section.selection_decision_id)]
+            )
+            discovery_ref = section.acquisition_outcome_refs[0]
+            discovery_outcome = trusted_outcome_by_owner[(section.request, discovery_ref)]
+            if (
+                decision.decision_id != section.selection_decision_id
+                or decision.status is not section.selection_status
+                or decision.run_id != section.run_id
+                or decision.source is not section.source
+                or decision.acquisition_id != discovery_ref.acquisition_id
+                or decision.acquisition_intent_id != discovery_ref.acquisition_intent_id
+                or decision.acquisition_ordinal != discovery_ref.acquisition_ordinal
+                or decision.operation != discovery_ref.operation
+                or decision.query_id != discovery_ref.query_id
+                or decision.source_outcome_query_id != discovery_ref.query_id
+                or decision.source_outcome_id != discovery_ref.source_outcome_id
+                or decision.candidate_set_snapshot_id != discovery_ref.snapshot_id
+            ):
+                raise ValueError("trusted selection decision discovery identity drift")
+            decision.validate_against(
+                outcome=discovery_outcome,
+                candidates=decision_candidates,
+                source_outcome_id=discovery_ref.source_outcome_id,
+                discovery_manifest_content_hash=discovery_manifest_content_hash,
+            )
+            if (
+                section.request.selection_mode is DailyMedSelectionMode.PINNED_VERSION
+                and decision.status is LabelSelectionStatus.SELECTED
+                and (
+                    section.request.pinned_setid != decision.selected_setid
+                    or section.request.pinned_spl_version != decision.selected_spl_version
+                )
+            ):
+                raise ValueError("selected decision must equal the exact request pin")
+
+            if section.label_version is None:
+                continue
+            assert section.retained_response is not None
+            fetch_ref = section.acquisition_outcome_refs[1]
+            fetch_outcome = trusted_outcome_by_owner[(section.request, fetch_ref)]
+            (
+                trusted_fetch_attempt_id,
+                trusted_fetch_manifest_id,
+                trusted_fetch_member_ordinal,
+                trusted_fetch_link_id,
+                trusted_fetch_raw_artifact_id,
+                trusted_fetch_raw_content_hash,
+            ) = trusted_fetch_by_owner[(section.request, fetch_ref)]
+            if (
+                section.retained_response.fetch_acquisition_id != fetch_ref.acquisition_id
+                or section.retained_response.fetch_acquisition_intent_id
+                != fetch_ref.acquisition_intent_id
+                or section.retained_response.fetch_acquisition_ordinal
+                != fetch_ref.acquisition_ordinal
+                or section.retained_response.fetch_query_id != fetch_ref.query_id
+                or section.retained_response.fetch_snapshot_id != fetch_ref.snapshot_id
+                or section.retained_response.fetch_source_outcome_id != fetch_ref.source_outcome_id
+            ):
+                raise ValueError("retained response must equal the trusted fetch acquisition")
+            section.retained_response.validate_against(
+                decision=decision,
+                discovery_outcome=discovery_outcome,
+                decision_candidates=decision_candidates,
+                decision_source_outcome_id=discovery_ref.source_outcome_id,
+                discovery_manifest_content_hash=discovery_manifest_content_hash,
+                fetch_outcome=fetch_outcome,
+                trusted_fetch_run_id=fetch_ref.run_id,
+                trusted_fetch_source=fetch_ref.source,
+                trusted_fetch_acquisition_id=fetch_ref.acquisition_id,
+                trusted_fetch_acquisition_intent_id=fetch_ref.acquisition_intent_id,
+                trusted_fetch_acquisition_ordinal=fetch_ref.acquisition_ordinal,
+                trusted_fetch_operation=fetch_ref.operation,
+                trusted_fetch_query_id=fetch_ref.query_id,
+                trusted_fetch_snapshot_id=fetch_ref.snapshot_id,
+                trusted_fetch_source_outcome_id=fetch_ref.source_outcome_id,
+                trusted_fetch_attempt_id=trusted_fetch_attempt_id,
+                trusted_fetch_manifest_id=trusted_fetch_manifest_id,
+                trusted_fetch_member_ordinal=trusted_fetch_member_ordinal,
+                trusted_fetch_link_id=trusted_fetch_link_id,
+                trusted_fetch_raw_artifact_id=trusted_fetch_raw_artifact_id,
+                trusted_fetch_raw_content_hash=trusted_fetch_raw_content_hash,
+                label_version=section.label_version,
+                sections=section.label_sections,
+            )
+            sections_by_key = {
+                (item.section_code, item.section_ordinal): item for item in section.label_sections
+            }
+            for locator in section.locators:
+                stable_section = sections_by_key[(locator.section_code, locator.section_ordinal)]
+                locator.validate_against(
+                    discovery_outcome=discovery_outcome,
+                    fetch_outcome=fetch_outcome,
+                    label_version=section.label_version,
+                    section=stable_section,
+                    decision=decision,
+                    decision_candidates=decision_candidates,
+                    decision_source_outcome_id=discovery_ref.source_outcome_id,
+                    discovery_manifest_content_hash=discovery_manifest_content_hash,
+                    trusted_fetch_run_id=fetch_ref.run_id,
+                    trusted_fetch_source=fetch_ref.source,
+                    trusted_fetch_acquisition_id=fetch_ref.acquisition_id,
+                    trusted_fetch_acquisition_intent_id=fetch_ref.acquisition_intent_id,
+                    trusted_fetch_acquisition_ordinal=fetch_ref.acquisition_ordinal,
+                    trusted_fetch_operation=fetch_ref.operation,
+                    trusted_fetch_query_id=fetch_ref.query_id,
+                    trusted_fetch_snapshot_id=fetch_ref.snapshot_id,
+                    trusted_fetch_source_outcome_id=fetch_ref.source_outcome_id,
+                    trusted_fetch_attempt_id=trusted_fetch_attempt_id,
+                    trusted_fetch_manifest_id=trusted_fetch_manifest_id,
+                    trusted_fetch_member_ordinal=trusted_fetch_member_ordinal,
+                    trusted_fetch_link_id=trusted_fetch_link_id,
+                    trusted_fetch_raw_artifact_id=trusted_fetch_raw_artifact_id,
+                    trusted_fetch_raw_content_hash=trusted_fetch_raw_content_hash,
+                    retained_response=section.retained_response,
+                )

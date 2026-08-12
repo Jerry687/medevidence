@@ -6,13 +6,16 @@ from datetime import date
 from enum import StrEnum
 from typing import Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from .identifiers import (
     AdverseEventConceptId,
+    CanonicalSetId,
+    CanonicalSplVersion,
     DrugConceptId,
     DurableModel,
     NonBlankText,
+    RequestId,
     SchemaVersion,
     ScopeId,
     derive_identity,
@@ -189,4 +192,84 @@ class ResearchScope(DurableModel):
         )
         if self.scope_id != expected:
             raise ValueError("scope_id does not match canonical scope content")
+        return self
+
+
+class DailyMedSelectionMode(StrEnum):
+    """Closed request mode; a pin is still subject to executed discovery."""
+
+    STRICT_IDENTITY = "strict_identity"
+    PINNED_VERSION = "pinned_version"
+
+
+type DailyMedSectionCode = Literal["34084-4", "43685-7", "34066-1", "34067-9"]
+
+
+class DailyMedSelectionRequestV1(DurableModel):
+    """One bounded product/section request for the additive M1B contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.dailymed.request.v1"] = "m1b.dailymed.request.v1"
+    drug_concept_id: DrugConceptId
+    pinned_setid: CanonicalSetId | None = None
+    pinned_spl_version: CanonicalSplVersion | None = None
+    requested_section_codes: tuple[DailyMedSectionCode, ...] = Field(
+        min_length=1,
+        max_length=4,
+    )
+    selection_mode: DailyMedSelectionMode
+
+    @model_validator(mode="after")
+    def validate_selection_request(self) -> Self:
+        if self.requested_section_codes != tuple(sorted(set(self.requested_section_codes))):
+            raise ValueError("requested section codes must be unique and canonically sorted")
+        has_setid = self.pinned_setid is not None
+        has_version = self.pinned_spl_version is not None
+        if has_setid != has_version:
+            raise ValueError("pinned SETID and SPL version are both-or-neither")
+        if self.selection_mode is DailyMedSelectionMode.PINNED_VERSION and not has_setid:
+            raise ValueError("pinned_version mode requires the exact SETID/version pair")
+        if self.selection_mode is DailyMedSelectionMode.STRICT_IDENTITY and has_setid:
+            raise ValueError("strict_identity mode forbids pinned identity fields")
+        return self
+
+
+class M1BResearchRequestV1(DurableModel):
+    """Parallel additive M1B request envelope; it never accepts planning state."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.request.v1"] = "m1b.request.v1"
+    request_id: RequestId
+    scope: ResearchScope
+    requested_sources: tuple[SourceType, ...] = Field(min_length=1, max_length=4)
+    dailymed_selection_requests: tuple[DailyMedSelectionRequestV1, ...] = Field(
+        default=(),
+        max_length=4,
+    )
+    faers_query_requests: tuple[()] = ()
+    cadec_query_requests: tuple[()] = ()
+
+    @model_validator(mode="after")
+    def validate_request_source_bindings(self) -> Self:
+        if self.requested_sources != tuple(
+            sorted(set(self.requested_sources), key=lambda item: item.value)
+        ):
+            raise ValueError("requested_sources must be unique and canonically sorted")
+        if self.requested_sources != self.scope.selected_sources:
+            raise ValueError("requested_sources must equal the scope source set")
+        dailymed_selected = SourceType.DAILYMED in self.requested_sources
+        if dailymed_selected != bool(self.dailymed_selection_requests):
+            raise ValueError("DailyMed request elements exist exactly when DailyMed is requested")
+        scope_drug_ids = {drug.concept_id for drug in self.scope.drugs}
+        request_drug_ids = tuple(
+            request.drug_concept_id for request in self.dailymed_selection_requests
+        )
+        if any(drug_id not in scope_drug_ids for drug_id in request_drug_ids):
+            raise ValueError("DailyMed request drug must belong to the request scope")
+        if len(set(request_drug_ids)) != len(request_drug_ids):
+            raise ValueError("DailyMed selection requests must be unique by drug")
+        if request_drug_ids != tuple(sorted(request_drug_ids)):
+            raise ValueError("DailyMed selection requests must be canonically sorted by drug")
         return self

@@ -17,8 +17,11 @@ from medevidence.domain import (
     MAX_TOTAL_EXECUTION_SECONDS,
     AdverseEventConcept,
     ComparisonIntent,
+    DailyMedSelectionMode,
+    DailyMedSelectionRequestV1,
     DrugConcept,
     InclusiveDateRange,
+    M1BResearchRequestV1,
     QueryBounds,
     ResearchScope,
     ResultBounds,
@@ -291,3 +294,114 @@ def test_typed_concept_identifiers_and_terms_reject_invalid_values(
     data[field] = value
     with pytest.raises(ValidationError):
         DrugConcept(**data)
+
+
+def dailymed_request(**changes: object) -> DailyMedSelectionRequestV1:
+    values: dict[str, object] = {
+        "drug_concept_id": "drug:semaglutide",
+        "pinned_setid": None,
+        "pinned_spl_version": None,
+        "requested_section_codes": ("34066-1", "34084-4"),
+        "selection_mode": DailyMedSelectionMode.STRICT_IDENTITY,
+    }
+    values.update(changes)
+    return DailyMedSelectionRequestV1(**values)
+
+
+def test_dailymed_request_freezes_exact_section_and_pin_contract() -> None:
+    request = dailymed_request()
+    assert request.requested_section_codes == ("34066-1", "34084-4")
+
+    pinned = dailymed_request(
+        pinned_setid="11111111-1111-1111-1111-111111111111",
+        pinned_spl_version="7",
+        selection_mode=DailyMedSelectionMode.PINNED_VERSION,
+    )
+    assert pinned.pinned_spl_version == "7"
+
+    for changes in (
+        {"pinned_setid": "11111111-1111-1111-1111-111111111111"},
+        {"pinned_spl_version": "1"},
+        {
+            "pinned_setid": "11111111-1111-1111-1111-111111111111",
+            "pinned_spl_version": "1",
+        },
+        {
+            "selection_mode": DailyMedSelectionMode.PINNED_VERSION,
+        },
+        {"requested_section_codes": ("34084-4", "34066-1")},
+        {"requested_section_codes": ("34084-4", "34084-4")},
+        {"requested_section_codes": ("99999-9",)},
+    ):
+        with pytest.raises(ValidationError):
+            dailymed_request(**changes)
+
+
+@pytest.mark.parametrize(
+    "invalid_setid",
+    [
+        "00000000-0000-0000-0000-000000000000",
+        "11111111-1111-1111-1111-11111111111A",
+        "{11111111-1111-1111-1111-111111111111}",
+        "urn:uuid:11111111-1111-1111-1111-111111111111",
+        " 11111111-1111-1111-1111-111111111111",
+        "11111111%2d1111-1111-1111-111111111111",
+        "111111111111-1111-1111-111111111111",
+        "x11111111-1111-1111-1111-111111111111",
+    ],
+)
+def test_setid_rejects_every_noncanonical_or_nil_form(invalid_setid: str) -> None:
+    with pytest.raises(ValidationError):
+        dailymed_request(
+            pinned_setid=invalid_setid,
+            pinned_spl_version="1",
+            selection_mode=DailyMedSelectionMode.PINNED_VERSION,
+        )
+
+
+@pytest.mark.parametrize("valid_setid", ["11111111-1111-1111-1111-111111111111"])
+def test_setid_does_not_restrict_uuid_version_or_variant(valid_setid: str) -> None:
+    assert (
+        dailymed_request(
+            pinned_setid=valid_setid,
+            pinned_spl_version="1",
+            selection_mode=DailyMedSelectionMode.PINNED_VERSION,
+        ).pinned_setid
+        == valid_setid
+    )
+
+
+def test_parallel_m1b_request_binds_canonical_scope_sources() -> None:
+    scope = make_scope(
+        drugs=(DrugConcept(concept_id="drug:semaglutide", preferred_term="semaglutide"),),
+        sources=(SourceType.DAILYMED,),
+    )
+    request = M1BResearchRequestV1(
+        request_id="request:00000000-0000-4000-8000-000000000001",
+        scope=scope,
+        requested_sources=(SourceType.DAILYMED,),
+        dailymed_selection_requests=(dailymed_request(),),
+    )
+    assert request.schema_version == "m1b.request.v1"
+    assert "source_plan" not in type(request).model_fields
+    assert M1BResearchRequestV1.model_validate_json(request.model_dump_json()) == request
+
+    drifted_dailymed_request = request.dailymed_selection_requests[0].model_copy(
+        update={"requested_section_codes": ("34084-4", "34066-1")}
+    )
+    with pytest.raises(ValidationError):
+        M1BResearchRequestV1.model_validate(
+            request.model_copy(update={"dailymed_selection_requests": (drifted_dailymed_request,)})
+        )
+    with pytest.raises(ValidationError):
+        M1BResearchRequestV1.model_validate(
+            request.model_copy(update={"requested_sources": (SourceType.PUBMED,)})
+        )
+
+    with pytest.raises(ValidationError):
+        M1BResearchRequestV1(
+            request_id="request:00000000-0000-4000-8000-000000000001",
+            scope=scope,
+            requested_sources=(SourceType.PUBMED,),
+            dailymed_selection_requests=(dailymed_request(),),
+        )
