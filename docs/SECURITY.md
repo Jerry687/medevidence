@@ -344,3 +344,62 @@ postponed until their deployment boundary exists.
 - Model provider data-use and retention policy
 - CADEC license and distributable content
 - Retention period for snapshots, drafts, reviews, exports, logs, and traces
+
+## 18. M1B-DM-001 DailyMed trust and parser contract
+
+The frozen `connector_trust_allowlist` is non-authorizing design metadata. It
+contains exactly HTTPS `dailymed.nlm.nih.gov:443`, GET, one same-origin
+redirect, and the six closed path/query templates recorded in ADR-011. It is
+not a runtime or validation host permission. In M1B-DM-001,
+`ordinary_validation_hosts=[]`, runtime permitted hosts are empty, and
+`medical_source_network_execution_authorized=false`. No request constructor or
+transport is implemented by this node.
+
+The same typed oracle exactly freezes the 13 denied classes, cross-host
+redirect prohibition, phase timeouts `5/10/5/5` seconds, 30-second deadline,
+two attempts, 250-ms base/4-second cap/100-ms jitter, 10-second Retry-After
+cap, closed retryable/permanent classes, five-page/100-candidate/5,242,880-byte
+discovery bounds, immutable fixed-version cache, no discovery cache, and no
+stale fallback.
+
+SETID validation is fail-closed before any future path rendering: exactly 36
+lowercase ASCII UUID characters, canonical parse/serialization equality, and
+non-nil. SPL version is a positive canonical ASCII integer. Exact identity
+must agree across request, response metadata, selected decision, and parsed SPL.
+
+The future XML parser must use the frozen `defusedxml` policy and accept only
+root `{urn:hl7-org:v3}document`. It rejects DTD/entity declarations, external
+resolution, schema loading, XInclude, XSLT, recovery, malformed XML, namespace
+or root drift, and all exceeded bounds. Identity selectors are exactly one
+direct HL7 `setId` with unqualified `root` and one direct HL7 `versionNumber`
+with unqualified `value`. Additional safe selector attributes are allowed but
+semantically inert; namespaced/local-name lookalikes do not establish identity.
+
+Historical ZIP processing never extracts to a filesystem. The compressed body,
+total uncompressed bytes, and each uncompressed member are each limited to
+5,242,880 bytes; the archive contains at most 128 entries. Complete central-
+directory validation occurs before accepting evidence and bounds are enforced
+again while reading. Encrypted, symlink, device, and special entries reject.
+Before any normalization or interpretation, member names reject every ASCII C0
+control U+0000 through U+001F and DEL U+007F, plus absolute, traversal,
+backslash, device, drive, UNC, empty/dot segments, and duplicate normalized
+names. Unsafe input is never normalized into acceptance.
+
+Every bounded regular `.xml` member is classified with the same fail-closed XML
+policy. Exactly one HL7 SPL document must exist and must match the selected
+SETID/version. Zero or multiple candidates, including multiple candidates with
+only one identity match, reject. Malformed/unclassifiable XML rejects. Safe
+non-XML attachments remain nonauthoritative and are not retained as label
+evidence.
+
+The machine oracles additionally bind exact LOINC authority/steward/system/
+release/order, direct selector and unqualified-attribute counts, lookalike/
+nested non-counting, filename non-evidence, directory non-evidence, exact safe-
+name normalization, case-insensitive `.xml` classification, and rejection of
+multiple SPL candidates even when only one matches.
+
+Partial discovery is also a security/evidence-authority boundary. Every
+positive-count partial matches result is `review_required`, including a
+resolved-equivalent or pinned request, and cannot trigger fetch, authoritative
+normalization, citation, or a label locator. The three zero-result
+indeterminate triples create no selection decision.

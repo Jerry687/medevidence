@@ -528,3 +528,54 @@ Given a material claim that fails deterministic Stage 1 or returns uncertain/
 unsupported at semantic Stage 2 without recorded human resolution, when report
 validation completes, then that claim is removed or the report remains
 non-exportable. No substantive claim may survive a failed citation gate.
+
+## 16. M1B-DM-001 additive DailyMed contract architecture
+
+ADR-011 adds DailyMed contracts inside `domain` only. Runtime dependency
+direction remains unchanged; no connector, parser, persistence, tool, API, or
+composition behavior is introduced by this node.
+
+```text
+M1BResearchRequestV1
+  -> DailyMedSelectionRequestV1
+  -> executed discovery SourceOutcome
+  -> exhaustive selection matrix
+  -> LabelSelectionDecision or no decision row
+  -> optional distinct fetch SourceOutcome (selected only)
+  -> stable DailyMedLabelVersion + LabelSection
+  -> DailyMedLabelSectionV1 + optional DailyMedLocatorV1
+  -> M1BResearchReportV1 (draft, non-exportable)
+```
+
+The selection matrix is exact: complete matching discovery selects only after
+deterministic exact/equivalent-group resolution; unresolved complete matches
+require review with at least two candidates; every positive-count partial
+matches discovery requires review regardless of resolution or pin; complete
+zero-result no-match is the sole no-candidate state; the three zero-result
+indeterminate triples create no decision row. No partial discovery may select.
+
+Stable identity and observation identity stay separate. Candidate and decision
+records bind the complete discovery tuple and retained member evidence.
+`DailyMedLabelVersion` and `LabelSection` contain no acquisition/fetch fields.
+Its version ID preimage is exactly schema/source/SETID/SPL-version/content-hash;
+marketing state (`active|archived|unknown`), dates, and artifact binding remain
+full-row verified but do not change that ID. `RetainedSplResponse` binds one
+selected decision to the exact complete fetch member, outcome, stable version,
+and ordered stable sections. Each label locator repeats that exact observation
+and section span. A degraded discovery or failed fetch has no label locator.
+
+`M1BResearchRequestV1`, `M1BResearchReportV1`, and the distinct additive
+`M1BSourcePlanEntryV1(schema_version="m1b.source-plan.v1")` planning model are
+parallel additive contracts. M1A `ResearchReport`, its
+`SourcePlanEntry(schema_version="1.0")` JSON Schema/OpenAPI component, and
+PubMed PMID/version semantics remain unchanged.
+
+The DailyMed connector trust contract is non-authorizing metadata. It records
+only HTTPS `dailymed.nlm.nih.gov:443`, GET, one same-origin redirect, and the six
+ADR-011 typed path/query designs. Ordinary/runtime permitted hosts are empty and
+medical-source execution is false. Future XML/ZIP implementation belongs to
+M1B-DM-002 and must implement the frozen no-I/O, exact-selector, resource-bound,
+pre-normalization C0/DEL rejection, no-extraction, and exactly-one-SPL rules.
+The metadata also closes the exact timeout/retry/backoff/deadline/pagination/
+payload/cache profile and full denied resource/query/redirect classes; it
+contains no executable transport.

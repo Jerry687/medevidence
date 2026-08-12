@@ -307,3 +307,51 @@ Every report records:
 
 Later source updates create new snapshots and reports; they do not silently
 rewrite an exported report.
+
+## 11. M1B-DM-001 exact DailyMed source contract
+
+The detailed Owner-frozen contract is
+[ADR-011](decisions/ADR-011-m1b-dailymed-contracts.md). DailyMed evidence is
+authoritative only for one exact selected product identity, canonical SETID,
+positive canonical SPL version, and exact LOINC-coded label section.
+
+Discovery, selection, and fetch are separate facts. Complete matching discovery
+may select only after exact/equivalent-group resolution. Every positive-count
+partial matching discovery is `review_required`; retained count, deterministic
+equivalence, or pinned SETID/version never creates an exception. Complete
+zero-result no-match alone is `no_candidate`; partial/failed/unavailable
+zero-result discovery remains indeterminate and creates no decision row.
+
+`DailyMedCandidateLabel` retains the exact discovery query/snapshot/manifest/
+member lineage plus product, formulation, route, strength, labeler, SETID,
+available versions, marketing state, dates, and section codes.
+`LabelSelectionDecision` retains the complete ordered candidate set, not a
+subset. Stable `DailyMedLabelVersion` and `LabelSection` identities are
+fetch-independent and content-addressed; observations in a report preserve the
+distinct discovery and fetch provenance.
+
+SPL versions sort numerically, and candidate-set ordering is derived from
+canonical SETID, numeric versions, candidate identity, and bytewise UTF-8
+tie-break rather than caller tuple order. Meaningful differences are computed
+from exact candidate fields; caller-supplied resolution cannot override them.
+Marketing state includes `unknown`. The label-version ID preimage is exactly
+schema/source/SETID/SPL-version/content-hash. `RetainedSplResponse` and
+`LabelSelectionWarning` retain the closed fetch and warning associations.
+
+The section registry is exactly the four Active LOINC 2.82 pairs:
+
+- `34084-4` - FDA package insert Adverse reactions section;
+- `43685-7` - FDA package insert Warnings and precautions section;
+- `34066-1` - FDA package insert Boxed warning section;
+- `34067-9` - FDA package insert Indications and usage section.
+
+No fuzzy title matching, code expansion, or name-only/latest label selection is
+permitted. Missing a requested section is visible and cannot fabricate label
+absence or no-risk evidence.
+
+The six-path DailyMed `connector_trust_allowlist` is frozen design metadata
+only. It authorizes no request. M1B-DM-001 performs no source or corpus access;
+ordinary/runtime host lists remain empty and exact source bytes remain outside
+Git. Future DM-002 ZIP/XML handling must enforce the exact ADR-011 byte/count/
+parser/path controls, including all ASCII C0 controls and DEL before member-name
+normalization, without filesystem extraction.

@@ -465,3 +465,59 @@ The allowed count for each zero-tolerance event is zero.
   the acceptance policy.
 - A qualified project owner or designated medical/pharmacovigilance reviewer
   signs off on representative safety and conflict cases.
+
+## 13. M1B-DM-001 deterministic contract evaluation
+
+M1B-DM-001 is evaluated entirely offline with sockets disabled. The focused
+suite is exactly:
+
+```powershell
+uv run --locked --no-sync pytest `
+  tests/unit/domain/test_source_outcomes.py `
+  tests/unit/domain/test_scope.py `
+  tests/unit/domain/test_reports.py `
+  tests/unit/domain/test_provenance.py `
+  --disable-socket
+```
+
+Required deterministic cases include:
+
+- all seven authoritative `SourceOutcome` triples across candidate counts 0,
+  1, 2, and a representative greater count, with both resolution states where
+  meaningful;
+- complete matches selected only when resolved; complete unresolved matches
+  require at least two candidates; every positive partial matches case is
+  `review_required` for both resolution states and pinned input;
+- only complete zero-result no-match creates `no_candidate`; the three
+  zero-result indeterminate triples create no decision row;
+- canonical lowercase non-nil SETID acceptance/rejection, positive canonical
+  SPL version, both-or-neither pin fields, and exact four-code request closure;
+- exact LOINC 2.82 four-code/title/status/evidence registry;
+- stable label/version and section identities that contain no fetch tuple;
+- `unknown` marketing state; numeric SPL-version ordering; caller-order-
+  independent candidate sets; exact computed meaningful differences; stable
+  label-version identity unchanged by marketing/date/artifact drift;
+- closed `RetainedSplResponse` and `LabelSelectionWarning` round-trip,
+  one-field drift, selection/outcome/member/stable-section parity tests;
+- truthful no-candidate, review, decisionless indeterminate, selected-failed-
+  fetch, and selected-successful-fetch report-section shapes;
+- a DailyMed locator only for selected plus successful complete usable fetch,
+  with exact common/fetch aliases and stable section equality;
+- foreign decision/outcome/intent/snapshot/artifact/hash negatives, complete
+  count-one review rejection, one-section-per-request cardinality, and exact
+  requested-section-absence disclosure;
+- non-authorizing six-path trust metadata with empty ordinary/runtime hosts and
+  false medical-source network authority;
+- exact denied-list, redirect, transport/retry/backoff/deadline/pagination/
+  payload/cache oracle and exact LOINC authority wrapper;
+- exact XML/resource bounds and all 33 pre-normalization ZIP member-name ASCII
+  control rejections, including newline, carriage return, tab, NUL, U+001F,
+  and U+007F;
+- M1A regression: `SourcePlanEntry(schema_version="1.0")` retains its exact
+  JSON Schema/OpenAPI component and still permits only PubMed selection;
+  DailyMed planning uses distinct `M1BSourcePlanEntryV1`, and existing report
+  serialization remains unchanged.
+
+This node does not execute parser or transport cases against source bytes; it
+freezes the typed oracles that separately authorized M1B-DM-002 must implement.
+No live DailyMed or other medical-source test is part of this gate.

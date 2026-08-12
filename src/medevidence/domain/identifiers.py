@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta
 from enum import Enum
@@ -17,6 +19,38 @@ from pydantic import (
 )
 
 type SchemaVersion = Literal["1.0"]
+
+
+_CANONICAL_SETID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_CANONICAL_SPL_VERSION_PATTERN = re.compile(r"^[1-9][0-9]*$")
+
+
+def _require_canonical_setid(value: str) -> str:
+    """Accept only the Owner-frozen lowercase, non-nil UUID representation."""
+
+    if len(value) != 36 or _CANONICAL_SETID_PATTERN.fullmatch(value) is None:
+        raise ValueError("SETID must be the exact lowercase canonical UUID form")
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as error:
+        raise ValueError("SETID must parse as a UUID") from error
+    if str(parsed) != value:
+        raise ValueError("SETID must equal its canonical UUID normalization")
+    if parsed.int == 0:
+        raise ValueError("nil SETID is forbidden")
+    return value
+
+
+def _require_canonical_spl_version(value: str) -> str:
+    """Accept only a positive canonical ASCII integer string."""
+
+    if _CANONICAL_SPL_VERSION_PATTERN.fullmatch(value) is None:
+        raise ValueError("SPL version must be a positive canonical integer")
+    if str(int(value)) != value:
+        raise ValueError("SPL version must equal its canonical integer normalization")
+    return value
 
 
 class DurableModel(BaseModel):
@@ -199,6 +233,8 @@ type ExactText = Annotated[
     AfterValidator(_require_nonblank),
 ]
 type UtcDateTime = Annotated[datetime, AfterValidator(_require_utc)]
+type CanonicalSetId = Annotated[str, AfterValidator(_require_canonical_setid)]
+type CanonicalSplVersion = Annotated[str, AfterValidator(_require_canonical_spl_version)]
 
 type Pmid = Annotated[str, StringConstraints(pattern=r"^[1-9][0-9]*$")]
 type Pmcid = Annotated[str, StringConstraints(pattern=r"^PMC[1-9][0-9]*$")]
@@ -284,6 +320,15 @@ type WarningCode = Annotated[
     str,
     StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,127}$"),
 ]
+type AcquisitionId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type CandidateId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type CandidateSetId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type DecisionId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type LabelVersionId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type SectionId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type SourceOutcomeId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type RetainedSplResponseId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type LabelSelectionWarningId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
 
 type ScopeId = Annotated[str, StringConstraints(pattern=r"^scope:sha256:[0-9a-f]{64}$")]
 type PublicationStatusIdentity = Annotated[

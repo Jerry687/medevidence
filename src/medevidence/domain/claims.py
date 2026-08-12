@@ -5,19 +5,34 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from .identifiers import (
+    AcquisitionId,
+    AcquisitionIntentId,
+    ArtifactId,
+    ArtifactLinkId,
+    AttemptId,
+    CandidateId,
+    CanonicalSetId,
+    CanonicalSplVersion,
     CitationId,
     ClaimId,
+    DecisionId,
     DurableModel,
     ExactText,
+    LabelVersionId,
     Pmid,
     PublicationStatusIdentity,
     PublicationVersionId,
+    QueryId,
+    ReportId,
+    RunId,
     SchemaVersion,
     ScopeId,
     Sha256Digest,
+    SnapshotId,
+    SourceOutcomeId,
     WarningCode,
     derive_identity,
 )
@@ -28,6 +43,18 @@ from .publications import (
     RelationshipResolution,
 )
 from .scope import SourceType
+from .sources import (
+    CoverageStatus,
+    DailyMedCandidateLabel,
+    DailyMedLabelVersion,
+    ExecutionStatus,
+    LabelSection,
+    LabelSelectionDecision,
+    LabelSelectionStatus,
+    ResultStatus,
+    RetainedSplResponse,
+    SourceOutcome,
+)
 
 
 class CitationRelationship(StrEnum):
@@ -355,3 +382,243 @@ class EvidenceClaim(DurableModel):
                 is not CorrectionContentDisposition.RESOLVED_CURRENT_CONTENT
             ):
                 raise ValueError("corrected affirmative support requires resolved current content")
+
+
+class DailyMedLocatorV1(DurableModel):
+    """Closed exact locator for one selected, successfully fetched label section."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.dailymed.locator.v1"] = "m1b.dailymed.locator.v1"
+    locator_kind: Literal["dailymed_label_span"] = "dailymed_label_span"
+    report_id: ReportId
+    run_id: RunId
+    source: Literal[SourceType.DAILYMED] = SourceType.DAILYMED
+    acquisition_id: AcquisitionId
+    snapshot_id: SnapshotId
+    outcome_query_id: QueryId
+    selection_decision_id: DecisionId
+    selection_status: Literal[LabelSelectionStatus.SELECTED] = LabelSelectionStatus.SELECTED
+    selected_candidate_id: CandidateId
+    discovery_attempt_id: AttemptId
+    discovery_acquisition_intent_id: AcquisitionIntentId
+    discovery_acquisition_ordinal: int = Field(ge=0, le=7)
+    discovery_query_id: QueryId
+    discovery_snapshot_id: SnapshotId
+    discovery_manifest_id: ArtifactId
+    discovery_source_outcome_id: SourceOutcomeId
+    fetch_attempt_id: AttemptId
+    setid: CanonicalSetId
+    label_version_id: LabelVersionId
+    spl_version: CanonicalSplVersion
+    fetch_acquisition_id: AcquisitionId
+    fetch_acquisition_intent_id: AcquisitionIntentId
+    fetch_acquisition_ordinal: int = Field(ge=0, le=7)
+    fetch_operation: Literal["fetch"] = "fetch"
+    fetch_query_id: QueryId
+    fetch_snapshot_id: SnapshotId
+    fetch_manifest_id: ArtifactId
+    fetch_source_outcome_id: SourceOutcomeId
+    fetch_member_ordinal: int = Field(ge=0, le=127)
+    fetch_link_id: ArtifactLinkId
+    fetch_raw_artifact_id: ArtifactId
+    fetch_raw_content_hash: Sha256Digest
+    fetch_body_complete: Literal[True] = True
+    fetch_termination_reason: Literal["complete_response"] = "complete_response"
+    stable_content_hash: Sha256Digest
+    section_code: Literal["34084-4", "43685-7", "34066-1", "34067-9"]
+    section_ordinal: int = Field(ge=0, le=127)
+    xml_path: ExactText
+    start_char: int = Field(ge=0)
+    end_char: int = Field(gt=0)
+    section_hash: Sha256Digest
+    spl_artifact_id: ArtifactId
+
+    @model_validator(mode="after")
+    def validate_closed_locator(self) -> Self:
+        if (
+            self.acquisition_id != self.fetch_acquisition_id
+            or self.snapshot_id != self.fetch_snapshot_id
+            or self.outcome_query_id != self.fetch_query_id
+        ):
+            raise ValueError("common locator identities must equal the fetch aliases")
+        if self.end_char <= self.start_char:
+            raise ValueError("DailyMed locator span must be non-empty and half-open")
+        if self.fetch_acquisition_ordinal <= self.discovery_acquisition_ordinal:
+            raise ValueError("fetch acquisition must follow the discovery acquisition")
+        if self.fetch_snapshot_id == self.discovery_snapshot_id:
+            raise ValueError("discovery and fetch snapshots must remain distinct")
+        return self
+
+    def validate_against(
+        self,
+        *,
+        discovery_outcome: SourceOutcome,
+        fetch_outcome: SourceOutcome,
+        label_version: DailyMedLabelVersion,
+        section: LabelSection,
+        decision: LabelSelectionDecision,
+        decision_candidates: tuple[DailyMedCandidateLabel, ...],
+        decision_source_outcome_id: SourceOutcomeId,
+        discovery_manifest_content_hash: Sha256Digest,
+        trusted_fetch_run_id: RunId,
+        trusted_fetch_source: SourceType,
+        trusted_fetch_acquisition_id: AcquisitionId,
+        trusted_fetch_acquisition_intent_id: AcquisitionIntentId,
+        trusted_fetch_acquisition_ordinal: int,
+        trusted_fetch_operation: Literal["search", "fetch"],
+        trusted_fetch_query_id: QueryId,
+        trusted_fetch_snapshot_id: SnapshotId,
+        trusted_fetch_source_outcome_id: SourceOutcomeId,
+        trusted_fetch_attempt_id: AttemptId,
+        trusted_fetch_manifest_id: ArtifactId,
+        trusted_fetch_member_ordinal: int,
+        trusted_fetch_link_id: ArtifactLinkId,
+        trusted_fetch_raw_artifact_id: ArtifactId,
+        trusted_fetch_raw_content_hash: Sha256Digest,
+        retained_response: RetainedSplResponse | None = None,
+    ) -> None:
+        """Fail closed on outcome, stable-version, or exact section drift."""
+
+        validated = type(self).model_validate(self.model_dump(mode="python"))
+        validated_discovery = SourceOutcome.model_validate(
+            discovery_outcome.model_dump(mode="python")
+        )
+        validated_fetch = SourceOutcome.model_validate(fetch_outcome.model_dump(mode="python"))
+        validated_version = DailyMedLabelVersion.model_validate(
+            label_version.model_dump(mode="python")
+        )
+        validated_section = LabelSection.model_validate(section.model_dump(mode="python"))
+        decision.validate_against(
+            outcome=validated_discovery,
+            candidates=decision_candidates,
+            source_outcome_id=decision_source_outcome_id,
+            discovery_manifest_content_hash=discovery_manifest_content_hash,
+        )
+        validated_decision = decision
+        validated_retained = (
+            RetainedSplResponse.model_validate(retained_response.model_dump(mode="python"))
+            if retained_response is not None
+            else None
+        )
+        if validated != self:
+            raise ValueError("locator differs from closed validation")
+        if validated_version != label_version:
+            raise ValueError("label version differs from closed validation")
+        if validated_section != section:
+            raise ValueError("label section differs from closed validation")
+        if validated_retained != retained_response:
+            raise ValueError("retained response differs from closed validation")
+
+        if (
+            trusted_fetch_operation != "fetch"
+            or validated.run_id != trusted_fetch_run_id
+            or validated.source is not trusted_fetch_source
+            or validated.fetch_acquisition_id != trusted_fetch_acquisition_id
+            or validated.fetch_acquisition_intent_id != trusted_fetch_acquisition_intent_id
+            or validated.fetch_acquisition_ordinal != trusted_fetch_acquisition_ordinal
+            or validated.fetch_query_id != trusted_fetch_query_id
+            or validated.fetch_snapshot_id != trusted_fetch_snapshot_id
+            or validated.fetch_source_outcome_id != trusted_fetch_source_outcome_id
+            or validated.fetch_attempt_id != trusted_fetch_attempt_id
+            or validated.fetch_manifest_id != trusted_fetch_manifest_id
+            or validated.fetch_member_ordinal != trusted_fetch_member_ordinal
+            or validated.fetch_link_id != trusted_fetch_link_id
+            or validated.fetch_raw_artifact_id != trusted_fetch_raw_artifact_id
+            or validated.fetch_raw_content_hash != trusted_fetch_raw_content_hash
+        ):
+            raise ValueError("locator does not equal trusted fetch acquisition")
+        if (
+            trusted_fetch_acquisition_id == validated_decision.acquisition_id
+            or trusted_fetch_snapshot_id == validated_decision.candidate_set_snapshot_id
+            or trusted_fetch_acquisition_ordinal <= validated_decision.acquisition_ordinal
+        ):
+            raise ValueError(
+                "trusted fetch acquisition must be distinct from and follow selection discovery"
+            )
+        if (
+            validated_discovery.source is not SourceType.DAILYMED
+            or validated_discovery.query_id != validated.discovery_query_id
+            or validated_discovery.execution_status is not ExecutionStatus.SUCCEEDED
+            or validated_discovery.coverage_status is not CoverageStatus.COMPLETE
+            or validated_discovery.result_status is not ResultStatus.MATCHES
+        ):
+            raise ValueError("locator requires exact successful complete selection discovery")
+        if (
+            validated_fetch.source is not SourceType.DAILYMED
+            or validated_fetch.query_id != validated.fetch_query_id
+            or validated_fetch.execution_status is not ExecutionStatus.SUCCEEDED
+            or validated_fetch.coverage_status is not CoverageStatus.COMPLETE
+            or validated_fetch.result_status is not ResultStatus.MATCHES
+        ):
+            raise ValueError("DailyMed locator requires a successful complete matching fetch")
+        if (
+            validated_version.setid != validated.setid
+            or validated_version.label_version_id != validated.label_version_id
+            or validated_version.spl_version != validated.spl_version
+            or validated_version.content_hash != validated.stable_content_hash
+            or validated_version.spl_artifact_id != validated.spl_artifact_id
+        ):
+            raise ValueError("locator stable label identity does not match the label version")
+        if (
+            validated_section.setid != validated.setid
+            or validated_section.label_version_id != validated.label_version_id
+            or validated_section.spl_version != validated.spl_version
+            or validated_section.section_code != validated.section_code
+            or validated_section.section_ordinal != validated.section_ordinal
+            or validated_section.xml_path != validated.xml_path
+            or validated_section.text_start != validated.start_char
+            or validated_section.text_end != validated.end_char
+            or validated_section.text_hash != validated.section_hash
+            or validated_section.spl_artifact_id != validated.spl_artifact_id
+        ):
+            raise ValueError("locator section identity does not match the stable section")
+        if (
+            validated_decision.decision_id != validated.selection_decision_id
+            or validated_decision.run_id != validated.run_id
+            or validated_decision.source is not validated.source
+            or validated_decision.status is not LabelSelectionStatus.SELECTED
+            or validated_decision.status is not validated.selection_status
+            or validated_decision.selected_candidate_id != validated.selected_candidate_id
+            or validated_decision.selected_setid != validated.setid
+            or validated_decision.selected_spl_version != validated.spl_version
+            or validated_decision.attempt_id != validated.discovery_attempt_id
+            or validated_decision.acquisition_intent_id != validated.discovery_acquisition_intent_id
+            or validated_decision.acquisition_ordinal != validated.discovery_acquisition_ordinal
+            or validated_decision.query_id != validated.discovery_query_id
+            or validated_decision.candidate_set_snapshot_id != validated.discovery_snapshot_id
+            or validated_decision.discovery_manifest_id != validated.discovery_manifest_id
+            or validated_decision.source_outcome_id != validated.discovery_source_outcome_id
+        ):
+            raise ValueError("locator discovery evidence does not match selection decision")
+        if validated_retained is not None and (
+            validated_retained.run_id != validated.run_id
+            or validated_retained.source is not validated.source
+            or validated_retained.acquisition_id != validated.acquisition_id
+            or validated_retained.candidate_set_snapshot_id != validated.discovery_snapshot_id
+            or validated_retained.selection_decision_id != validated.selection_decision_id
+            or validated_retained.source_outcome_query_id != validated.outcome_query_id
+            or validated_retained.setid != validated.setid
+            or validated_retained.spl_version != validated.spl_version
+            or validated_retained.label_version_id != validated.label_version_id
+            or validated_retained.manifest_id != validated.fetch_manifest_id
+            or validated_retained.body_complete is not validated.fetch_body_complete
+            or validated_retained.termination_reason != validated.fetch_termination_reason
+            or validated_retained.selected_candidate_id != validated.selected_candidate_id
+            or validated_retained.fetch_attempt_id != validated.fetch_attempt_id
+            or validated_retained.fetch_acquisition_id != validated.fetch_acquisition_id
+            or validated_retained.fetch_acquisition_intent_id
+            != validated.fetch_acquisition_intent_id
+            or validated_retained.fetch_acquisition_ordinal != validated.fetch_acquisition_ordinal
+            or validated_retained.fetch_query_id != validated.fetch_query_id
+            or validated_retained.fetch_snapshot_id != validated.fetch_snapshot_id
+            or validated_retained.fetch_manifest_id != validated.fetch_manifest_id
+            or validated_retained.fetch_source_outcome_id != validated.fetch_source_outcome_id
+            or validated_retained.fetch_member_ordinal != validated.fetch_member_ordinal
+            or validated_retained.fetch_link_id != validated.fetch_link_id
+            or validated_retained.fetch_raw_artifact_id != validated.fetch_raw_artifact_id
+            or validated_retained.fetch_raw_content_hash != validated.fetch_raw_content_hash
+            or validated_retained.content_hash != validated.stable_content_hash
+            or validated_retained.artifact_id != validated.spl_artifact_id
+        ):
+            raise ValueError("locator fetch evidence does not match retained response")
