@@ -521,3 +521,21 @@ Required deterministic cases include:
 This node does not execute parser or transport cases against source bytes; it
 freezes the typed oracles that separately authorized M1B-DM-002 must implement.
 No live DailyMed or other medical-source test is part of this gate.
+
+## 14. M1B-DM-003 deterministic report/API evaluation
+
+The focused gate covers:
+
+- exact trusted-evidence construction of a selected DailyMed report;
+- rejection of forged acquisition ownership and non-DailyMed route scope;
+- exact draft, non-exportable, research-only response fields;
+- raw-request discriminator, unknown-field, and planning-field closure;
+- additive route execution through an in-process offline boundary with sockets
+  disabled;
+- exact request/scope/section/plan response parity;
+- byte-exact normalized OpenAPI plus fixed hashes for the unchanged M1A PubMed
+  route and its full transitive component subtree; and
+- collection of the disabled live harness as skipped evidence only.
+
+No quality, completeness, clinical, latency, or live-source claim is inferred
+from these deterministic tests.

@@ -1,4 +1,4 @@
-"""Stable source-neutral PubMed application operations."""
+"""Stable source-neutral PubMed and DailyMed application operations."""
 
 from .contracts import (
     DailyMedDiscoveryRequest,
@@ -11,8 +11,12 @@ from .contracts import (
     ResolvedConceptCatalog,
     SearchPubMedRequest,
     SearchPubMedResponse,
+    TrustedDailyMedAcquisitionOutcome,
+    TrustedDailyMedFetchEvidence,
+    TrustedDailyMedSelectionDecision,
 )
 from .dailymed import discover_dailymed_labels, fetch_dailymed_label
+from .dailymed_report import build_dailymed_report
 from .pubmed import build_pubmed_query, fetch_pubmed_article, search_pubmed
 from .research import PubMedResearchService, research_pubmed_draft
 
@@ -28,6 +32,10 @@ __all__ = [
     "ResolvedConceptCatalog",
     "SearchPubMedRequest",
     "SearchPubMedResponse",
+    "TrustedDailyMedAcquisitionOutcome",
+    "TrustedDailyMedFetchEvidence",
+    "TrustedDailyMedSelectionDecision",
+    "build_dailymed_report",
     "build_pubmed_query",
     "discover_dailymed_labels",
     "fetch_dailymed_label",

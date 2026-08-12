@@ -7,7 +7,8 @@ import logging
 import re
 import warnings
 from collections.abc import Callable
-from datetime import UTC, datetime
+from copy import deepcopy
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 import pytest
@@ -25,7 +26,7 @@ from medevidence.api.errors import (
     ToolContractFailure,
 )
 from medevidence.api.routes import REQUEST_EXAMPLE, _complete_no_match_example
-from medevidence.domain import ResearchReport
+from medevidence.domain import M1BResearchReportV1, M1BResearchRequestV1, ResearchReport
 from medevidence.tools import ResearchPubMedRequest
 
 pytestmark = pytest.mark.enable_socket
@@ -39,6 +40,7 @@ def _client(
     application: Callable[[ResearchPubMedRequest], ResearchReport],
     *,
     request_id_factory: Callable[[], str] | None = None,
+    dailymed_application: (Callable[[M1BResearchRequestV1], M1BResearchReportV1] | None) = None,
 ) -> TestClient:
     return TestClient(
         create_app(
@@ -48,6 +50,7 @@ def _client(
                 run_id_factory=lambda: RUN_ID,
                 utc_now=lambda: NOW,
                 code_revision="0" * 40,
+                dailymed_application=dailymed_application,
             )
         )
     )
@@ -64,6 +67,302 @@ def test_route_inventory_has_one_application_operation_and_openapi() -> None:
     assert set(paths["/v1/research/pubmed"]) == {"post"}
     assert client.get("/openapi.json").status_code == 200
     assert client.get("/").status_code == 404
+
+
+def test_additive_dailymed_route_returns_closed_nonexportable_report() -> None:
+    from tests.unit.tools.test_dailymed_report import trusted_case
+
+    request, section, ref, outcome = trusted_case()
+
+    def dailymed_application(observed: M1BResearchRequestV1) -> M1BResearchReportV1:
+        from medevidence.tools import build_dailymed_report
+
+        assert observed == request
+        return build_dailymed_report(
+            observed,
+            report_id=section.report_id,
+            run_id=section.run_id,
+            source_sections=(section,),
+            retrieved_as_of=NOW,
+            trusted_acquisition_outcomes=((section.request, ref, outcome),),
+            trusted_selection_decisions=(),
+        )
+
+    client = _client(_report, dailymed_application=dailymed_application)
+    response = client.post("/v1/research/dailymed", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 200
+    assert response.json()["schema_version"] == "m1b.report.v1"
+    assert response.json()["status"] == "draft"
+    assert response.json()["exportable"] is False
+    assert response.json()["source_plan"] == [
+        {
+            "schema_version": "m1b.source-plan.v1",
+            "source": "dailymed",
+            "planning_status": "selected",
+            "reason_code": None,
+            "reason": None,
+        }
+    ]
+    assert set(client.app.openapi()["paths"]) == {
+        "/v1/research/pubmed",
+        "/v1/research/dailymed",
+    }
+
+
+def test_dailymed_route_rejects_response_request_drift() -> None:
+    from tests.unit.tools.test_dailymed_report import trusted_case
+
+    request, section, ref, outcome = trusted_case()
+    from medevidence.tools import build_dailymed_report
+
+    valid = build_dailymed_report(
+        request,
+        report_id=section.report_id,
+        run_id=section.run_id,
+        source_sections=(section,),
+        retrieved_as_of=NOW,
+        trusted_acquisition_outcomes=((section.request, ref, outcome),),
+        trusted_selection_decisions=(),
+    )
+    forged = valid.model_copy(update={"request_id": "request:00000000-0000-4000-8000-000000000099"})
+    response = _client(
+        _report,
+        dailymed_application=lambda _: forged,
+    ).post("/v1/research/dailymed", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "tool_contract_error"
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ("schema_version",),
+        ("status",),
+        ("exportable",),
+        ("safety_notice",),
+        ("source_plan", 0, "schema_version"),
+        ("source_plan", 0, "reason_code"),
+        ("source_plan", 0, "reason"),
+        ("scope", "schema_version"),
+        ("scope", "date_range"),
+        ("scope", "language"),
+        ("source_sections", 0, "schema_version"),
+        ("source_sections", 0, "section_kind"),
+        ("source_sections", 0, "source"),
+        ("source_sections", 0, "request", "schema_version"),
+        ("source_sections", 0, "request", "pinned_setid"),
+        ("source_sections", 0, "request", "pinned_spl_version"),
+        ("source_sections", 0, "label_version"),
+        ("source_sections", 0, "retained_response"),
+        ("source_sections", 0, "label_sections"),
+        ("source_sections", 0, "locators"),
+        ("source_sections", 0, "limitations"),
+        ("source_outcomes", 0, "schema_version"),
+        ("source_outcomes", 0, "failure_id"),
+        ("source_outcomes", 0, "warning_codes"),
+    ),
+)
+@pytest.mark.parametrize("entrypoint", ("mapping", "model_construct"))
+def test_dailymed_route_rejects_missing_required_serialized_fields(
+    path: tuple[str | int, ...], entrypoint: str
+) -> None:
+    from tests.unit.tools.test_dailymed_report import trusted_case
+
+    from medevidence.tools import build_dailymed_report
+
+    request, section, ref, outcome = trusted_case()
+    valid = build_dailymed_report(
+        request,
+        report_id=section.report_id,
+        run_id=section.run_id,
+        source_sections=(section,),
+        retrieved_as_of=NOW,
+        trusted_acquisition_outcomes=((section.request, ref, outcome),),
+        trusted_selection_decisions=(),
+    )
+    payload = deepcopy(valid.model_dump(mode="python"))
+    target: object = payload
+    for part in path[:-1]:
+        target = target[part]  # type: ignore[index]
+    del target[path[-1]]  # type: ignore[index]
+    returned: object = payload
+    if entrypoint == "model_construct":
+        returned = M1BResearchReportV1.model_construct(**payload)
+
+    response = _client(
+        _report,
+        dailymed_application=lambda _: returned,  # type: ignore[arg-type,return-value]
+    ).post("/v1/research/dailymed", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "tool_contract_error"
+
+
+@pytest.mark.parametrize("entrypoint", ("mapping", "model_construct"))
+@pytest.mark.parametrize(
+    "path",
+    (
+        ("source_sections", 0, "label_version", "effective_date"),
+        ("source_sections", 0, "retained_response", "body_complete"),
+        ("source_sections", 0, "label_sections", 0, "parent_section_id"),
+    ),
+)
+def test_dailymed_route_rejects_missing_stable_nested_response_fields(
+    path: tuple[str | int, ...], entrypoint: str
+) -> None:
+    from tests.unit.tools.test_dailymed_report import _stable_report_case
+
+    request, valid = _stable_report_case()
+    payload = deepcopy(valid.model_dump(mode="python"))
+    target: object = payload
+    for part in path[:-1]:
+        target = target[part]  # type: ignore[index]
+    del target[path[-1]]  # type: ignore[index]
+    returned: object = payload
+    if entrypoint == "model_construct":
+        returned = M1BResearchReportV1.model_construct(**payload)
+
+    response = _client(
+        _report,
+        dailymed_application=lambda _: returned,  # type: ignore[arg-type,return-value]
+    ).post("/v1/research/dailymed", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "tool_contract_error"
+
+
+@pytest.mark.parametrize("entrypoint", ("mapping", "model_construct"))
+def test_dailymed_route_rejects_missing_domain_warning_schema_version(entrypoint: str) -> None:
+    from tests.unit.tools.test_dailymed_report import trusted_case
+
+    from medevidence.domain import DomainWarning
+    from medevidence.tools import build_dailymed_report
+
+    request, section, ref, outcome = trusted_case()
+    valid = build_dailymed_report(
+        request,
+        report_id=section.report_id,
+        run_id=section.run_id,
+        source_sections=(section,),
+        retrieved_as_of=NOW,
+        trusted_acquisition_outcomes=((section.request, ref, outcome),),
+        trusted_selection_decisions=(),
+    ).model_copy(
+        update={
+            "warnings": (
+                DomainWarning(code="source_coverage_incomplete", message="Coverage is partial."),
+            )
+        }
+    )
+    payload = deepcopy(valid.model_dump(mode="python"))
+    del payload["warnings"][0]["schema_version"]
+    returned: object = payload
+    if entrypoint == "model_construct":
+        returned = M1BResearchReportV1.model_construct(**payload)
+
+    response = _client(
+        _report,
+        dailymed_application=lambda _: returned,  # type: ignore[arg-type,return-value]
+    ).post("/v1/research/dailymed", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "tool_contract_error"
+
+
+@pytest.mark.parametrize("entrypoint", ("mapping", "model_construct"))
+def test_dailymed_route_rejects_missing_inclusive_date_precision(entrypoint: str) -> None:
+    from tests.unit.tools.test_dailymed_report import trusted_case
+
+    from medevidence.domain import InclusiveDateRange, ResearchScope
+    from medevidence.tools import build_dailymed_report
+
+    request, section, ref, outcome = trusted_case()
+    scope = ResearchScope.create(
+        drugs=request.scope.drugs,
+        adverse_reactions=request.scope.adverse_reactions,
+        date_range=InclusiveDateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+        selected_sources=request.scope.selected_sources,
+        comparison_intent=request.scope.comparison_intent,
+        query_bounds=request.scope.query_bounds,
+        result_bounds=request.scope.result_bounds,
+    )
+    request = request.model_copy(update={"scope": scope})
+    valid = build_dailymed_report(
+        request,
+        report_id=section.report_id,
+        run_id=section.run_id,
+        source_sections=(section,),
+        retrieved_as_of=NOW,
+        trusted_acquisition_outcomes=((section.request, ref, outcome),),
+        trusted_selection_decisions=(),
+    )
+    payload = deepcopy(valid.model_dump(mode="python"))
+    del payload["scope"]["date_range"]["precision"]
+    returned: object = payload
+    if entrypoint == "model_construct":
+        returned = M1BResearchReportV1.model_construct(**payload)
+
+    response = _client(
+        _report,
+        dailymed_application=lambda _: returned,  # type: ignore[arg-type,return-value]
+    ).post("/v1/research/dailymed", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "tool_contract_error"
+
+
+@pytest.mark.parametrize("entrypoint", ("mapping", "model_construct"))
+def test_dailymed_route_rejects_every_missing_locator_field(entrypoint: str) -> None:
+    from tests.unit.tools.test_dailymed_report import _stable_report_case
+
+    request, valid = _stable_report_case()
+    locator_fields = tuple(type(valid.source_sections[0].locators[0]).model_fields)
+    assert len(locator_fields) == 44
+    for field in locator_fields:
+        payload = deepcopy(valid.model_dump(mode="python"))
+        del payload["source_sections"][0]["locators"][0][field]
+        returned: object = payload
+        if entrypoint == "model_construct":
+            returned = M1BResearchReportV1.model_construct(**payload)
+        response = _client(
+            _report,
+            dailymed_application=lambda _, value=returned: value,  # type: ignore[arg-type,return-value]
+        ).post("/v1/research/dailymed", json=request.model_dump(mode="json"))
+        assert response.status_code == 502, field
+        assert response.json()["error"]["code"] == "tool_contract_error", field
+
+
+@pytest.mark.parametrize("state", ("degraded", "failed_fetch", "stable"))
+def test_dailymed_route_returns_representative_report_states(state: str) -> None:
+    if state == "stable":
+        from tests.unit.tools.test_dailymed_report import _stable_report_case
+
+        request, report = _stable_report_case()
+    else:
+        from tests.unit.domain.test_reports import dailymed_report_for_acquisition_counts
+
+        report, request, _, _ = dailymed_report_for_acquisition_counts(
+            (1,) if state == "degraded" else (2,)
+        )
+        report = M1BResearchReportV1.model_validate(report.model_dump(mode="python"))
+
+    response = _client(
+        _report,
+        dailymed_application=lambda observed: report if observed == request else None,  # type: ignore[return-value]
+    ).post("/v1/research/dailymed", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 200
+    assert (
+        response.json()["source_sections"][0]["selection_status"]
+        == {
+            "degraded": None,
+            "failed_fetch": "selected",
+            "stable": "selected",
+        }[state]
+    )
+    assert bool(response.json()["source_sections"][0]["locators"]) is (state == "stable")
 
 
 def test_valid_report_is_http_200_and_runtime_values_are_server_owned() -> None:

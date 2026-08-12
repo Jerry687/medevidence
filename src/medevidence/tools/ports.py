@@ -13,6 +13,8 @@ from medevidence.domain import (
     DailyMedCandidateLabel,
     ExecutionStatus,
     LabelSelectionDecision,
+    M1BResearchReportV1,
+    M1BResearchRequestV1,
     Pmid,
     PublicationRecord,
     PublicationVersionId,
@@ -385,6 +387,13 @@ class DailyMedExecutionPort(Protocol):
 
     def fetch(self, request: DailyMedFetchRequest) -> DailyMedFetchResponse:
         """Execute, snapshot, and register one exact selected-label fetch."""
+
+
+class DailyMedReportApplicationPort(Protocol):
+    """Build a validated DailyMed report from already-trusted evidence."""
+
+    def __call__(self, request: M1BResearchRequestV1) -> M1BResearchReportV1:
+        """Return the exact closed report for one typed request."""
 
 
 class AcquisitionPersistencePort(Protocol):

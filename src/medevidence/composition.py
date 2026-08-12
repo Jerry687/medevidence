@@ -1,4 +1,4 @@
-"""Explicit concrete M1A adapter construction and failure translation."""
+"""Explicit M1A composition with an optional additive DailyMed application."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ from medevidence.connectors.pubmed import (
 from medevidence.connectors.pubmed.policy import PubMedConnectorConfig
 from medevidence.domain import (
     CoverageStatus,
+    M1BResearchReportV1,
+    M1BResearchRequestV1,
     PublicationRecord,
     ResearchReport,
     ResearchScope,
@@ -354,8 +356,9 @@ def create_api_dependencies(
     attempt_id_factory: Callable[[], str],
     utc_now: Callable[[], datetime],
     transport_factory: Callable[[], httpx.BaseTransport],
+    dailymed_application: (Callable[[M1BResearchRequestV1], M1BResearchReportV1] | None) = None,
 ) -> ApiDependencies:
-    """Build deferred, request-scoped concrete M1A adapters with no fallback transport."""
+    """Build deferred PubMed adapters and forward an optional DailyMed application."""
 
     resolved_root = snapshot_root.absolute()
 
@@ -412,6 +415,7 @@ def create_api_dependencies(
         run_id_factory=run_id_factory,
         utc_now=utc_now,
         code_revision=code_revision,
+        dailymed_application=dailymed_application,
     )
 
 

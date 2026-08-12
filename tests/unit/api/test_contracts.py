@@ -9,6 +9,7 @@ import pytest
 from medevidence.api.contracts import (
     MAX_REQUEST_BYTES,
     RequestContractFailure,
+    validate_raw_dailymed_request,
     validate_raw_json_request,
 )
 from medevidence.api.errors import ApiErrorCode
@@ -211,3 +212,75 @@ def test_noncanonical_arrays_are_invalid_request() -> None:
     )
     assert failure.code is ApiErrorCode.INVALID_REQUEST
     assert failure.field_paths == ("/drug_concept_ids",)
+
+
+def test_dailymed_boundary_uses_closed_domain_request_and_forbids_planning_fields() -> None:
+    from tests.unit.tools.test_dailymed_report import dailymed_request
+
+    payload = dailymed_request().model_dump(mode="json")
+    validated = validate_raw_dailymed_request(
+        json.dumps(payload, separators=(",", ":")).encode(),
+        content_type="application/json",
+        content_encoding=None,
+    )
+    assert validated == dailymed_request()
+
+    for field in ("source_plan", "planning_status", "reason", "reason_code"):
+        forged = dict(payload)
+        forged[field] = [] if field == "source_plan" else "caller-controlled"
+        with pytest.raises(RequestContractFailure) as captured:
+            validate_raw_dailymed_request(
+                json.dumps(forged, separators=(",", ":")).encode(),
+                content_type="application/json",
+                content_encoding=None,
+            )
+        assert captured.value.code is ApiErrorCode.INVALID_REQUEST
+
+
+def test_dailymed_boundary_rejects_wrong_discriminator_and_source_set() -> None:
+    from tests.unit.tools.test_dailymed_report import dailymed_request
+
+    payload = dailymed_request().model_dump(mode="json")
+    payload["schema_version"] = "1.0"
+    with pytest.raises(RequestContractFailure) as captured:
+        validate_raw_dailymed_request(
+            json.dumps(payload).encode(),
+            content_type="application/json",
+            content_encoding=None,
+        )
+    assert captured.value.code is ApiErrorCode.UNSUPPORTED_SCHEMA_VERSION
+
+    payload = dailymed_request().model_dump(mode="json")
+    del payload["schema_version"]
+    with pytest.raises(RequestContractFailure) as captured:
+        validate_raw_dailymed_request(
+            json.dumps(payload).encode(),
+            content_type="application/json",
+            content_encoding=None,
+        )
+    assert captured.value.code is ApiErrorCode.INVALID_REQUEST
+    assert captured.value.field_paths == ("/schema_version",)
+
+    payload = dailymed_request().model_dump(mode="json")
+    del payload["dailymed_selection_requests"][0]["schema_version"]
+    with pytest.raises(RequestContractFailure) as captured:
+        validate_raw_dailymed_request(
+            json.dumps(payload).encode(),
+            content_type="application/json",
+            content_encoding=None,
+        )
+    assert captured.value.code is ApiErrorCode.INVALID_REQUEST
+    assert captured.value.field_paths == ("/dailymed_selection_requests/0/schema_version",)
+
+    payload = dailymed_request().model_dump(mode="json")
+    payload["requested_sources"] = ["pubmed"]
+    payload["scope"]["selected_sources"] = ["pubmed"]
+    payload["dailymed_selection_requests"] = []
+    with pytest.raises(RequestContractFailure) as captured:
+        validate_raw_dailymed_request(
+            json.dumps(payload).encode(),
+            content_type="application/json",
+            content_encoding=None,
+        )
+    assert captured.value.code is ApiErrorCode.INVALID_REQUEST
+    assert captured.value.field_paths == ("/requested_sources",)
