@@ -457,3 +457,22 @@ The frozen acceptance behavior is:
 The additive `M1BResearchRequestV1`/`M1BResearchReportV1` schemas do not mutate
 the existing M1A request/report schemas or `/v1/research/pubmed` behavior.
 M1B-DM-002 remains separately unauthorized.
+
+## 13. M1B-DM-003 DailyMed report and API integration
+
+M1B-DM-003 adds the Owner-frozen report/tool and delivery boundary without
+changing selection, connector, ingestion, or persistence semantics. A pure
+tools-layer operation builds `M1BResearchReportV1` only from exact trusted
+acquisition outcomes, selection decisions, fetch evidence, and source sections.
+It creates exactly one selected DailyMed planning entry; callers cannot submit
+planning status or reasons.
+
+`POST /v1/research/dailymed` accepts the closed `m1b.request.v1` envelope and
+returns only the closed `m1b.report.v1` envelope. Unknown fields fail closed,
+including `source_plan`, `planning_status`, `reason`, and `reason_code`. Reports
+remain research-only, `draft`, and non-exportable. The existing PubMed route and
+its transitive OpenAPI component subtree remain byte-compatible.
+
+Ordinary and integration validation is offline with sockets blocked. The live
+DailyMed harness is disabled; executing it requires a separate exact one-run
+Owner authorization.

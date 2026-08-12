@@ -355,3 +355,16 @@ ordinary/runtime host lists remain empty and exact source bytes remain outside
 Git. Future DM-002 ZIP/XML handling must enforce the exact ADR-011 byte/count/
 parser/path controls, including all ASCII C0 controls and DEL before member-name
 normalization, without filesystem extraction.
+
+## 12. M1B-DM-003 report-use boundary
+
+The DailyMed report tool consumes only evidence that has already crossed the
+DM-002 connector, snapshot, parser, and persistence trust boundaries. It does
+not retrieve, reinterpret, or repair source data. Every section retains its
+discovery reference and, when attempted, its distinct fetch reference. Stable
+label text and locators remain available only for a successful complete usable
+fetch; degraded discovery and failed fetch states retain limitations and cannot
+be presented as authoritative label absence.
+
+This work item performs no medical-source request. Its live test module is a
+disabled governance harness, not live-source evidence.

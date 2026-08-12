@@ -403,3 +403,19 @@ positive-count partial matches result is `review_required`, including a
 resolved-equivalent or pinned request, and cannot trigger fetch, authoritative
 normalization, citation, or a label locator. The three zero-result
 indeterminate triples create no selection decision.
+
+## 19. M1B-DM-003 public-boundary controls
+
+The additive DailyMed request uses a required `m1b.request.v1` discriminator
+and closed nested models. Unknown fields and caller-supplied planning fields
+reject before application execution. Patient-like keys retain the shared raw
+boundary rejection precedence. The response is reconstructed as a closed
+`M1BResearchReportV1` and must echo the exact request identity, scope, and
+DailyMed request elements while containing exactly one selected DailyMed plan
+entry whose required nullable `reason_code` and `reason` fields are present with
+null values and contain no skip-reason values.
+
+No default DailyMed application, connector, transport, credential, host, or
+network fallback is installed. Ordinary validation remains socket-disabled,
+and the live harness is unconditionally skipped pending separate exact Owner
+authorization.

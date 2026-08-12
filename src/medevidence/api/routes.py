@@ -1,4 +1,4 @@
-"""Single versioned M1A application route."""
+"""Versioned M1A PubMed and additive M1B DailyMed application routes."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pydantic_core import PydanticSerializationError
 
 from medevidence.catalog import CATALOG_CONTENT_HASH, load_production_catalog
@@ -20,6 +20,9 @@ from medevidence.domain import (
     CoverageStatus,
     ExecutionBounds,
     ExecutionStatus,
+    M1BResearchReportV1,
+    M1BResearchRequestV1,
+    M1BSourcePlanEntryV1,
     PlanningStatus,
     ResearchReport,
     ResultStatus,
@@ -36,6 +39,7 @@ from .contracts import (
     MAX_REQUEST_BYTES,
     RequestContractFailure,
     ResearchPubMedApiRequest,
+    validate_raw_dailymed_request,
     validate_raw_json_request,
 )
 from .errors import (
@@ -67,6 +71,11 @@ class _Dependencies(Protocol):
     def application(self) -> Callable[[ResearchPubMedRequest], ResearchReport]: ...
 
     @property
+    def dailymed_application(
+        self,
+    ) -> Callable[[M1BResearchRequestV1], M1BResearchReportV1] | None: ...
+
+    @property
     def request_id_factory(self) -> Callable[[], str]: ...
 
     @property
@@ -80,7 +89,7 @@ class _Dependencies(Protocol):
 
 
 def create_router(dependencies: _Dependencies) -> APIRouter:
-    """Bind the single route to explicit, side-effect-free dependencies."""
+    """Bind enabled research routes to explicit, side-effect-free dependencies."""
 
     router = APIRouter()
 
@@ -153,6 +162,78 @@ def create_router(dependencies: _Dependencies) -> APIRouter:
             return _error_json(ApiErrorCode.INTERNAL_ERROR, request_id, ())
         return report
 
+    if dependencies.dailymed_application is None:
+        return router
+
+    @router.post(
+        "/v1/research/dailymed",
+        operation_id="research_dailymed_v1",
+        tags=["research"],
+        summary="Research DailyMed label evidence",
+        description=(
+            "Build an additive M1B DailyMed report from exact trusted evidence.\n"
+            "The response remains research-only, draft, and non-exportable."
+        ),
+        response_description="Validated draft DailyMed research report.",
+        response_model=M1BResearchReportV1,
+        responses=_dailymed_documented_responses(),
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/M1BResearchRequestV1"}
+                    }
+                },
+            }
+        },
+    )
+    async def research_dailymed(request: Request) -> M1BResearchReportV1 | JSONResponse:
+        try:
+            request_id = dependencies.request_id_factory()
+            if _REQUEST_ID_PATTERN.fullmatch(request_id) is None:
+                raise ValueError("request ID factory returned an invalid identity")
+        except Exception:
+            request_id = f"request:{uuid4()}"
+        try:
+            raw = await _bounded_body(request)
+            api_request = validate_raw_dailymed_request(
+                raw,
+                content_type=request.headers.get("content-type"),
+                content_encoding=request.headers.get("content-encoding"),
+            )
+            request_id = api_request.request_id
+        except RequestContractFailure as error:
+            return _error_json(error.code, request_id, error.field_paths)
+
+        try:
+            if dependencies.dailymed_application is None:
+                raise ToolContractFailure()
+            returned = dependencies.dailymed_application(api_request)
+            raw_report = (
+                returned.model_dump(
+                    mode="python",
+                    warnings="error",
+                    exclude_unset=True,
+                )
+                if isinstance(returned, M1BResearchReportV1)
+                else returned
+            )
+            report = M1BResearchReportV1.model_validate(
+                raw_report,
+                strict=True,
+            )
+            _require_serialized_presence(raw_report, report)
+            _validate_dailymed_response(report, api_request)
+        except ApplicationFailure as error:
+            return _error_json(error.code, request_id, error.field_paths)
+        except (ValidationError, PydanticSerializationError):
+            tool_error = ToolContractFailure()
+            return _error_json(tool_error.code, request_id, tool_error.field_paths)
+        except Exception:
+            return _error_json(ApiErrorCode.INTERNAL_ERROR, request_id, ())
+        return report
+
     return router
 
 
@@ -205,6 +286,82 @@ def _documented_responses() -> dict[int | str, dict[str, object]]:
             "content": {"application/json": {"examples": examples}},
         }
     return responses
+
+
+def _dailymed_documented_responses() -> dict[int | str, dict[str, object]]:
+    documented_codes = {
+        ApiErrorCode.INVALID_REQUEST,
+        ApiErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+        ApiErrorCode.SUSPECTED_PATIENT_DATA,
+        ApiErrorCode.INTERNAL_ERROR,
+        ApiErrorCode.TOOL_CONTRACT_ERROR,
+        ApiErrorCode.ARTIFACT_INTEGRITY_FAILURE,
+        ApiErrorCode.STORAGE_BUSY,
+        ApiErrorCode.STORAGE_CAPACITY_UNAVAILABLE,
+        ApiErrorCode.PERSISTENCE_UNAVAILABLE,
+        ApiErrorCode.PERSISTENCE_INTEGRITY_FAILURE,
+        ApiErrorCode.DEADLINE_EXCEEDED_BEFORE_OUTCOME,
+    }
+    grouped: dict[int, dict[str, object]] = {}
+    for code in documented_codes:
+        status, _, _ = ERROR_SPECS[code]
+        example = error_response(
+            code,
+            "request:00000000-0000-4000-8000-000000000001",
+            {
+                ApiErrorCode.UNSUPPORTED_SCHEMA_VERSION: ("/schema_version",),
+                ApiErrorCode.SUSPECTED_PATIENT_DATA: ("/patient",),
+            }.get(code, ()),
+        ).model_dump(mode="json")
+        grouped.setdefault(status, {})[code.value] = {"value": example}
+    responses: dict[int | str, dict[str, object]] = {
+        200: {
+            "description": "Validated draft DailyMed research report.",
+        }
+    }
+    for status, examples in grouped.items():
+        responses[status] = {
+            "model": ApiErrorResponse,
+            "description": "Versioned application error.",
+            "content": {"application/json": {"examples": examples}},
+        }
+    return responses
+
+
+def _require_serialized_presence(raw: object, parsed: object) -> None:
+    """Reject any omitted field before defaults can complete a returned contract."""
+
+    if isinstance(parsed, BaseModel):
+        if not isinstance(raw, dict) or set(type(parsed).model_fields) - set(raw):
+            raise ToolContractFailure()
+        for name in type(parsed).model_fields:
+            _require_serialized_presence(raw[name], getattr(parsed, name))
+        return
+    if isinstance(parsed, (tuple, list)):
+        if not isinstance(raw, (tuple, list)) or len(raw) != len(parsed):
+            raise ToolContractFailure()
+        for raw_item, parsed_item in zip(raw, parsed, strict=True):
+            _require_serialized_presence(raw_item, parsed_item)
+
+
+def _validate_dailymed_response(
+    report: M1BResearchReportV1,
+    request: M1BResearchRequestV1,
+) -> None:
+    expected_plan = (
+        M1BSourcePlanEntryV1(
+            source=SourceType.DAILYMED,
+            planning_status=PlanningStatus.SELECTED,
+        ),
+    )
+    if (
+        report.request_id != request.request_id
+        or report.scope != request.scope
+        or report.source_plan != expected_plan
+        or tuple(section.request for section in report.source_sections)
+        != request.dailymed_selection_requests
+    ):
+        raise ToolContractFailure()
 
 
 def _example_field_paths(code: ApiErrorCode) -> tuple[str, ...]:

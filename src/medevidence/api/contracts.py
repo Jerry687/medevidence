@@ -13,6 +13,7 @@ from medevidence.catalog import ProductionCatalog, load_production_catalog
 from medevidence.domain import (
     ComparisonIntent,
     InclusiveDateRange,
+    M1BResearchRequestV1,
     QueryBounds,
     ResearchScope,
     ResultBounds,
@@ -215,6 +216,79 @@ def validate_raw_json_request(
     return request
 
 
+def validate_raw_dailymed_request(
+    raw: bytes,
+    *,
+    content_type: str | None,
+    content_encoding: str | None,
+) -> M1BResearchRequestV1:
+    """Validate the additive closed DailyMed request without caller planning state."""
+
+    _validate_transport_headers_and_size(raw, content_type, content_encoding)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("",)) from error
+    if text.startswith("\ufeff"):
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("",))
+    try:
+        loaded = json.loads(
+            text,
+            object_pairs_hook=_JSONObject,
+            parse_constant=_reject_non_finite,
+        )
+    except (json.JSONDecodeError, ValueError) as error:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("",)) from error
+    if not isinstance(loaded, _JSONObject):
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("",))
+    materialized, duplicate_paths = _materialize_object(loaded, "")
+    if duplicate_paths:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, duplicate_paths)
+    data = cast(dict[str, object], materialized)
+
+    patient_paths = _patient_key_paths(data, "")
+    if patient_paths:
+        raise RequestContractFailure(ApiErrorCode.SUSPECTED_PATIENT_DATA, patient_paths)
+    if "schema_version" not in data:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("/schema_version",))
+    if data["schema_version"] != "m1b.request.v1":
+        raise RequestContractFailure(
+            ApiErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+            ("/schema_version",),
+        )
+    if data.get("requested_sources") != [SourceType.DAILYMED.value]:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("/requested_sources",))
+    selection_requests = data.get("dailymed_selection_requests")
+    if isinstance(selection_requests, list):
+        missing_discriminators = tuple(
+            f"/dailymed_selection_requests/{index}/schema_version"
+            for index, item in enumerate(selection_requests)
+            if isinstance(item, dict) and "schema_version" not in item
+        )
+        if missing_discriminators:
+            raise RequestContractFailure(
+                ApiErrorCode.INVALID_REQUEST,
+                missing_discriminators,
+            )
+    try:
+        normalized = json.dumps(
+            data,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        request = M1BResearchRequestV1.model_validate_json(normalized, strict=True)
+    except (ValidationError, ValueError) as error:
+        raise RequestContractFailure(
+            ApiErrorCode.INVALID_REQUEST,
+            _validation_paths(error),
+        ) from error
+    if request.requested_sources != (SourceType.DAILYMED,):
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("/requested_sources",))
+    return request
+
+
 def _validate_transport_headers_and_size(
     raw: bytes,
     content_type: str | None,
@@ -320,5 +394,6 @@ __all__ = [
     "ApiInclusiveDateRange",
     "RequestContractFailure",
     "ResearchPubMedApiRequest",
+    "validate_raw_dailymed_request",
     "validate_raw_json_request",
 ]

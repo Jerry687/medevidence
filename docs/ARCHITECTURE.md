@@ -579,3 +579,20 @@ pre-normalization C0/DEL rejection, no-extraction, and exactly-one-SPL rules.
 The metadata also closes the exact timeout/retry/backoff/deadline/pagination/
 payload/cache profile and full denied resource/query/redirect classes; it
 contains no executable transport.
+
+## 17. M1B-DM-003 report and API architecture
+
+```text
+trusted DM-002 evidence
+  -> tools/dailymed_report.py
+  -> M1BResearchReportV1.validate_against(...)
+  -> optional injected DailyMed application port
+  -> POST /v1/research/dailymed
+```
+
+The tools layer, not the caller or API adapter, constructs the sole selected
+DailyMed plan entry. The API performs closed raw-request validation, calls one
+explicitly injected source-neutral application function, reconstructs the
+returned report, and checks request, scope, planning, and request-section echo
+parity. Composition supplies no default DailyMed transport or live fallback.
+When the callable is absent the M1A application surface remains unchanged.

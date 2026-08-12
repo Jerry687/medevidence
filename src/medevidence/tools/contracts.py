@@ -8,15 +8,18 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, StringConstraints, model_validator
 
 from medevidence.domain import (
+    AcquisitionOutcomeRef,
     AdverseEventConcept,
     ArtifactId,
     CandidateId,
     CanonicalSetId,
     CanonicalSplVersion,
+    DailyMedCandidateLabel,
     DailyMedSelectionMode,
     DailyMedSelectionRequestV1,
     DecisionId,
     DrugConcept,
+    LabelSelectionDecision,
     LabelSelectionStatus,
     Pmid,
     PublicationRecord,
@@ -33,6 +36,7 @@ from medevidence.domain import (
 )
 from medevidence.domain.identifiers import (
     AcquisitionIntentId,
+    ArtifactLinkId,
     AttemptId,
     DurableModel,
     LabelVersionId,
@@ -41,6 +45,27 @@ from medevidence.domain.identifiers import (
 )
 
 type CodeRevision = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
+type TrustedDailyMedAcquisitionOutcome = tuple[
+    DailyMedSelectionRequestV1,
+    AcquisitionOutcomeRef,
+    SourceOutcome,
+]
+type TrustedDailyMedSelectionDecision = tuple[
+    DailyMedSelectionRequestV1,
+    LabelSelectionDecision,
+    tuple[DailyMedCandidateLabel, ...],
+    Sha256Digest,
+]
+type TrustedDailyMedFetchEvidence = tuple[
+    DailyMedSelectionRequestV1,
+    AcquisitionOutcomeRef,
+    AttemptId,
+    ArtifactId,
+    int,
+    ArtifactLinkId,
+    ArtifactId,
+    Sha256Digest,
+]
 
 
 class DailyMedDiscoveryRequest(DurableModel):

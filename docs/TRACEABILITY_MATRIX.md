@@ -149,6 +149,63 @@ two expected warnings, `80%` coverage in `6.64s`; and diff check PASS. Fresh
 complete Review 010 and terminal audit remain pending; no PASS, Git, network,
 integration, or DM-002 claim is made.
 
+### M1B-DM-003 implementation candidate
+
+The additive DailyMed report tool and `POST /v1/research/dailymed` map
+V1-FR-003, V1-FR-011, V1-FR-015, V1-FR-016, V1-NFR-001,
+V1-NFR-002, and V1-NFR-004 to deterministic offline tests. The report tool
+constructs trusted planning, performs the existing full report comparator, and
+preserves source acquisition references. The API rejects caller planning fields
+and closed-schema drift. OpenAPI testing pins the prior PubMed route subtree and
+all 76 transitively referenced M1A components by canonical SHA-256 while adding
+the separate M1B request/report operation. Live DailyMed execution remains
+unauthorized and skipped.
+
+Review history remains exact and distinct:
+
+- Independent Review 001 bound manifest
+  `e41abf6ef789cadf33793d9c70bbf1a87490ad71a3ba909b8e52f734ce68690a`
+  and returned `FAIL — P0 0 / P1 2 / P2 2`.
+- Independent Review 002 bound manifest
+  `242b5442db3d6f0c9f43d4c45a05f221f627cc3811bc95b95d7472fd2530b789`
+  and returned `FAIL — P0 0 / P1 1 / P2 0`.
+- Independent Review 003 bound canonical manifest
+  `eeb5d0ffbfd28e6d64b9c20edce0065bd1b63e2857bf4fc25f0c4c7bd5593d8e`
+  and returned `FAIL — P0 0 / P1 1 / P2 0`.
+- Independent Review 004 bound canonical manifest
+  `d149a36a369591963010456664999bb07c114041972ed9b104ff059370875c4a`
+  and returned `PASS — P0 0 / P1 0 / P2 0` after verifying the frozen PubMed
+  graph and complete enabled DailyMed response requiredness.
+
+The post-Review-004 evidence-persistence candidate was audited under exact
+canonical `StringComparer.Ordinal` manifest
+`23748ca9d4db441cc79a14da90c2ad18f8b62bd4f5e96ae77a0b2cab5df3447c`.
+The case-insensitive alias
+`3c9a362a0cb7abb4930d2c4d6d2f78377fe444b9dcabd8f70db62209a7d05d47`
+covered the same bytes but is superseded and noncanonical. Terminal Audit 001
+returned `FAIL — P0 0 / P1 0 / P2 1` solely because this traceability section
+was stale. That P2 metadata defect is mechanically remediated here. Fresh
+metadata Review 005 then bound canonical manifest
+`17eeaea2c32c86b5766251d21c7ed8e0824ce68a7f745497333349fa0fcedafd`
+and returned `FAIL — P0 0 / P1 0 / P2 1`: `docs/SECURITY.md` incorrectly said
+the selected plan had no reason fields, while the required nullable
+`reason_code` and `reason` fields are present with null values. Its
+case-insensitive alias
+`5a8ae15acd7cb46cc37f013f4f458d9260c190b5fc3df69785923a4c2e6800ff`
+is noncanonical. That documentation-only P2 is mechanically remediated. Fresh
+Review 006 bound canonical manifest
+`391abc4fc5b8e999295b7468812e6b76ad2aa2da9b85b0e2c46ec11d494f6ded`
+and returned `PASS — P0 0 / P1 0 / P2 0`, verifying the exact required-nullable
+SECURITY closure and unchanged implementation evidence. Status is
+`REVIEW006_PASS_AWAITING_TERMINAL_REAUDIT`; no completion, Git, network,
+live-source, integration, merge, or FAERS claim is made. Terminal Re-Audit 002
+then bound canonical pre-persistence manifest
+`a7ecad26899a2ed1ce46b53e9d839e69459b8e81d946cf6aba4296557f7a0830`
+and returned `PASS — P0 0 / P1 0 / P2 0`. Current status is
+`TERMINAL_REAUDIT002_PASS_AWAITING_FINAL_BYTE_REBIND_AND_GIT`: persisting the
+PASS changes evidence bytes, so this is not completion, commit, integration,
+live-source, merge, or FAERS acceptance.
+
 Review 015 remediation constructs positive trusted-fetch authority from explicit
 fixture constants and independent stable-label evidence, with no retained/
 locator reads. Fresh evidence is report-focused `137 passed`, domain plus
