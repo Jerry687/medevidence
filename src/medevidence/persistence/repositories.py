@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
 from typing import Protocol, TypedDict, cast
+from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import Connection, Engine, Table
@@ -15,8 +16,13 @@ from sqlalchemy.exc import IntegrityError
 
 from medevidence.domain import (
     CoverageStatus,
+    DailyMedCandidateLabel,
+    DailyMedLabelVersion,
+    DailyMedMarketingState,
     ExecutionBounds,
     ExecutionStatus,
+    LabelSection,
+    LabelSelectionDecision,
     Provenance,
     PublicationRecord,
     ResultStatus,
@@ -32,6 +38,14 @@ from .session import _create_engine
 logger = logging.getLogger(__name__)
 
 PUBLICATION_BYTE_CAPACITY = 31_457_280
+_SPECIALIZED_DAILYMED_TABLES = frozenset(
+    {
+        "m1b_dailymed_selection_decisions",
+        "m1b_dailymed_label_versions",
+        "m1b_dailymed_sections",
+        "m1b_dailymed_label_supersession",
+    }
+)
 
 
 class ArtifactRow(TypedDict):
@@ -569,6 +583,8 @@ def _values(row: Mapping[str, object]) -> dict[str, object]:
 
 
 def _normalize(value: object) -> object:
+    if isinstance(value, UUID):
+        return str(value)
     if isinstance(value, tuple):
         return [_normalize(item) for item in value]
     if isinstance(value, list):
@@ -732,6 +748,334 @@ class PersistenceRepository:
                 method="insert_or_verify_artifact",
             )
         return cast(ArtifactRow, stored)
+
+    def insert_or_verify_m1b(
+        self,
+        table_name: str,
+        row: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Insert one complete frozen M1B row or verify an exact immutable replay."""
+
+        if table_name not in models.M1B_TABLE_ORDER:
+            raise ValueError("table_name is outside the frozen DM002 persistence inventory")
+        if table_name in _SPECIALIZED_DAILYMED_TABLES:
+            raise ValueError(
+                f"{table_name} requires its specialized authoritative repository method"
+            )
+        table = models.metadata.tables[f"{models.SCHEMA}.{table_name}"]
+        expected_columns = tuple(column.name for column in table.columns)
+        if set(row) != set(expected_columns):
+            raise ValueError(f"{table_name} input must contain every persisted column exactly")
+        values = dict(row)
+        self._validate_m1b_row(table_name, values)
+        with self._engine.begin() as connection:
+            return self._insert_or_verify_m1b_connection(connection, table_name, table, values)
+
+    @staticmethod
+    def _insert_or_verify_m1b_connection(
+        connection: Connection,
+        table_name: str,
+        table: Table,
+        values: dict[str, object],
+    ) -> dict[str, object]:
+        expected_columns = tuple(column.name for column in table.columns)
+        identity = tuple(column.name for column in table.primary_key.columns)
+        predicate = sa.and_(
+            *(table.c[name].is_not_distinct_from(values[name]) for name in identity)
+        )
+        existing = connection.execute(sa.select(table).where(predicate)).mappings().one_or_none()
+        if existing is not None:
+            stored = dict(existing)
+            if all(
+                _normalize(stored[name]) == _normalize(values[name]) for name in expected_columns
+            ):
+                return stored
+            constraint_name = table.primary_key.name
+            raise PersistenceConflict(
+                table_name,
+                constraint_name if isinstance(constraint_name, str) else None,
+            )
+        try:
+            with connection.begin_nested():
+                connection.execute(table.insert().values(**values))
+        except IntegrityError as error:
+            if not _is_unique_violation(error):
+                raise
+            existing = (
+                connection.execute(sa.select(table).where(predicate)).mappings().one_or_none()
+            )
+            if existing is None:
+                raise PersistenceConflict(table_name, _constraint_name(error)) from None
+            stored = dict(existing)
+            if not all(
+                _normalize(stored[name]) == _normalize(values[name]) for name in expected_columns
+            ):
+                raise PersistenceConflict(table_name, _constraint_name(error)) from None
+            return stored
+        return values
+
+    @staticmethod
+    def _validate_m1b_row(
+        table_name: str,
+        values: Mapping[str, object],
+        *,
+        authoritative_decision_context: bool = False,
+    ) -> None:
+        if table_name == "m1b_artifacts":
+            byte_size = values["byte_size"]
+            if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 0:
+                raise ValueError("M1B artifact byte_size must be a nonnegative integer")
+            zero_allowed = values["artifact_kind"] in {
+                "pubmed_http_response",
+                "dailymed_http_response",
+                "faers_http_response",
+            }
+            if byte_size == 0 and not zero_allowed:
+                raise ValueError("only exact retained source-response artifacts may be zero bytes")
+            if values["artifact_kind"] == "dailymed_spl_xml":
+                content_hash = values["content_hash"]
+                if not isinstance(content_hash, str) or not content_hash.startswith("sha256:"):
+                    raise ValueError("DailyMed SPL artifact content hash is invalid")
+                digest = content_hash.removeprefix("sha256:")
+                expected_path = f"dailymed/sha256/{digest}.xml"
+                if (
+                    values["source_partition"] != "dailymed"
+                    or values["artifact_id"] != content_hash
+                    or values["media_type"] != "application/xml"
+                    or values["relative_storage_label"] != expected_path
+                    or values["schema_version"] != "m1b.dailymed.spl-artifact.v1"
+                    or values["corpus_id"] is not None
+                    or values["corpus_version"] is not None
+                    or values["split"] is not None
+                ):
+                    raise ValueError("DailyMed stable SPL artifact identity/path contract drift")
+        if table_name == "m1b_dailymed_selection_decisions":
+            if not authoritative_decision_context:
+                raise ValueError(
+                    "DailyMed decisions require the authoritative repository comparator"
+                )
+            for name in (
+                "candidate_ids",
+                "candidate_bindings",
+                "meaningful_dimensions",
+                "warning_ids",
+                "warning_codes",
+            ):
+                value = values[name]
+                if not isinstance(value, list):
+                    raise ValueError(f"{name} must be a JSON array")
+            for name in ("candidate_ids", "meaningful_dimensions", "warning_ids", "warning_codes"):
+                value = values[name]
+                if not isinstance(value, list) or value != sorted(
+                    set(value), key=lambda item: str(item).encode("utf-8")
+                ):
+                    raise ValueError(f"{name} must be unique and bytewise sorted")
+        if table_name == "m1b_dailymed_label_versions":
+            PersistenceRepository._dailymed_label_version_from_row(values)
+        if table_name == "m1b_dailymed_sections":
+            PersistenceRepository._dailymed_section_from_row(values)
+        if table_name == "m1b_dailymed_label_supersession" and (
+            values["predecessor_label_version_id"] == values["successor_label_version_id"]
+        ):
+            raise ValueError("DailyMed supersession cannot be a self edge")
+
+    def insert_or_verify_m1b_artifact(self, row: Mapping[str, object]) -> dict[str, object]:
+        """Persist exact M1B artifact metadata without raw bytes."""
+
+        return self.insert_or_verify_m1b("m1b_artifacts", row)
+
+    @staticmethod
+    def _require_exact_domain_row(
+        row: Mapping[str, object],
+        expected: Mapping[str, object],
+        *,
+        name: str,
+    ) -> None:
+        if set(row) != set(expected) or any(
+            _normalize(row[key]) != _normalize(expected[key]) for key in expected
+        ):
+            raise ValueError(f"{name} row differs from its exact validated domain object")
+
+    @staticmethod
+    def _dailymed_label_version_from_row(
+        row: Mapping[str, object],
+    ) -> DailyMedLabelVersion:
+        values = dict(row)
+        values["source"] = SourceType.DAILYMED
+        values["setid"] = str(values["setid"])
+        values["spl_version"] = str(values["spl_version"])
+        marketing_state = values["marketing_state"]
+        if not isinstance(marketing_state, str):
+            raise ValueError("DailyMed marketing_state must be a string")
+        values["marketing_state"] = DailyMedMarketingState(marketing_state)
+        return DailyMedLabelVersion.model_validate(values)
+
+    @staticmethod
+    def _dailymed_section_from_row(row: Mapping[str, object]) -> LabelSection:
+        values = dict(row)
+        values["source"] = SourceType.DAILYMED
+        values["setid"] = str(values["setid"])
+        values["spl_version"] = str(values["spl_version"])
+        return LabelSection.model_validate(values)
+
+    @staticmethod
+    def _label_version_persisted_values(
+        version: DailyMedLabelVersion,
+    ) -> dict[str, object]:
+        values = version.model_dump(mode="python")
+        values["source"] = version.source.value
+        values["spl_version"] = int(version.spl_version)
+        values["marketing_state"] = version.marketing_state.value
+        return values
+
+    @staticmethod
+    def _section_persisted_values(section: LabelSection) -> dict[str, object]:
+        values = section.model_dump(mode="python")
+        values["source"] = section.source.value
+        values["spl_version"] = int(section.spl_version)
+        return values
+
+    def insert_or_verify_dailymed_selection_decision(
+        self,
+        row: Mapping[str, object],
+        *,
+        decision: LabelSelectionDecision,
+        outcome: SourceOutcome,
+        candidates: tuple[DailyMedCandidateLabel, ...],
+        source_outcome_id: str,
+        discovery_manifest_content_hash: str,
+    ) -> dict[str, object]:
+        """Persist one decision only after exact authoritative discovery validation."""
+
+        decision.validate_against(
+            outcome=outcome,
+            candidates=candidates,
+            source_outcome_id=source_outcome_id,
+            discovery_manifest_content_hash=discovery_manifest_content_hash,
+        )
+        expected = decision.model_dump(mode="python")
+        self._require_exact_domain_row(row, expected, name="DailyMed selection decision")
+        table_name = "m1b_dailymed_selection_decisions"
+        table = models.m1b_dailymed_selection_decisions
+        values = dict(row)
+        self._validate_m1b_row(
+            table_name,
+            values,
+            authoritative_decision_context=True,
+        )
+        with self._engine.begin() as connection:
+            return self._insert_or_verify_m1b_connection(connection, table_name, table, values)
+
+    def insert_or_verify_dailymed_label_version(
+        self, row: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Persist one fetch-independent immutable DailyMed label version."""
+
+        version = self._dailymed_label_version_from_row(row)
+        self._require_exact_domain_row(
+            row,
+            self._label_version_persisted_values(version),
+            name="DailyMed label version",
+        )
+        table_name = "m1b_dailymed_label_versions"
+        table = models.m1b_dailymed_label_versions
+        values = dict(row)
+        self._validate_m1b_row(table_name, values)
+        with self._engine.begin() as connection:
+            artifact = (
+                connection.execute(
+                    sa.select(models.m1b_artifacts).where(
+                        models.m1b_artifacts.c.artifact_id == version.spl_artifact_id
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if artifact is None:
+                raise ValueError("DailyMed label version requires its stable SPL artifact")
+            artifact_values = dict(artifact)
+            self._validate_m1b_row("m1b_artifacts", artifact_values)
+            if (
+                artifact["source_partition"] != "dailymed"
+                or artifact["artifact_kind"] != "dailymed_spl_xml"
+                or artifact["content_hash"] != version.content_hash
+            ):
+                raise ValueError("DailyMed label version stable artifact binding drift")
+            return self._insert_or_verify_m1b_connection(connection, table_name, table, values)
+
+    def insert_or_verify_dailymed_section(self, row: Mapping[str, object]) -> dict[str, object]:
+        """Persist one stable canonical DailyMed section."""
+
+        section = self._dailymed_section_from_row(row)
+        self._require_exact_domain_row(
+            row,
+            self._section_persisted_values(section),
+            name="DailyMed section",
+        )
+        table_name = "m1b_dailymed_sections"
+        table = models.m1b_dailymed_sections
+        values = dict(row)
+        self._validate_m1b_row(table_name, values)
+        with self._engine.begin() as connection:
+            version = (
+                connection.execute(
+                    sa.select(models.m1b_dailymed_label_versions).where(
+                        models.m1b_dailymed_label_versions.c.source == section.source.value,
+                        models.m1b_dailymed_label_versions.c.setid == section.setid,
+                        models.m1b_dailymed_label_versions.c.label_version_id
+                        == section.label_version_id,
+                        models.m1b_dailymed_label_versions.c.spl_version
+                        == int(section.spl_version),
+                        models.m1b_dailymed_label_versions.c.spl_artifact_id
+                        == section.spl_artifact_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if version is None:
+                raise ValueError("DailyMed section requires its exact stable label version")
+            return self._insert_or_verify_m1b_connection(connection, table_name, table, values)
+
+    def insert_or_verify_dailymed_supersession(
+        self, row: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Persist a DailyMed supersession edge after rejecting every cycle."""
+
+        table_name = "m1b_dailymed_label_supersession"
+        table = models.m1b_dailymed_label_supersession
+        expected_columns = {column.name for column in table.columns}
+        if set(row) != expected_columns:
+            raise ValueError(f"{table_name} input must contain every persisted column exactly")
+        values = dict(row)
+        self._validate_m1b_row(table_name, values)
+        source = values["source"]
+        setid = values["setid"]
+        predecessor = values["predecessor_label_version_id"]
+        successor = values["successor_label_version_id"]
+        with self._engine.begin() as connection:
+            connection.execute(
+                sa.text(f'LOCK TABLE "{models.SCHEMA}"."{table.name}" IN SHARE ROW EXCLUSIVE MODE')
+            )
+            edges = connection.execute(
+                sa.select(
+                    table.c.predecessor_label_version_id,
+                    table.c.successor_label_version_id,
+                ).where(table.c.source == source, table.c.setid == setid)
+            )
+            adjacency: dict[object, set[object]] = {}
+            for existing_predecessor, existing_successor in edges:
+                adjacency.setdefault(existing_predecessor, set()).add(existing_successor)
+            pending = [successor]
+            seen: set[object] = set()
+            while pending:
+                current = pending.pop()
+                if current == predecessor:
+                    raise ValueError("DailyMed supersession would create a cycle")
+                if current not in seen:
+                    seen.add(current)
+                    pending.extend(adjacency.get(current, ()))
+            return self._insert_or_verify_m1b_connection(connection, table_name, table, values)
 
     def insert_or_verify_publication_version(
         self,

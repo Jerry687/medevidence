@@ -108,15 +108,15 @@ def test_upgrade_downgrade_upgrade_and_exact_catalog() -> None:
     finally:
         engine.dispose()
 
-    assert table_count == 13
-    assert constraint_counts == {"c": 62, "f": 17, "p": 13, "u": 22}
+    assert table_count == 28
+    assert constraint_counts == {"c": 121, "f": 53, "p": 28, "u": 62}
     assert secondary_indexes == 12
-    assert len(fk_rows) == 17
+    assert len(fk_rows) == 53
     assert all(row["confupdtype"] == "r" and row["confdeltype"] == "r" for row in fk_rows)
     assert {row["conname"] for row in fk_rows if row["condeferrable"] or row["condeferred"]} == {
         "fk_research_run_report"
     }
-    assert version == "m1a003b0001"
+    assert version == "m1bdm002001"
     assert version_schema == "public"
     assert forbidden_objects == 0
     assert raw_byte_columns == 0

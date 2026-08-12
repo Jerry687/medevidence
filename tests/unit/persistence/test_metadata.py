@@ -12,6 +12,8 @@ from typing import cast
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import Connection
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateTable
 
 from medevidence.persistence import models
 from medevidence.persistence import repositories as repository_module
@@ -77,9 +79,18 @@ def _migration_module() -> ModuleType:
     return module
 
 
+def _m1b_migration_module() -> ModuleType:
+    path = Path("alembic/versions/20260809_01_m1b_dailymed.py")
+    spec = importlib.util.spec_from_file_location("m1bdm002_revision", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_exact_object_counts_and_names() -> None:
     assert tuple(table.name for table in models.TABLE_ORDER) == EXPECTED_TABLES
-    assert len(models.metadata.tables) == 13
+    assert len(models.metadata.tables) == 28
     assert len(_constraints(sa.CheckConstraint)) == 62
     assert len(_constraints(sa.ForeignKeyConstraint)) == 17
     assert len(_constraints(sa.PrimaryKeyConstraint)) == 13
@@ -109,8 +120,12 @@ def test_migration_embeds_equivalent_private_metadata_without_application_import
     assert module.revision == "m1a003b0001"
     assert module.down_revision is None
     assert tuple(module._ORDER) == EXPECTED_TABLES
-    assert set(private.tables) == set(models.metadata.tables)
-    for key, table in models.metadata.tables.items():
+    inherited = {
+        f"{models.SCHEMA}.{name}": models.metadata.tables[f"{models.SCHEMA}.{name}"]
+        for name in EXPECTED_TABLES
+    }
+    assert set(private.tables) == set(inherited)
+    for key, table in inherited.items():
         migrated = private.tables[key]
         assert tuple(column.name for column in migrated.columns) == tuple(
             column.name for column in table.columns
@@ -154,9 +169,154 @@ def test_migration_embeds_equivalent_private_metadata_without_application_import
 def test_raw_bytes_have_no_postgresql_column() -> None:
     assert all(
         not isinstance(column.type, (sa.LargeBinary,)) and "BYTEA" not in str(column.type).upper()
-        for table in models.TABLE_ORDER
+        for table in models.metadata.tables.values()
         for column in table.columns
     )
+
+
+def test_m1b_dm002_exact_frozen_inventory_and_counts() -> None:
+    tables = [models.metadata.tables[f"{models.SCHEMA}.{name}"] for name in models.M1B_TABLE_ORDER]
+    assert models.M1B_TABLE_ORDER == (
+        "m1b_artifacts",
+        "m1b_artifact_lineage",
+        "m1b_acquisitions",
+        "m1b_source_outcomes",
+        "m1b_snapshots",
+        "m1b_snapshot_artifacts",
+        "m1b_runs",
+        "m1b_run_sources",
+        "m1b_reports",
+        "m1b_report_sections",
+        "m1b_report_source_outcomes",
+        "m1b_dailymed_selection_decisions",
+        "m1b_dailymed_label_versions",
+        "m1b_dailymed_sections",
+        "m1b_dailymed_label_supersession",
+    )
+    assert sum(len(table.columns) for table in tables) == 201
+    assert (
+        sum(
+            isinstance(constraint, sa.CheckConstraint)
+            for table in tables
+            for constraint in table.constraints
+        )
+        == 59
+    )
+    assert sum(len(table.foreign_key_constraints) for table in tables) == 36
+    assert (
+        sum(
+            isinstance(constraint, sa.PrimaryKeyConstraint)
+            for table in tables
+            for constraint in table.constraints
+        )
+        == 15
+    )
+    assert (
+        sum(
+            isinstance(constraint, sa.UniqueConstraint)
+            for table in tables
+            for constraint in table.constraints
+        )
+        == 40
+    )
+    assert all(
+        fk.onupdate == "RESTRICT" and fk.ondelete == "RESTRICT"
+        for table in tables
+        for fk in table.foreign_key_constraints
+    )
+    assert all(column.server_default is None for table in tables for column in table.columns)
+
+
+def test_m1b_migration_embeds_exact_immutable_postgresql_ddl() -> None:
+    module = _m1b_migration_module()
+    statements = module._ddl_statements()
+    expected = tuple(
+        str(
+            CreateTable(models.metadata.tables[f"{models.SCHEMA}.{name}"]).compile(
+                dialect=postgresql.dialect()
+            )
+        )
+        for name in module._CREATE_ORDER
+    )
+
+    assert module.revision == "m1bdm002001"
+    assert module.down_revision == "m1a003b0001"
+    assert module.TABLE_ORDER == models.M1B_TABLE_ORDER
+    assert statements == expected
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert "medevidence.persistence" not in source
+
+
+def test_m1b_dm002_nullability_matches_the_exact_freeze() -> None:
+    nullable = {
+        f"{table.name}.{column.name}"
+        for table in (
+            models.metadata.tables[f"{models.SCHEMA}.{name}"] for name in models.M1B_TABLE_ORDER
+        )
+        for column in table.columns
+        if column.nullable
+    }
+    assert nullable == {
+        "m1b_artifacts.corpus_id",
+        "m1b_artifacts.corpus_version",
+        "m1b_artifacts.split",
+        "m1b_artifact_lineage.parent_corpus_id",
+        "m1b_artifact_lineage.parent_corpus_version",
+        "m1b_artifact_lineage.parent_split",
+        "m1b_artifact_lineage.child_corpus_id",
+        "m1b_artifact_lineage.child_corpus_version",
+        "m1b_artifact_lineage.child_split",
+        "m1b_acquisitions.completed_at_utc",
+        "m1b_source_outcomes.failure_id",
+        "m1b_snapshot_artifacts.http_status",
+        "m1b_snapshot_artifacts.corpus_id",
+        "m1b_snapshot_artifacts.corpus_version",
+        "m1b_snapshot_artifacts.split",
+        "m1b_runs.completed_at_utc",
+        "m1b_run_sources.reason_code",
+        "m1b_run_sources.reason",
+        "m1b_dailymed_selection_decisions.selected_candidate_id",
+        "m1b_dailymed_selection_decisions.selected_setid",
+        "m1b_dailymed_selection_decisions.selected_spl_version",
+        "m1b_dailymed_selection_decisions.selected_member_ordinal",
+        "m1b_dailymed_selection_decisions.selected_link_id",
+        "m1b_dailymed_selection_decisions.selected_raw_artifact_id",
+        "m1b_dailymed_selection_decisions.selected_raw_content_hash",
+        "m1b_dailymed_selection_decisions.selected_body_complete",
+        "m1b_dailymed_selection_decisions.selected_termination_reason",
+        "m1b_dailymed_selection_decisions.selected_candidate_ordinal",
+        "m1b_dailymed_label_versions.effective_date",
+        "m1b_dailymed_label_versions.published_date",
+        "m1b_dailymed_sections.parent_section_id",
+        "m1b_dailymed_label_supersession.observed_run_id",
+        "m1b_dailymed_label_supersession.observed_acquisition_id",
+        "m1b_dailymed_label_supersession.observed_acquisition_ordinal",
+        "m1b_dailymed_label_supersession.observed_acquisition_intent_id",
+        "m1b_dailymed_label_supersession.observed_operation",
+        "m1b_dailymed_label_supersession.observed_query_id",
+        "m1b_dailymed_label_supersession.observed_snapshot_id",
+        "m1b_dailymed_label_supersession.observed_manifest_id",
+    }
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    (
+        "m1b_dailymed_selection_decisions",
+        "m1b_dailymed_label_versions",
+        "m1b_dailymed_sections",
+        "m1b_dailymed_label_supersession",
+    ),
+)
+def test_generic_m1b_repository_rejects_specialized_dailymed_tables(
+    table_name: str,
+) -> None:
+    repository = PersistenceRepository._from_engine_for_testing(sa.create_engine("sqlite://"))
+    try:
+        with pytest.raises(ValueError, match="specialized authoritative repository method"):
+            repository.insert_or_verify_m1b(table_name, {})
+    finally:
+        repository.close()
 
 
 class _CapacityResult:

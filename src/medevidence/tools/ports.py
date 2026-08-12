@@ -10,7 +10,9 @@ from pydantic import AfterValidator, Field, StringConstraints, model_validator
 from medevidence.domain import (
     AcquisitionRegistrationEnvelopeId,
     ArtifactId,
+    DailyMedCandidateLabel,
     ExecutionStatus,
+    LabelSelectionDecision,
     Pmid,
     PublicationRecord,
     PublicationVersionId,
@@ -27,6 +29,10 @@ from medevidence.domain.identifiers import AcquisitionIntentId, DurableModel
 
 from .contracts import (
     AcquisitionIntentInput,
+    DailyMedDiscoveryRequest,
+    DailyMedDiscoveryResponse,
+    DailyMedFetchRequest,
+    DailyMedFetchResponse,
     ResolvedConceptCatalog,
     RunIntentInput,
     SearchPubMedResponse,
@@ -363,6 +369,22 @@ class PubMedExecutionPort(Protocol):
 
     def fetch(self, *, pmid: str, query_id: str) -> PubMedFetchExecution:
         """Execute one constrained singular EFetch acquisition."""
+
+
+class DailyMedExecutionPort(Protocol):
+    """Execute frozen DailyMed operations behind a source-neutral boundary."""
+
+    def discover(
+        self, request: DailyMedDiscoveryRequest
+    ) -> tuple[
+        DailyMedDiscoveryResponse,
+        tuple[DailyMedCandidateLabel, ...],
+        LabelSelectionDecision | None,
+    ]:
+        """Execute, snapshot, and register one bounded discovery."""
+
+    def fetch(self, request: DailyMedFetchRequest) -> DailyMedFetchResponse:
+        """Execute, snapshot, and register one exact selected-label fetch."""
 
 
 class AcquisitionPersistencePort(Protocol):

@@ -10,13 +10,18 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
+from medevidence.connectors.dailymed.parsing import parse_spl_document
 from medevidence.domain import CoverageStatus, ExecutionStatus, ResultStatus
 from medevidence.ingestion import artifacts as artifacts_module
 from medevidence.ingestion.artifacts import (
+    DailyMedManifestMember,
+    DailyMedSnapshotManifest,
     ManifestFile,
     SnapshotManifest,
     capture_acquisition,
+    capture_dailymed_snapshot,
     manifest_file_from_link,
+    replay_dailymed_snapshot,
     replay_manifest,
     response_observation,
     write_immutable_manifest,
@@ -105,10 +110,543 @@ def file_entry() -> ManifestFile:
 
 
 def snapshot_store(root: Path) -> SnapshotStore:
+    def validate_spl(body: bytes, setid: str, spl_version: str) -> None:
+        parse_spl_document(
+            body,
+            expected_setid=setid,
+            expected_spl_version=spl_version,
+        )
+
     return SnapshotStore(
         root,
         free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES,
+        dailymed_spl_validator=validate_spl,
     )
+
+
+def _dailymed_member_for_size(
+    *,
+    ordinal: int,
+    byte_size: int,
+    stable_spl: bool = False,
+    body_complete: bool = True,
+) -> DailyMedManifestMember:
+    digest = format(ordinal + 1, "x") * 64
+    artifact_id = f"sha256:{digest}"
+    return DailyMedManifestMember(
+        ordinal=ordinal,
+        link_id=f"artifact-link:sha256:{format(ordinal + 8, 'x') * 64}",
+        artifact_id=artifact_id,
+        content_hash=artifact_id,
+        artifact_kind="dailymed_spl_xml" if stable_spl else "dailymed_http_response",
+        relative_path=(
+            f"dailymed/sha256/{digest}.xml"
+            if stable_spl
+            else f"dailymed/raw/sha256/{digest[:2]}/{digest}.bin"
+        ),
+        byte_size=byte_size,
+        media_type="application/xml",
+        http_status=200,
+        body_complete=body_complete,
+        termination_reason="complete_response" if body_complete else "stream_error",
+    )
+
+
+def _dailymed_manifest_for_sizes(
+    response_sizes: tuple[int, ...],
+    *,
+    stable_spl_size: int | None = None,
+    execution_status: ExecutionStatus = ExecutionStatus.SUCCEEDED,
+    coverage_status: CoverageStatus = CoverageStatus.COMPLETE,
+    result_status: ResultStatus = ResultStatus.MATCHES,
+    record_count: int = 1,
+) -> DailyMedSnapshotManifest:
+    response_members = tuple(
+        _dailymed_member_for_size(ordinal=ordinal, byte_size=size)
+        for ordinal, size in enumerate(response_sizes)
+    )
+    stable_members = (
+        (
+            _dailymed_member_for_size(
+                ordinal=len(response_members),
+                byte_size=stable_spl_size,
+                stable_spl=True,
+            ),
+        )
+        if stable_spl_size is not None
+        else ()
+    )
+    return DailyMedSnapshotManifest(
+        run_id="run:00000000-0000-4000-8000-000000000101",
+        acquisition_id="acquisition:dailymed-bound",
+        acquisition_intent_id=ACQUISITION_ID,
+        acquisition_ordinal=1,
+        query_id="query:dailymed-bound",
+        snapshot_id="snapshot:dailymed-bound",
+        operation="fetch" if stable_members else "search",
+        request_identity="dailymed:synthetic-bound",
+        selected_setid=("11111111-1111-1111-1111-111111111111" if stable_members else None),
+        selected_spl_version="3" if stable_members else None,
+        started_at_utc=datetime(2026, 8, 12, 1, 0, 0, tzinfo=UTC),
+        completed_at_utc=datetime(2026, 8, 12, 1, 0, 2, tzinfo=UTC),
+        execution_status=execution_status,
+        coverage_status=coverage_status,
+        result_status=result_status,
+        record_count=record_count,
+        pages_completed=len(response_members) if coverage_status is CoverageStatus.COMPLETE else 0,
+        attempts_used=1,
+        truncated=coverage_status is CoverageStatus.PARTIAL,
+        warning_codes=(
+            ("source_unavailable",)
+            if coverage_status is CoverageStatus.UNAVAILABLE
+            else (("incomplete_coverage",) if coverage_status is CoverageStatus.PARTIAL else ())
+        ),
+        members=(*response_members, *stable_members),
+        code_revision="a3fd66477046c9e026d7b2222e882cd94a84d535",
+    )
+
+
+def _capture_dailymed_response_bodies(
+    snapshots: SnapshotStore,
+    *,
+    bodies: tuple[bytes, ...],
+    coverage_status: CoverageStatus,
+    body_complete: bool,
+) -> artifacts_module.CapturedDailyMedSnapshot:
+    observations = tuple(
+        response_observation(
+            body=body,
+            observed_at_utc=datetime(2026, 8, 12, 1, 0, ordinal, tzinfo=UTC),
+            headers=(("content-type", "application/xml"),),
+            http_status=200,
+            body_complete=body_complete,
+            termination_reason="complete_response" if body_complete else "stream_error",
+        )
+        for ordinal, body in enumerate(bodies, start=1)
+    )
+    return capture_dailymed_snapshot(
+        snapshots,
+        run_id="run:00000000-0000-4000-8000-000000000101",
+        acquisition_id="acquisition:dailymed-response-bound",
+        acquisition_intent_id=ACQUISITION_ID,
+        acquisition_ordinal=1,
+        query_id="query:dailymed-response-bound",
+        snapshot_id="snapshot:dailymed-response-bound",
+        operation="search",
+        request_identity="dailymed:synthetic-response-bound",
+        started_at_utc=datetime(2026, 8, 12, 1, 0, 0, tzinfo=UTC),
+        completed_at_utc=datetime(2026, 8, 12, 1, 0, 6, tzinfo=UTC),
+        execution_status=(
+            ExecutionStatus.SUCCEEDED
+            if coverage_status is CoverageStatus.COMPLETE
+            else ExecutionStatus.FAILED
+        ),
+        coverage_status=coverage_status,
+        result_status=ResultStatus.MATCHES,
+        record_count=1,
+        pages_completed=len(bodies) if body_complete else 0,
+        attempts_used=2 if len(bodies) > 1 else 1,
+        truncated=coverage_status is CoverageStatus.PARTIAL,
+        warning_codes=("incomplete_coverage",) if coverage_status is CoverageStatus.PARTIAL else (),
+        observations=observations,
+        stable_spl_bytes=None,
+        selected_setid=None,
+        selected_spl_version=None,
+        code_revision="a3fd66477046c9e026d7b2222e882cd94a84d535",
+    )
+
+
+def test_dailymed_manifest_enforces_cumulative_response_bound_without_double_counting_spl() -> None:
+    first = RAW_RESPONSE_BYTE_CAPACITY // 2
+    exact = _dailymed_manifest_for_sizes(
+        (first, RAW_RESPONSE_BYTE_CAPACITY - first),
+        stable_spl_size=RAW_RESPONSE_BYTE_CAPACITY,
+    )
+
+    response_total = sum(
+        member.byte_size
+        for member in exact.members
+        if member.artifact_kind == "dailymed_http_response"
+    )
+    assert response_total == RAW_RESPONSE_BYTE_CAPACITY
+    assert sum(member.byte_size for member in exact.members) > RAW_RESPONSE_BYTE_CAPACITY
+
+    with pytest.raises(ValidationError, match="cumulative 5,242,880-byte bound"):
+        _dailymed_manifest_for_sizes((first, RAW_RESPONSE_BYTE_CAPACITY - first + 1))
+
+
+def test_dailymed_capture_accepts_exact_cumulative_response_bound(tmp_path: Path) -> None:
+    snapshots = snapshot_store(tmp_path / "exact")
+    first = RAW_RESPONSE_BYTE_CAPACITY // 2
+    bodies = (b"a" * first, b"b" * (RAW_RESPONSE_BYTE_CAPACITY - first))
+
+    with snapshots.writer():
+        captured = _capture_dailymed_response_bodies(
+            snapshots,
+            bodies=bodies,
+            coverage_status=CoverageStatus.COMPLETE,
+            body_complete=True,
+        )
+
+    assert sum(member.byte_size for member in captured.manifest.members) == (
+        RAW_RESPONSE_BYTE_CAPACITY
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "sizes", "coverage_status", "body_complete"),
+    [
+        (
+            "multi-page-plus-one",
+            (2_000_000, 2_000_000, RAW_RESPONSE_BYTE_CAPACITY - 3_999_999),
+            CoverageStatus.COMPLETE,
+            True,
+        ),
+        (
+            "partial-prefix-plus-one",
+            (RAW_RESPONSE_BYTE_CAPACITY // 2, RAW_RESPONSE_BYTE_CAPACITY // 2 + 1),
+            CoverageStatus.PARTIAL,
+            False,
+        ),
+    ],
+)
+def test_dailymed_capture_cumulative_failure_writes_nothing(
+    tmp_path: Path,
+    name: str,
+    sizes: tuple[int, ...],
+    coverage_status: CoverageStatus,
+    body_complete: bool,
+) -> None:
+    snapshots = snapshot_store(tmp_path / name)
+    bodies = tuple(bytes([97 + ordinal]) * size for ordinal, size in enumerate(sizes))
+
+    with (
+        snapshots.writer(),
+        pytest.raises(ValidationError, match="cumulative 5,242,880-byte bound"),
+    ):
+        _capture_dailymed_response_bodies(
+            snapshots,
+            bodies=bodies,
+            coverage_status=coverage_status,
+            body_complete=body_complete,
+        )
+
+    assert _committed_files(snapshots) == ()
+
+
+def test_dailymed_replay_rejects_cumulative_plus_one_before_file_access(tmp_path: Path) -> None:
+    first = RAW_RESPONSE_BYTE_CAPACITY // 2
+    exact = _dailymed_manifest_for_sizes((first, RAW_RESPONSE_BYTE_CAPACITY - first))
+    oversized_members = (
+        exact.members[0],
+        exact.members[1].model_copy(update={"byte_size": exact.members[1].byte_size + 1}),
+    )
+    oversized = DailyMedSnapshotManifest.model_construct(
+        **exact.model_dump(mode="python", exclude={"members"}),
+        members=oversized_members,
+    )
+
+    with pytest.raises(ValidationError, match="cumulative 5,242,880-byte bound"):
+        replay_dailymed_snapshot(
+            oversized.canonical_bytes(),
+            snapshot_store(tmp_path / "uninitialized"),
+            expected_manifest_id=oversized.manifest_id,
+            expected_members=oversized_members,
+        )
+
+
+def test_dailymed_zero_response_file_unavailable_manifest_captures_and_replays(
+    tmp_path: Path,
+) -> None:
+    snapshots = snapshot_store(tmp_path / "zero")
+    with snapshots.writer():
+        captured = capture_dailymed_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000101",
+            acquisition_id="acquisition:dailymed-unavailable",
+            acquisition_intent_id=ACQUISITION_ID,
+            acquisition_ordinal=1,
+            query_id="query:dailymed-unavailable",
+            snapshot_id="snapshot:dailymed-unavailable",
+            operation="search",
+            request_identity="dailymed:synthetic-unavailable",
+            started_at_utc=datetime(2026, 8, 12, 1, 0, 0, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 1, 0, 2, tzinfo=UTC),
+            execution_status=ExecutionStatus.FAILED,
+            coverage_status=CoverageStatus.UNAVAILABLE,
+            result_status=ResultStatus.INDETERMINATE,
+            record_count=0,
+            pages_completed=0,
+            attempts_used=2,
+            truncated=False,
+            warning_codes=("source_unavailable",),
+            observations=(),
+            stable_spl_bytes=None,
+            selected_setid=None,
+            selected_spl_version=None,
+            code_revision="a3fd66477046c9e026d7b2222e882cd94a84d535",
+        )
+
+    assert captured.member_paths == ()
+    assert (
+        replay_dailymed_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_members=(),
+        )
+        == captured.manifest
+    )
+
+
+def test_dailymed_snapshot_capture_and_replay_are_exact_and_immutable(tmp_path: Path) -> None:
+    snapshots = snapshot_store(tmp_path / "snapshots")
+    spl = Path("tests/fixtures/dailymed/spl-valid.xml").read_bytes()
+    observation = response_observation(
+        body=spl,
+        observed_at_utc=datetime(2026, 8, 12, 1, 0, 1, tzinfo=UTC),
+        headers=(("content-type", "application/xml"),),
+        http_status=200,
+        body_complete=True,
+        termination_reason="complete_response",
+    )
+    with snapshots.writer():
+        captured = capture_dailymed_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000101",
+            acquisition_id="acquisition:dailymed-fetch",
+            acquisition_intent_id=ACQUISITION_ID,
+            acquisition_ordinal=1,
+            query_id="query:dailymed-fetch",
+            snapshot_id="snapshot:dailymed-fetch",
+            operation="fetch",
+            request_identity="dailymed:11111111-1111-1111-1111-111111111111:3",
+            started_at_utc=datetime(2026, 8, 12, 1, 0, 0, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 1, 0, 2, tzinfo=UTC),
+            execution_status=ExecutionStatus.SUCCEEDED,
+            coverage_status=CoverageStatus.COMPLETE,
+            result_status=ResultStatus.MATCHES,
+            record_count=1,
+            pages_completed=1,
+            attempts_used=1,
+            truncated=False,
+            warning_codes=(),
+            observations=(observation,),
+            stable_spl_bytes=spl,
+            selected_setid="11111111-1111-1111-1111-111111111111",
+            selected_spl_version="3",
+            code_revision="a3fd66477046c9e026d7b2222e882cd94a84d535",
+        )
+
+    assert tuple(member.artifact_kind for member in captured.manifest.members) == (
+        "dailymed_http_response",
+        "dailymed_spl_xml",
+    )
+    stable = captured.manifest.members[-1]
+    digest = stable.artifact_id.removeprefix("sha256:")
+    assert stable.relative_path == f"dailymed/sha256/{digest}.xml"
+    assert captured.manifest_path.read_bytes() == captured.manifest.canonical_bytes()
+    assert (
+        replay_dailymed_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_members=captured.manifest.members,
+        )
+        == captured.manifest
+    )
+
+
+def test_dailymed_replay_rejects_member_drift_and_corruption(tmp_path: Path) -> None:
+    snapshots = snapshot_store(tmp_path / "snapshots")
+    spl = Path("tests/fixtures/dailymed/spl-valid.xml").read_bytes()
+    with snapshots.writer():
+        response = snapshots.store_dailymed_response(b"")
+        stable = snapshots.store_dailymed_spl(
+            spl,
+            selected_setid="11111111-1111-1111-1111-111111111111",
+            selected_spl_version="3",
+        )
+    assert response.byte_size == 0
+    stable.path.write_bytes(b"corrupt")
+    with pytest.raises(SnapshotIntegrityError):
+        snapshots.verify_dailymed(
+            stable.artifact_id,
+            stable_spl=True,
+            selected_setid="11111111-1111-1111-1111-111111111111",
+            selected_spl_version="3",
+        )
+
+
+@pytest.mark.parametrize(
+    ("stable_body", "selected_version", "coverage"),
+    [
+        (b"not xml", "3", CoverageStatus.COMPLETE),
+        (
+            Path("tests/fixtures/dailymed/spl-valid.xml").read_bytes(),
+            "4",
+            CoverageStatus.COMPLETE,
+        ),
+        (
+            Path("tests/fixtures/dailymed/spl-valid.xml").read_bytes(),
+            "3",
+            CoverageStatus.PARTIAL,
+        ),
+    ],
+)
+def test_dailymed_capture_rejects_malformed_foreign_or_partial_stable_spl_before_write(
+    tmp_path: Path,
+    stable_body: bytes,
+    selected_version: str,
+    coverage: CoverageStatus,
+) -> None:
+    snapshots = snapshot_store(tmp_path / selected_version / coverage.value)
+    observation = response_observation(
+        body=stable_body,
+        observed_at_utc=datetime(2026, 8, 12, 1, 0, 1, tzinfo=UTC),
+        headers=(("content-type", "application/xml"),),
+        http_status=200,
+        body_complete=True,
+        termination_reason="complete_response",
+    )
+    with snapshots.writer(), pytest.raises((ValueError, ValidationError, SnapshotIntegrityError)):
+        capture_dailymed_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000101",
+            acquisition_id="acquisition:dailymed-fetch",
+            acquisition_intent_id=ACQUISITION_ID,
+            acquisition_ordinal=1,
+            query_id="query:dailymed-fetch",
+            snapshot_id="snapshot:dailymed-fetch",
+            operation="fetch",
+            request_identity="dailymed:11111111-1111-1111-1111-111111111111:3",
+            started_at_utc=datetime(2026, 8, 12, 1, 0, 0, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 1, 0, 2, tzinfo=UTC),
+            execution_status=ExecutionStatus.SUCCEEDED,
+            coverage_status=coverage,
+            result_status=ResultStatus.MATCHES,
+            record_count=1,
+            pages_completed=1,
+            attempts_used=1,
+            truncated=coverage is CoverageStatus.PARTIAL,
+            warning_codes=("incomplete_coverage",) if coverage is CoverageStatus.PARTIAL else (),
+            observations=(observation,),
+            stable_spl_bytes=stable_body,
+            selected_setid="11111111-1111-1111-1111-111111111111",
+            selected_spl_version=selected_version,
+            code_revision="a3fd66477046c9e026d7b2222e882cd94a84d535",
+        )
+
+    assert _committed_files(snapshots) == ()
+
+
+def test_dailymed_store_and_replay_reject_foreign_stable_spl_identity(tmp_path: Path) -> None:
+    snapshots = snapshot_store(tmp_path / "snapshots")
+    spl = Path("tests/fixtures/dailymed/spl-valid.xml").read_bytes()
+    foreign_setid = "22222222-2222-2222-2222-222222222222"
+    foreign_spl = spl.replace(
+        b"11111111-1111-1111-1111-111111111111",
+        foreign_setid.encode("ascii"),
+    )
+    with snapshots.writer(), pytest.raises((ValueError, SnapshotIntegrityError)):
+        snapshots.store_dailymed_spl(
+            foreign_spl,
+            selected_setid="11111111-1111-1111-1111-111111111111",
+            selected_spl_version="3",
+        )
+
+    observation = response_observation(
+        body=spl,
+        observed_at_utc=datetime(2026, 8, 12, 1, 0, 1, tzinfo=UTC),
+        headers=(("content-type", "application/xml"),),
+        http_status=200,
+        body_complete=True,
+        termination_reason="complete_response",
+    )
+    with snapshots.writer():
+        captured = capture_dailymed_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000101",
+            acquisition_id="acquisition:dailymed-fetch",
+            acquisition_intent_id=ACQUISITION_ID,
+            acquisition_ordinal=1,
+            query_id="query:dailymed-fetch",
+            snapshot_id="snapshot:dailymed-fetch",
+            operation="fetch",
+            request_identity="dailymed:11111111-1111-1111-1111-111111111111:3",
+            started_at_utc=datetime(2026, 8, 12, 1, 0, 0, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 1, 0, 2, tzinfo=UTC),
+            execution_status=ExecutionStatus.SUCCEEDED,
+            coverage_status=CoverageStatus.COMPLETE,
+            result_status=ResultStatus.MATCHES,
+            record_count=1,
+            pages_completed=1,
+            attempts_used=1,
+            truncated=False,
+            warning_codes=(),
+            observations=(observation,),
+            stable_spl_bytes=spl,
+            selected_setid="11111111-1111-1111-1111-111111111111",
+            selected_spl_version="3",
+            code_revision="a3fd66477046c9e026d7b2222e882cd94a84d535",
+        )
+        foreign = snapshots.store_dailymed_spl(
+            foreign_spl,
+            selected_setid=foreign_setid,
+            selected_spl_version="3",
+        )
+
+    stable = captured.manifest.members[-1]
+    forged_stable = stable.model_copy(
+        update={
+            "artifact_id": foreign.artifact_id,
+            "content_hash": foreign.artifact_id,
+            "relative_path": foreign.path.relative_to(snapshots.root).as_posix(),
+            "byte_size": foreign.byte_size,
+        }
+    )
+    forged_manifest = captured.manifest.model_copy(
+        update={"members": (*captured.manifest.members[:-1], forged_stable)}
+    )
+    with pytest.raises(SnapshotIntegrityError, match="exact selected label"):
+        replay_dailymed_snapshot(
+            forged_manifest.canonical_bytes(),
+            snapshots,
+            expected_manifest_id=forged_manifest.manifest_id,
+            expected_members=forged_manifest.members,
+        )
+
+
+def test_dailymed_member_path_and_completion_are_fail_closed() -> None:
+    digest = "sha256:" + "a" * 64
+    with pytest.raises(ValidationError, match="path must match"):
+        DailyMedManifestMember(
+            ordinal=0,
+            link_id="artifact-link:sha256:" + "b" * 64,
+            artifact_id=digest,
+            content_hash=digest,
+            artifact_kind="dailymed_spl_xml",
+            relative_path="dailymed/run-scoped/label.xml",
+            byte_size=1,
+            media_type="application/xml",
+            http_status=200,
+            body_complete=True,
+            termination_reason="complete_response",
+        )
+    with pytest.raises(ValidationError, match="nonempty and complete"):
+        DailyMedManifestMember(
+            ordinal=0,
+            link_id="artifact-link:sha256:" + "b" * 64,
+            artifact_id=digest,
+            content_hash=digest,
+            artifact_kind="dailymed_spl_xml",
+            relative_path="dailymed/sha256/" + "a" * 64 + ".xml",
+            byte_size=0,
+            media_type="application/xml",
+            http_status=200,
+            body_complete=True,
+            termination_reason="complete_response",
+        )
 
 
 def test_manifest_fixture_is_exact_canonical_utf8_lf() -> None:

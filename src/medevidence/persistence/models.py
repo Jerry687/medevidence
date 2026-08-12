@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
@@ -874,6 +876,1219 @@ sa.Index(
     registration_observation.c.run_id.asc().nulls_last(),
     registration_observation.c.attempt_id.asc().nulls_last(),
     registration_observation.c.observed_at_utc.desc(),
+)
+
+# M1B-DM-002 is additive: the inherited thirteen M1A tables above remain byte-stable.
+M1B_TABLE_ORDER = (
+    "m1b_artifacts",
+    "m1b_artifact_lineage",
+    "m1b_acquisitions",
+    "m1b_source_outcomes",
+    "m1b_snapshots",
+    "m1b_snapshot_artifacts",
+    "m1b_runs",
+    "m1b_run_sources",
+    "m1b_reports",
+    "m1b_report_sections",
+    "m1b_report_source_outcomes",
+    "m1b_dailymed_selection_decisions",
+    "m1b_dailymed_label_versions",
+    "m1b_dailymed_sections",
+    "m1b_dailymed_label_supersession",
+)
+
+
+def _m1b_fk(local: list[str], remote: list[str], name: str) -> sa.ForeignKeyConstraint:
+    return sa.ForeignKeyConstraint(
+        local,
+        [f"{SCHEMA}.{value}" for value in remote],
+        name=name,
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    )
+
+
+def _m1b_ck(name: str, sql: str) -> sa.CheckConstraint:
+    return sa.CheckConstraint(sql, name=name)
+
+
+m1b_artifacts = sa.Table(
+    "m1b_artifacts",
+    metadata,
+    sa.Column("artifact_id", sa.Text(), nullable=False),
+    sa.Column("artifact_kind", sa.Text(), nullable=False),
+    sa.Column("source_partition", sa.Text(), nullable=False),
+    sa.Column("content_hash", sa.Text(), nullable=False),
+    sa.Column("byte_size", sa.BigInteger(), nullable=False),
+    sa.Column("media_type", sa.Text(), nullable=False),
+    sa.Column("relative_storage_label", sa.Text(), nullable=False),
+    sa.Column("schema_version", sa.Text(), nullable=False),
+    sa.Column("created_at_utc", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("corpus_id", sa.Text(), nullable=True),
+    sa.Column("corpus_version", sa.Text(), nullable=True),
+    sa.Column("split", sa.Text(), nullable=True),
+    sa.PrimaryKeyConstraint("artifact_id", name="pk_m1b_artifacts"),
+    sa.UniqueConstraint(
+        "artifact_kind",
+        "source_partition",
+        "content_hash",
+        name="uq_m1b_artifacts_kind_partition_hash",
+    ),
+    _m1b_ck("ck_m1b_artifacts_byte_size_nonnegative", "byte_size >= 0"),
+    _m1b_ck(
+        "ck_m1b_artifacts_relative_label",
+        "char_length(relative_storage_label)>0 AND strpos(relative_storage_label,E'\\\\')=0 "
+        "AND strpos(relative_storage_label,':')=0 AND relative_storage_label !~ '[[:cntrl:]]' "
+        "AND left(relative_storage_label,1)<>'/' AND right(relative_storage_label,1)<>'/' "
+        "AND strpos(relative_storage_label,'//')=0 AND relative_storage_label !~ "
+        "'(^|/)(\\.|\\.\\.)(/|$)' AND relative_storage_label="
+        "array_to_string(string_to_array(relative_storage_label,'/'),'/')",
+    ),
+    _m1b_ck("ck_m1b_artifacts_hash_shape", "content_hash ~ '^sha256:[0-9a-f]{64}$'"),
+    sa.UniqueConstraint(
+        "artifact_id", "source_partition", name="uq_m1b_artifacts_id_source_partition"
+    ),
+    sa.UniqueConstraint(
+        "source_partition",
+        "corpus_id",
+        "corpus_version",
+        "artifact_id",
+        name="uq_artifacts_cadec_context",
+    ),
+    sa.UniqueConstraint(
+        "source_partition",
+        "corpus_id",
+        "corpus_version",
+        "split",
+        "artifact_id",
+        name="uq_artifacts_cadec_split_context",
+    ),
+    sa.UniqueConstraint("artifact_id", "content_hash", name="uq_m1b_artifacts_id_content"),
+    sa.UniqueConstraint(
+        "artifact_id",
+        "source_partition",
+        "corpus_id",
+        "corpus_version",
+        name="uq_m1b_artifacts_id_source_corpus",
+    ),
+    sa.UniqueConstraint(
+        "artifact_id",
+        "source_partition",
+        "corpus_id",
+        "corpus_version",
+        "split",
+        name="uq_m1b_artifacts_id_source_corpus_split",
+    ),
+    _m1b_ck(
+        "ck_m1b_artifacts_cadec_context",
+        "((source_partition='cadec' AND corpus_id IS NOT NULL AND corpus_version IS NOT NULL "
+        "AND ((artifact_kind IN ('corpus_asset','corpus_manifest') AND split IS NULL) OR "
+        "(artifact_kind NOT IN ('corpus_asset','corpus_manifest') AND split IS NOT NULL))) OR "
+        "(source_partition<>'cadec' AND corpus_id IS NULL AND corpus_version IS NULL AND split IS NULL))",
+    ),
+    sa.UniqueConstraint(
+        "artifact_id",
+        "source_partition",
+        "artifact_kind",
+        name="uq_m1b_artifacts_id_source_kind",
+    ),
+    sa.UniqueConstraint(
+        "artifact_id",
+        "source_partition",
+        "corpus_id",
+        "corpus_version",
+        "artifact_kind",
+        name="uq_m1b_artifacts_id_source_corpus_kind",
+    ),
+    sa.UniqueConstraint(
+        "artifact_id",
+        "source_partition",
+        "corpus_id",
+        "corpus_version",
+        "split",
+        "artifact_kind",
+        name="uq_m1b_artifacts_id_source_corpus_split_kind",
+    ),
+    sa.UniqueConstraint(
+        "artifact_id",
+        "source_partition",
+        "content_hash",
+        name="uq_m1b_artifacts_id_source_content",
+    ),
+    sa.UniqueConstraint(
+        "artifact_id",
+        "source_partition",
+        "artifact_kind",
+        "content_hash",
+        name="uq_m1b_artifacts_id_source_kind_content",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_artifact_lineage = sa.Table(
+    "m1b_artifact_lineage",
+    metadata,
+    *[
+        sa.Column(name, sa.Integer() if name == "lineage_ordinal" else sa.Text(), nullable=False)
+        for name in (
+            "parent_artifact_id",
+            "child_artifact_id",
+            "lineage_type",
+            "lineage_ordinal",
+            "schema_version",
+            "parent_source",
+            "child_source",
+        )
+    ],
+    *[
+        sa.Column(name, sa.Text(), nullable=True)
+        for name in (
+            "parent_corpus_id",
+            "parent_corpus_version",
+            "parent_split",
+            "child_corpus_id",
+            "child_corpus_version",
+            "child_split",
+        )
+    ],
+    sa.Column("parent_artifact_kind", sa.Text(), nullable=False),
+    sa.Column("child_artifact_kind", sa.Text(), nullable=False),
+    sa.PrimaryKeyConstraint(
+        "parent_artifact_id",
+        "child_artifact_id",
+        "lineage_type",
+        name="pk_m1b_artifact_lineage",
+    ),
+    sa.UniqueConstraint(
+        "parent_artifact_id",
+        "lineage_type",
+        "lineage_ordinal",
+        name="uq_m1b_lineage_parent_type_ordinal",
+    ),
+    _m1b_ck("ck_m1b_lineage_ordinal_nonnegative", "lineage_ordinal >= 0"),
+    _m1b_ck("ck_m1b_lineage_no_self_edge", "parent_artifact_id <> child_artifact_id"),
+    *[
+        _m1b_fk(local, remote, name)
+        for local, remote, name in (
+            (
+                ["parent_artifact_id", "parent_source", "parent_artifact_kind"],
+                [
+                    "m1b_artifacts.artifact_id",
+                    "m1b_artifacts.source_partition",
+                    "m1b_artifacts.artifact_kind",
+                ],
+                "fk_m1b_lineage_parent_source_kind",
+            ),
+            (
+                ["child_artifact_id", "child_source", "child_artifact_kind"],
+                [
+                    "m1b_artifacts.artifact_id",
+                    "m1b_artifacts.source_partition",
+                    "m1b_artifacts.artifact_kind",
+                ],
+                "fk_m1b_lineage_child_source_kind",
+            ),
+            (
+                [
+                    "parent_artifact_id",
+                    "parent_source",
+                    "parent_corpus_id",
+                    "parent_corpus_version",
+                    "parent_artifact_kind",
+                ],
+                [
+                    "m1b_artifacts.artifact_id",
+                    "m1b_artifacts.source_partition",
+                    "m1b_artifacts.corpus_id",
+                    "m1b_artifacts.corpus_version",
+                    "m1b_artifacts.artifact_kind",
+                ],
+                "fk_m1b_lineage_parent_corpus_kind",
+            ),
+            (
+                [
+                    "child_artifact_id",
+                    "child_source",
+                    "child_corpus_id",
+                    "child_corpus_version",
+                    "child_artifact_kind",
+                ],
+                [
+                    "m1b_artifacts.artifact_id",
+                    "m1b_artifacts.source_partition",
+                    "m1b_artifacts.corpus_id",
+                    "m1b_artifacts.corpus_version",
+                    "m1b_artifacts.artifact_kind",
+                ],
+                "fk_m1b_lineage_child_corpus_kind",
+            ),
+            (
+                [
+                    "parent_artifact_id",
+                    "parent_source",
+                    "parent_corpus_id",
+                    "parent_corpus_version",
+                    "parent_split",
+                    "parent_artifact_kind",
+                ],
+                [
+                    "m1b_artifacts.artifact_id",
+                    "m1b_artifacts.source_partition",
+                    "m1b_artifacts.corpus_id",
+                    "m1b_artifacts.corpus_version",
+                    "m1b_artifacts.split",
+                    "m1b_artifacts.artifact_kind",
+                ],
+                "fk_m1b_lineage_parent_split_kind",
+            ),
+            (
+                [
+                    "child_artifact_id",
+                    "child_source",
+                    "child_corpus_id",
+                    "child_corpus_version",
+                    "child_split",
+                    "child_artifact_kind",
+                ],
+                [
+                    "m1b_artifacts.artifact_id",
+                    "m1b_artifacts.source_partition",
+                    "m1b_artifacts.corpus_id",
+                    "m1b_artifacts.corpus_version",
+                    "m1b_artifacts.split",
+                    "m1b_artifacts.artifact_kind",
+                ],
+                "fk_m1b_lineage_child_split_kind",
+            ),
+        )
+    ],
+    _m1b_ck(
+        "ck_m1b_lineage_context",
+        "(((parent_source='cadec' AND parent_corpus_id IS NOT NULL AND parent_corpus_version IS NOT NULL AND ((parent_artifact_kind IN ('corpus_asset','corpus_manifest') AND parent_split IS NULL) OR (parent_artifact_kind NOT IN ('corpus_asset','corpus_manifest') AND parent_split IS NOT NULL))) OR (parent_source<>'cadec' AND parent_corpus_id IS NULL AND parent_corpus_version IS NULL AND parent_split IS NULL)) AND ((child_source='cadec' AND child_corpus_id IS NOT NULL AND child_corpus_version IS NOT NULL AND ((child_artifact_kind IN ('corpus_asset','corpus_manifest') AND child_split IS NULL) OR (child_artifact_kind NOT IN ('corpus_asset','corpus_manifest') AND child_split IS NOT NULL))) OR (child_source<>'cadec' AND child_corpus_id IS NULL AND child_corpus_version IS NULL AND child_split IS NULL)))",
+    ),
+    schema=SCHEMA,
+)
+
+
+def _column(name: str, type_: sa.types.TypeEngine[Any], nullable: bool = False) -> sa.Column[Any]:
+    return sa.Column(name, type_, nullable=nullable)
+
+
+m1b_runs = sa.Table(
+    "m1b_runs",
+    metadata,
+    _column("run_id", sa.Text()),
+    _column("request_id", sa.Text()),
+    _column("scope_id", sa.Text()),
+    _column("status", sa.Text()),
+    _column("created_at_utc", sa.DateTime(timezone=True)),
+    _column("completed_at_utc", sa.DateTime(timezone=True), True),
+    _column("schema_version", sa.Text()),
+    sa.PrimaryKeyConstraint("run_id", name="pk_m1b_runs"),
+    sa.UniqueConstraint("request_id", name="uq_m1b_runs_request"),
+    _m1b_ck("ck_m1b_runs_status", "status IN ('completed','degraded','failed')"),
+    _m1b_ck(
+        "ck_m1b_runs_timestamp_order",
+        "completed_at_utc IS NULL OR completed_at_utc >= created_at_utc",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_acquisitions = sa.Table(
+    "m1b_acquisitions",
+    metadata,
+    _column("acquisition_intent_id", sa.Text()),
+    _column("acquisition_ordinal", sa.Integer()),
+    _column("attempt_id", sa.Text()),
+    _column("run_id", sa.Text()),
+    _column("acquisition_id", sa.Text()),
+    _column("source", sa.Text()),
+    _column("operation", sa.Text()),
+    _column("request_identity", sa.Text()),
+    _column("query_id", sa.Text()),
+    _column("execution_profile_id", sa.Text()),
+    _column("started_at_utc", sa.DateTime(timezone=True)),
+    _column("completed_at_utc", sa.DateTime(timezone=True), True),
+    _column("schema_version", sa.Text()),
+    sa.PrimaryKeyConstraint("acquisition_id", name="pk_m1b_acquisitions"),
+    _m1b_ck("ck_m1b_acquisitions_source", "source IN ('pubmed','dailymed','faers','cadec')"),
+    _m1b_ck("ck_m1b_acquisitions_operation", "operation IN ('search','fetch')"),
+    _m1b_ck(
+        "ck_m1b_acquisitions_faers_profile",
+        "source<>'faers' OR execution_profile_id='FAERS_M1B_CONSTRAINED_V1'",
+    ),
+    _m1b_ck(
+        "ck_m1b_acquisitions_timestamp_order",
+        "completed_at_utc IS NULL OR completed_at_utc >= started_at_utc",
+    ),
+    _m1b_ck(
+        "ck_m1b_acquisitions_ordinal",
+        "acquisition_ordinal BETWEEN 0 AND 100 AND (source<>'dailymed' OR acquisition_ordinal<=7)",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "attempt_id",
+        "acquisition_id",
+        "acquisition_ordinal",
+        "acquisition_intent_id",
+        "query_id",
+        name="uq_m1b_acquisitions_binding",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "attempt_id",
+        "acquisition_id",
+        "acquisition_ordinal",
+        "acquisition_intent_id",
+        "operation",
+        "query_id",
+        name="uq_m1b_acquisitions_binding_operation",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "acquisition_ordinal",
+        "acquisition_intent_id",
+        "operation",
+        "query_id",
+        name="uq_m1b_acquisitions_exact_operation",
+    ),
+    sa.UniqueConstraint(
+        "run_id", "source", "acquisition_ordinal", name="uq_m1b_acquisitions_run_source_ordinal"
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_intent_id",
+        "operation",
+        "query_id",
+        name="uq_m1b_acquisitions_intent_operation_query",
+    ),
+    sa.UniqueConstraint(
+        "run_id", "source", "acquisition_id", name="uq_m1b_acquisitions_run_source_id"
+    ),
+    _m1b_fk(["run_id"], ["m1b_runs.run_id"], "fk_m1b_acquisitions_run"),
+    schema=SCHEMA,
+)
+
+m1b_snapshots = sa.Table(
+    "m1b_snapshots",
+    metadata,
+    *[
+        _column(name, sa.Integer() if name == "acquisition_ordinal" else sa.Text())
+        for name in (
+            "query_id",
+            "acquisition_intent_id",
+            "acquisition_ordinal",
+            "attempt_id",
+            "run_id",
+            "snapshot_id",
+            "acquisition_id",
+            "source",
+            "manifest_artifact_id",
+        )
+    ],
+    _column("retrieved_at_utc", sa.DateTime(timezone=True)),
+    _column("connector_version", sa.Text()),
+    _column("schema_version", sa.Text()),
+    sa.PrimaryKeyConstraint("snapshot_id", name="pk_m1b_snapshots"),
+    sa.UniqueConstraint("acquisition_id", name="uq_m1b_snapshots_acquisition"),
+    _m1b_ck("ck_m1b_snapshots_source", "source IN ('pubmed','dailymed','faers','cadec')"),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "query_id",
+        "snapshot_id",
+        name="uq_m1b_snapshots_binding",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "snapshot_id",
+        name="uq_m1b_snapshots_run_source_acquisition_snapshot",
+    ),
+    _m1b_fk(
+        [
+            "run_id",
+            "source",
+            "attempt_id",
+            "acquisition_id",
+            "acquisition_ordinal",
+            "acquisition_intent_id",
+            "query_id",
+        ],
+        [
+            "m1b_acquisitions.run_id",
+            "m1b_acquisitions.source",
+            "m1b_acquisitions.attempt_id",
+            "m1b_acquisitions.acquisition_id",
+            "m1b_acquisitions.acquisition_ordinal",
+            "m1b_acquisitions.acquisition_intent_id",
+            "m1b_acquisitions.query_id",
+        ],
+        "fk_m1b_snapshots_acquisition_binding",
+    ),
+    _m1b_fk(
+        ["manifest_artifact_id", "source"],
+        ["m1b_artifacts.artifact_id", "m1b_artifacts.source_partition"],
+        "fk_m1b_snapshots_manifest_artifact_source",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "query_id",
+        "snapshot_id",
+        "manifest_artifact_id",
+        name="uq_m1b_snapshots_manifest_binding",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_source_outcomes = sa.Table(
+    "m1b_source_outcomes",
+    metadata,
+    *[
+        _column(name, sa.Text())
+        for name in (
+            "source_outcome_id",
+            "snapshot_id",
+            "run_id",
+            "query_id",
+            "acquisition_id",
+            "source",
+            "acquisition_intent_id",
+        )
+    ],
+    _column("acquisition_ordinal", sa.Integer()),
+    *[
+        _column(name, sa.Text())
+        for name in ("operation", "execution_status", "coverage_status", "result_status")
+    ],
+    *[
+        _column(name, sa.BigInteger() if name == "max_payload_bytes" else sa.Integer())
+        for name in (
+            "max_query_characters",
+            "max_pages",
+            "max_records",
+            "max_payload_bytes",
+            "max_total_seconds",
+            "valid_result_count",
+            "pages_completed",
+        )
+    ],
+    _column("truncated", sa.Boolean()),
+    _column("failure_id", sa.Text(), True),
+    _column("warning_codes", postgresql.JSONB()),
+    _column("schema_version", sa.Text()),
+    sa.PrimaryKeyConstraint("source_outcome_id", name="pk_m1b_source_outcomes"),
+    _m1b_ck("ck_outcome_source", "source IN ('pubmed','dailymed','faers','cadec')"),
+    _m1b_ck("ck_outcome_operation", "operation IN ('search','fetch')"),
+    _m1b_ck(
+        "ck_outcome_seven",
+        "(execution_status,coverage_status,result_status) IN (('succeeded','complete','matches'),('succeeded','complete','no_match'),('succeeded','partial','matches'),('succeeded','partial','indeterminate'),('failed','partial','matches'),('failed','partial','indeterminate'),('failed','unavailable','indeterminate'))",
+    ),
+    _m1b_ck(
+        "ck_outcome_result",
+        "(result_status='matches' AND valid_result_count>=1) OR (result_status IN ('no_match','indeterminate') AND valid_result_count=0)",
+    ),
+    _m1b_ck("ck_outcome_complete", "coverage_status<>'complete' OR truncated=false"),
+    _m1b_ck("ck_outcome_failure", "(execution_status='failed')=(failure_id IS NOT NULL)"),
+    _m1b_ck(
+        "ck_outcome_unavailable",
+        "coverage_status<>'unavailable' OR (pages_completed=0 AND valid_result_count=0)",
+    ),
+    _m1b_ck(
+        "ck_outcome_warning",
+        "jsonb_typeof(warning_codes)='array' AND (coverage_status NOT IN ('partial','unavailable') OR jsonb_array_length(warning_codes)>0)",
+    ),
+    _m1b_ck(
+        "ck_outcome_bounds",
+        "max_query_characters BETWEEN 1 AND 512 AND max_pages BETWEEN 1 AND 5 AND max_records BETWEEN 1 AND 100 AND max_payload_bytes BETWEEN 1 AND 5242880 AND max_total_seconds BETWEEN 1 AND 60 AND pages_completed BETWEEN 0 AND max_pages AND valid_result_count BETWEEN 0 AND max_records",
+    ),
+    _m1b_ck(
+        "ck_outcome_faers_profile",
+        "source<>'faers' OR (max_query_characters=512 AND max_pages=5 AND max_records=100 AND max_payload_bytes=5242880 AND max_total_seconds=30)",
+    ),
+    sa.UniqueConstraint("run_id", "source", "acquisition_ordinal", name="uq_outcome_ordinal"),
+    sa.UniqueConstraint(
+        "run_id", "source", "acquisition_ordinal", "source_outcome_id", name="uq_outcome_ordinal_id"
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_intent_id",
+        "operation",
+        "query_id",
+        name="uq_outcome_identity",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_intent_id",
+        "operation",
+        "query_id",
+        "source_outcome_id",
+        name="uq_outcome_identity_id",
+    ),
+    sa.UniqueConstraint(
+        "run_id", "source", "acquisition_id", "query_id", name="uq_m1b_source_outcomes_binding"
+    ),
+    _m1b_fk(
+        [
+            "run_id",
+            "source",
+            "acquisition_id",
+            "acquisition_ordinal",
+            "acquisition_intent_id",
+            "operation",
+            "query_id",
+        ],
+        [
+            "m1b_acquisitions.run_id",
+            "m1b_acquisitions.source",
+            "m1b_acquisitions.acquisition_id",
+            "m1b_acquisitions.acquisition_ordinal",
+            "m1b_acquisitions.acquisition_intent_id",
+            "m1b_acquisitions.operation",
+            "m1b_acquisitions.query_id",
+        ],
+        "fk_outcome_acquisition",
+    ),
+    _m1b_fk(
+        ["run_id", "source", "acquisition_id", "query_id", "snapshot_id"],
+        [
+            "m1b_snapshots.run_id",
+            "m1b_snapshots.source",
+            "m1b_snapshots.acquisition_id",
+            "m1b_snapshots.query_id",
+            "m1b_snapshots.snapshot_id",
+        ],
+        "fk_outcome_snapshot",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_snapshot_artifacts = sa.Table(
+    "m1b_snapshot_artifacts",
+    metadata,
+    *[_column(name, sa.Text()) for name in ("acquisition_id", "source", "run_id", "snapshot_id")],
+    _column("ordinal", sa.Integer()),
+    *[_column(name, sa.Text()) for name in ("link_id", "artifact_id", "content_hash")],
+    _column("body_complete", sa.Boolean()),
+    _column("termination_reason", sa.Text()),
+    _column("http_status", sa.Integer(), True),
+    _column("observed_at_utc", sa.DateTime(timezone=True)),
+    *[_column(name, sa.Text(), True) for name in ("corpus_id", "corpus_version", "split")],
+    _column("artifact_kind", sa.Text()),
+    sa.PrimaryKeyConstraint(
+        "run_id", "source", "acquisition_id", "snapshot_id", "ordinal", name="pk_snapshot_member"
+    ),
+    _m1b_fk(
+        ["run_id", "source", "acquisition_id", "snapshot_id"],
+        [
+            "m1b_snapshots.run_id",
+            "m1b_snapshots.source",
+            "m1b_snapshots.acquisition_id",
+            "m1b_snapshots.snapshot_id",
+        ],
+        "fk_member_snapshot",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "snapshot_id",
+        "artifact_id",
+        name="uq_m1b_snapshot_artifacts_membership",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "snapshot_id",
+        "ordinal",
+        "link_id",
+        "artifact_id",
+        "content_hash",
+        "body_complete",
+        "termination_reason",
+        name="uq_member_exact",
+    ),
+    _m1b_ck("ck_member_source", "source IN ('pubmed','dailymed','faers','cadec')"),
+    _m1b_ck("ck_member_ordinal", "ordinal>=0"),
+    _m1b_ck("ck_member_hash", "content_hash ~ '^sha256:[0-9a-f]{64}$'"),
+    _m1b_ck(
+        "ck_member_termination",
+        "termination_reason IN ('complete_response','payload_limit','stream_error','deadline_exceeded')",
+    ),
+    _m1b_ck("ck_member_completion", "body_complete=(termination_reason='complete_response')"),
+    _m1b_ck("ck_member_http_status", "http_status IS NULL OR http_status BETWEEN 100 AND 599"),
+    _m1b_ck(
+        "ck_member_context",
+        "(source='cadec' AND corpus_id IS NOT NULL AND corpus_version IS NOT NULL AND ((artifact_kind IN ('corpus_asset','corpus_manifest') AND split IS NULL) OR (artifact_kind NOT IN ('corpus_asset','corpus_manifest') AND split IS NOT NULL))) OR (source<>'cadec' AND corpus_id IS NULL AND corpus_version IS NULL AND split IS NULL)",
+    ),
+    _m1b_fk(
+        ["artifact_id", "source", "artifact_kind"],
+        [
+            "m1b_artifacts.artifact_id",
+            "m1b_artifacts.source_partition",
+            "m1b_artifacts.artifact_kind",
+        ],
+        "fk_member_kind",
+    ),
+    _m1b_fk(
+        ["artifact_id", "source", "content_hash"],
+        [
+            "m1b_artifacts.artifact_id",
+            "m1b_artifacts.source_partition",
+            "m1b_artifacts.content_hash",
+        ],
+        "fk_member_content",
+    ),
+    _m1b_fk(
+        ["artifact_id", "source", "corpus_id", "corpus_version", "artifact_kind"],
+        [
+            "m1b_artifacts.artifact_id",
+            "m1b_artifacts.source_partition",
+            "m1b_artifacts.corpus_id",
+            "m1b_artifacts.corpus_version",
+            "m1b_artifacts.artifact_kind",
+        ],
+        "fk_member_corpus",
+    ),
+    _m1b_fk(
+        ["artifact_id", "source", "corpus_id", "corpus_version", "split", "artifact_kind"],
+        [
+            "m1b_artifacts.artifact_id",
+            "m1b_artifacts.source_partition",
+            "m1b_artifacts.corpus_id",
+            "m1b_artifacts.corpus_version",
+            "m1b_artifacts.split",
+            "m1b_artifacts.artifact_kind",
+        ],
+        "fk_member_split",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_run_sources = sa.Table(
+    "m1b_run_sources",
+    metadata,
+    _column("run_id", sa.Text()),
+    _column("source", sa.Text()),
+    _column("planning_status", sa.Text()),
+    _column("reason_code", sa.Text(), True),
+    _column("reason", sa.Text(), True),
+    _column("warning_codes", postgresql.JSONB()),
+    sa.PrimaryKeyConstraint("run_id", "source", name="pk_m1b_run_sources"),
+    _m1b_fk(["run_id"], ["m1b_runs.run_id"], "fk_m1b_run_sources_run"),
+    _m1b_ck("ck_run_source", "source IN ('pubmed','dailymed','faers','cadec')"),
+    _m1b_ck(
+        "ck_run_plan",
+        "(planning_status='selected' AND reason_code IS NULL AND reason IS NULL) OR (planning_status='skipped_by_policy' AND reason_code IS NOT NULL AND reason IS NOT NULL)",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_reports = sa.Table(
+    "m1b_reports",
+    metadata,
+    *[_column(name, sa.Text()) for name in ("report_id", "run_id", "report_artifact_id", "status")],
+    _column("exportable", sa.Boolean()),
+    _column("created_at_utc", sa.DateTime(timezone=True)),
+    _column("schema_version", sa.Text()),
+    _column("payload_hash", sa.Text()),
+    sa.PrimaryKeyConstraint("report_id", name="pk_m1b_reports"),
+    _m1b_fk(["run_id"], ["m1b_runs.run_id"], "fk_m1b_reports_run"),
+    sa.UniqueConstraint("run_id", name="uq_m1b_reports_run"),
+    sa.UniqueConstraint("report_artifact_id", name="uq_m1b_reports_artifact"),
+    _m1b_ck("ck_m1b_reports_draft_nonexportable", "status = 'draft' AND exportable = false"),
+    _m1b_ck("ck_m1b_reports_hash_shape", "payload_hash ~ '^sha256:[0-9a-f]{64}$'"),
+    sa.UniqueConstraint("report_id", "run_id", name="uq_m1b_reports_id_run"),
+    _m1b_fk(
+        ["report_artifact_id", "payload_hash"],
+        ["m1b_artifacts.artifact_id", "m1b_artifacts.content_hash"],
+        "fk_m1b_reports_artifact",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_report_sections = sa.Table(
+    "m1b_report_sections",
+    metadata,
+    _column("run_id", sa.Text()),
+    _column("report_id", sa.Text()),
+    _column("ordinal", sa.Integer()),
+    *[_column(name, sa.Text()) for name in ("source", "section_kind", "locator_schema_version")],
+    _column("payload_json", postgresql.JSONB()),
+    _column("payload_hash", sa.Text()),
+    sa.PrimaryKeyConstraint("report_id", "ordinal", name="pk_m1b_report_sections"),
+    sa.UniqueConstraint(
+        "report_id",
+        "source",
+        "section_kind",
+        "ordinal",
+        name="uq_m1b_report_sections_source_kind_ordinal",
+    ),
+    _m1b_ck(
+        "ck_report_section",
+        "(source,section_kind) IN (('pubmed','pubmed_literature'),('dailymed','dailymed_label'),('faers','faers_aggregate'),('cadec','cadec_auxiliary'))",
+    ),
+    _m1b_ck("ck_report_section_ordinal", "ordinal>=0"),
+    _m1b_ck("ck_report_section_payload", "jsonb_typeof(payload_json)='object'"),
+    _m1b_ck("ck_report_section_hash", "payload_hash ~ '^sha256:[0-9a-f]{64}$'"),
+    _m1b_fk(
+        ["report_id", "run_id"],
+        ["m1b_reports.report_id", "m1b_reports.run_id"],
+        "fk_report_section_report",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_report_source_outcomes = sa.Table(
+    "m1b_report_source_outcomes",
+    metadata,
+    _column("report_id", sa.Text()),
+    _column("run_id", sa.Text()),
+    _column("source", sa.Text()),
+    _column("acquisition_ordinal", sa.Integer()),
+    _column("source_outcome_id", sa.Text()),
+    sa.PrimaryKeyConstraint(
+        "report_id", "run_id", "source", "acquisition_ordinal", name="pk_report_outcomes"
+    ),
+    sa.UniqueConstraint(
+        "report_id", "run_id", "source", "source_outcome_id", name="uq_report_outcome_id"
+    ),
+    _m1b_fk(
+        ["report_id", "run_id"],
+        ["m1b_reports.report_id", "m1b_reports.run_id"],
+        "fk_report_outcome_report",
+    ),
+    _m1b_fk(
+        ["run_id", "source"],
+        ["m1b_run_sources.run_id", "m1b_run_sources.source"],
+        "fk_report_outcome_run_source",
+    ),
+    _m1b_fk(
+        ["run_id", "source", "acquisition_ordinal", "source_outcome_id"],
+        [
+            "m1b_source_outcomes.run_id",
+            "m1b_source_outcomes.source",
+            "m1b_source_outcomes.acquisition_ordinal",
+            "m1b_source_outcomes.source_outcome_id",
+        ],
+        "fk_report_outcome_outcome",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_dailymed_label_versions = sa.Table(
+    "m1b_dailymed_label_versions",
+    metadata,
+    _column("source", sa.Text()),
+    _column("setid", postgresql.UUID()),
+    _column("label_version_id", sa.Text()),
+    _column("spl_version", sa.Integer()),
+    _column("marketing_state", sa.Text()),
+    _column("effective_date", sa.Date(), True),
+    _column("published_date", sa.Date(), True),
+    _column("content_hash", sa.Text()),
+    _column("spl_artifact_id", sa.Text()),
+    _column("schema_version", sa.Text()),
+    sa.PrimaryKeyConstraint("source", "setid", "label_version_id", name="pk_dm_versions"),
+    sa.UniqueConstraint("source", "setid", "spl_version", name="uq_dm_versions_spl"),
+    sa.UniqueConstraint(
+        "source",
+        "setid",
+        "label_version_id",
+        "spl_version",
+        "spl_artifact_id",
+        name="uq_dm_versions_section",
+    ),
+    _m1b_ck("ck_dm_version_source", "source='dailymed'"),
+    _m1b_ck("ck_dm_version_positive", "spl_version>0"),
+    _m1b_ck("ck_dm_version_hash", "content_hash ~ '^sha256:[0-9a-f]{64}$'"),
+    _m1b_ck("ck_dm_version_marketing_state", "marketing_state IN ('active','archived','unknown')"),
+    _m1b_fk(
+        ["spl_artifact_id", "source", "content_hash"],
+        [
+            "m1b_artifacts.artifact_id",
+            "m1b_artifacts.source_partition",
+            "m1b_artifacts.content_hash",
+        ],
+        "fk_dm_version_artifact",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_dailymed_sections = sa.Table(
+    "m1b_dailymed_sections",
+    metadata,
+    _column("source", sa.Text()),
+    _column("setid", postgresql.UUID()),
+    _column("label_version_id", sa.Text()),
+    _column("spl_version", sa.Integer()),
+    _column("section_ordinal", sa.Integer()),
+    _column("section_id", sa.Text()),
+    _column("section_code", sa.Text()),
+    _column("title", sa.Text()),
+    _column("parent_section_id", sa.Text(), True),
+    _column("xml_path", sa.Text()),
+    _column("text_start", sa.Integer()),
+    _column("text_end", sa.Integer()),
+    _column("text_hash", sa.Text()),
+    _column("spl_artifact_id", sa.Text()),
+    _column("schema_version", sa.Text()),
+    sa.PrimaryKeyConstraint(
+        "source",
+        "setid",
+        "label_version_id",
+        "spl_version",
+        "section_ordinal",
+        name="pk_dm_sections",
+    ),
+    _m1b_ck("ck_dm_section_source", "source='dailymed'"),
+    _m1b_ck("ck_dm_section_ordinal", "section_ordinal>=0"),
+    _m1b_ck("ck_dm_section_version", "spl_version>0"),
+    _m1b_ck("ck_dm_section_offsets", "text_start>=0 AND text_end>text_start"),
+    _m1b_ck("ck_dm_section_hash", "text_hash ~ '^sha256:[0-9a-f]{64}$'"),
+    _m1b_fk(
+        ["source", "setid", "label_version_id", "spl_version", "spl_artifact_id"],
+        [
+            "m1b_dailymed_label_versions.source",
+            "m1b_dailymed_label_versions.setid",
+            "m1b_dailymed_label_versions.label_version_id",
+            "m1b_dailymed_label_versions.spl_version",
+            "m1b_dailymed_label_versions.spl_artifact_id",
+        ],
+        "fk_dm_section_version",
+    ),
+    sa.UniqueConstraint(
+        "source",
+        "setid",
+        "label_version_id",
+        "spl_version",
+        "section_id",
+        name="uq_dm_section_parent",
+    ),
+    _m1b_fk(
+        ["source", "setid", "label_version_id", "spl_version", "parent_section_id"],
+        [
+            "m1b_dailymed_sections.source",
+            "m1b_dailymed_sections.setid",
+            "m1b_dailymed_sections.label_version_id",
+            "m1b_dailymed_sections.spl_version",
+            "m1b_dailymed_sections.section_id",
+        ],
+        "fk_dm_section_parent",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_dailymed_selection_decisions = sa.Table(
+    "m1b_dailymed_selection_decisions",
+    metadata,
+    *[
+        _column(name, sa.Text())
+        for name in ("decision_id", "run_id", "source", "attempt_id", "acquisition_id")
+    ],
+    _column("acquisition_ordinal", sa.Integer()),
+    *[
+        _column(name, sa.Text())
+        for name in (
+            "acquisition_intent_id",
+            "operation",
+            "query_id",
+            "candidate_set_snapshot_id",
+            "status",
+            "selection_basis",
+        )
+    ],
+    _column("source_execution_started", sa.Boolean()),
+    _column("policy_version", sa.Text()),
+    _column("selected_candidate_id", sa.Text(), True),
+    _column("selected_setid", postgresql.UUID(), True),
+    _column("selected_spl_version", sa.Integer(), True),
+    *[
+        _column(name, postgresql.JSONB())
+        for name in (
+            "candidate_ids",
+            "candidate_bindings",
+            "meaningful_dimensions",
+            "warning_ids",
+            "warning_codes",
+        )
+    ],
+    _column("decided_at_utc", sa.DateTime(timezone=True)),
+    *[
+        _column(name, sa.Text())
+        for name in (
+            "source_outcome_id",
+            "source_outcome_query_id",
+            "schema_version",
+            "candidate_set_id",
+        )
+    ],
+    _column("candidate_count", sa.Integer()),
+    *[
+        _column(name, sa.Text())
+        for name in (
+            "discovery_manifest_id",
+            "discovery_manifest_artifact_kind",
+            "discovery_manifest_content_hash",
+        )
+    ],
+    _column("selected_member_ordinal", sa.Integer(), True),
+    *[
+        _column(name, sa.Text(), True)
+        for name in ("selected_link_id", "selected_raw_artifact_id", "selected_raw_content_hash")
+    ],
+    _column("selected_body_complete", sa.Boolean(), True),
+    _column("selected_termination_reason", sa.Text(), True),
+    _column("selected_candidate_ordinal", sa.Integer(), True),
+    sa.PrimaryKeyConstraint("decision_id", name="pk_dm_decision"),
+    _m1b_ck("ck_dm_decision_source", "source='dailymed' AND operation='search'"),
+    _m1b_fk(
+        [
+            "run_id",
+            "source",
+            "attempt_id",
+            "acquisition_id",
+            "acquisition_ordinal",
+            "acquisition_intent_id",
+            "operation",
+            "query_id",
+        ],
+        [
+            "m1b_acquisitions.run_id",
+            "m1b_acquisitions.source",
+            "m1b_acquisitions.attempt_id",
+            "m1b_acquisitions.acquisition_id",
+            "m1b_acquisitions.acquisition_ordinal",
+            "m1b_acquisitions.acquisition_intent_id",
+            "m1b_acquisitions.operation",
+            "m1b_acquisitions.query_id",
+        ],
+        "fk_dm_decision_acq",
+    ),
+    _m1b_fk(
+        ["run_id", "source", "acquisition_id", "query_id", "candidate_set_snapshot_id"],
+        [
+            "m1b_snapshots.run_id",
+            "m1b_snapshots.source",
+            "m1b_snapshots.acquisition_id",
+            "m1b_snapshots.query_id",
+            "m1b_snapshots.snapshot_id",
+        ],
+        "fk_dm_decision_snapshot",
+    ),
+    _m1b_fk(
+        [
+            "run_id",
+            "source",
+            "acquisition_intent_id",
+            "operation",
+            "source_outcome_query_id",
+            "source_outcome_id",
+        ],
+        [
+            "m1b_source_outcomes.run_id",
+            "m1b_source_outcomes.source",
+            "m1b_source_outcomes.acquisition_intent_id",
+            "m1b_source_outcomes.operation",
+            "m1b_source_outcomes.query_id",
+            "m1b_source_outcomes.source_outcome_id",
+        ],
+        "fk_dm_decision_outcome",
+    ),
+    _m1b_ck("ck_dm_decision_status", "status IN ('selected','review_required','no_candidate')"),
+    _m1b_ck(
+        "ck_dm_decision_execution",
+        "selection_basis='executed_discovery' AND source_execution_started=true AND source_outcome_query_id=query_id",
+    ),
+    _m1b_ck(
+        "ck_dm_decision_json_arrays",
+        "jsonb_typeof(candidate_ids)='array' AND jsonb_typeof(candidate_bindings)='array' AND jsonb_typeof(meaningful_dimensions)='array' AND jsonb_typeof(warning_ids)='array' AND jsonb_typeof(warning_codes)='array'",
+    ),
+    _m1b_ck(
+        "ck_dm_decision_count",
+        "candidate_count>=0 AND jsonb_array_length(candidate_ids)=candidate_count AND jsonb_array_length(candidate_bindings)=candidate_count",
+    ),
+    _m1b_ck(
+        "ck_dm_decision_status_shape",
+        "(status='selected' AND candidate_count>=1 AND selected_candidate_id IS NOT NULL AND selected_setid IS NOT NULL AND selected_spl_version IS NOT NULL AND selected_member_ordinal IS NOT NULL AND selected_link_id IS NOT NULL AND selected_raw_artifact_id IS NOT NULL AND selected_raw_content_hash IS NOT NULL AND selected_body_complete=true AND selected_termination_reason='complete_response' AND selected_candidate_ordinal IS NOT NULL) OR (status='review_required' AND candidate_count>=1 AND selected_candidate_id IS NULL AND selected_setid IS NULL AND selected_spl_version IS NULL AND selected_member_ordinal IS NULL AND selected_link_id IS NULL AND selected_raw_artifact_id IS NULL AND selected_raw_content_hash IS NULL AND selected_body_complete IS NULL AND selected_termination_reason IS NULL AND selected_candidate_ordinal IS NULL) OR (status='no_candidate' AND candidate_count=0 AND jsonb_array_length(candidate_ids)=0 AND jsonb_array_length(candidate_bindings)=0 AND jsonb_array_length(meaningful_dimensions)=0 AND selected_candidate_id IS NULL AND selected_setid IS NULL AND selected_spl_version IS NULL AND selected_member_ordinal IS NULL AND selected_link_id IS NULL AND selected_raw_artifact_id IS NULL AND selected_raw_content_hash IS NULL AND selected_body_complete IS NULL AND selected_termination_reason IS NULL AND selected_candidate_ordinal IS NULL AND warning_codes='[\"no_candidate\"]'::jsonb)",
+    ),
+    _m1b_ck("ck_dm_manifest", "discovery_manifest_artifact_kind='dailymed_discovery_manifest'"),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "candidate_set_snapshot_id",
+        "decision_id",
+        "source_outcome_id",
+        "selected_candidate_id",
+        "selected_setid",
+        "selected_spl_version",
+        name="uq_dm_decision_binding",
+    ),
+    _m1b_fk(
+        [
+            "run_id",
+            "source",
+            "acquisition_id",
+            "query_id",
+            "candidate_set_snapshot_id",
+            "discovery_manifest_id",
+        ],
+        [
+            "m1b_snapshots.run_id",
+            "m1b_snapshots.source",
+            "m1b_snapshots.acquisition_id",
+            "m1b_snapshots.query_id",
+            "m1b_snapshots.snapshot_id",
+            "m1b_snapshots.manifest_artifact_id",
+        ],
+        "fk_dm_manifest_snapshot",
+    ),
+    _m1b_fk(
+        [
+            "discovery_manifest_id",
+            "source",
+            "discovery_manifest_artifact_kind",
+            "discovery_manifest_content_hash",
+        ],
+        [
+            "m1b_artifacts.artifact_id",
+            "m1b_artifacts.source_partition",
+            "m1b_artifacts.artifact_kind",
+            "m1b_artifacts.content_hash",
+        ],
+        "fk_dm_manifest_artifact",
+    ),
+    _m1b_fk(
+        [
+            "run_id",
+            "source",
+            "acquisition_id",
+            "candidate_set_snapshot_id",
+            "selected_member_ordinal",
+            "selected_link_id",
+            "selected_raw_artifact_id",
+            "selected_raw_content_hash",
+            "selected_body_complete",
+            "selected_termination_reason",
+        ],
+        [
+            "m1b_snapshot_artifacts.run_id",
+            "m1b_snapshot_artifacts.source",
+            "m1b_snapshot_artifacts.acquisition_id",
+            "m1b_snapshot_artifacts.snapshot_id",
+            "m1b_snapshot_artifacts.ordinal",
+            "m1b_snapshot_artifacts.link_id",
+            "m1b_snapshot_artifacts.artifact_id",
+            "m1b_snapshot_artifacts.content_hash",
+            "m1b_snapshot_artifacts.body_complete",
+            "m1b_snapshot_artifacts.termination_reason",
+        ],
+        "fk_dm_selected_member",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_dailymed_label_supersession = sa.Table(
+    "m1b_dailymed_label_supersession",
+    metadata,
+    _column("source", sa.Text()),
+    _column("setid", postgresql.UUID()),
+    _column("predecessor_label_version_id", sa.Text()),
+    _column("successor_label_version_id", sa.Text()),
+    _column("observed_run_id", sa.Text(), True),
+    _column("observed_acquisition_id", sa.Text(), True),
+    _column("observed_acquisition_ordinal", sa.Integer(), True),
+    _column("observed_acquisition_intent_id", sa.Text(), True),
+    _column("observed_operation", sa.Text(), True),
+    _column("observed_query_id", sa.Text(), True),
+    _column("observed_snapshot_id", sa.Text(), True),
+    _column("observed_manifest_id", sa.Text(), True),
+    _column("schema_version", sa.Text()),
+    sa.PrimaryKeyConstraint(
+        "source",
+        "setid",
+        "predecessor_label_version_id",
+        "successor_label_version_id",
+        name="pk_dm_supersession",
+    ),
+    _m1b_ck("ck_dm_sup_source", "source='dailymed'"),
+    _m1b_ck("ck_dm_sup_self", "predecessor_label_version_id<>successor_label_version_id"),
+    _m1b_ck(
+        "ck_dm_sup_observation",
+        "(observed_run_id IS NULL AND observed_acquisition_id IS NULL AND observed_acquisition_ordinal IS NULL AND observed_acquisition_intent_id IS NULL AND observed_operation IS NULL AND observed_query_id IS NULL AND observed_snapshot_id IS NULL AND observed_manifest_id IS NULL) OR (observed_run_id IS NOT NULL AND observed_acquisition_id IS NOT NULL AND observed_acquisition_ordinal IS NOT NULL AND observed_acquisition_intent_id IS NOT NULL AND observed_operation='fetch' AND observed_query_id IS NOT NULL AND observed_snapshot_id IS NOT NULL AND observed_manifest_id IS NOT NULL)",
+    ),
+    _m1b_fk(
+        ["source", "setid", "predecessor_label_version_id"],
+        [
+            "m1b_dailymed_label_versions.source",
+            "m1b_dailymed_label_versions.setid",
+            "m1b_dailymed_label_versions.label_version_id",
+        ],
+        "fk_dm_sup_pre",
+    ),
+    _m1b_fk(
+        ["source", "setid", "successor_label_version_id"],
+        [
+            "m1b_dailymed_label_versions.source",
+            "m1b_dailymed_label_versions.setid",
+            "m1b_dailymed_label_versions.label_version_id",
+        ],
+        "fk_dm_sup_suc",
+    ),
+    _m1b_fk(
+        [
+            "observed_run_id",
+            "source",
+            "observed_acquisition_id",
+            "observed_acquisition_ordinal",
+            "observed_acquisition_intent_id",
+            "observed_operation",
+            "observed_query_id",
+        ],
+        [
+            "m1b_acquisitions.run_id",
+            "m1b_acquisitions.source",
+            "m1b_acquisitions.acquisition_id",
+            "m1b_acquisitions.acquisition_ordinal",
+            "m1b_acquisitions.acquisition_intent_id",
+            "m1b_acquisitions.operation",
+            "m1b_acquisitions.query_id",
+        ],
+        "fk_dm_sup_acq",
+    ),
+    _m1b_fk(
+        [
+            "observed_run_id",
+            "source",
+            "observed_acquisition_id",
+            "observed_query_id",
+            "observed_snapshot_id",
+            "observed_manifest_id",
+        ],
+        [
+            "m1b_snapshots.run_id",
+            "m1b_snapshots.source",
+            "m1b_snapshots.acquisition_id",
+            "m1b_snapshots.query_id",
+            "m1b_snapshots.snapshot_id",
+            "m1b_snapshots.manifest_artifact_id",
+        ],
+        "fk_dm_sup_snapshot",
+    ),
+    schema=SCHEMA,
 )
 
 TABLE_ORDER = (
