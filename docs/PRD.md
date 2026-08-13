@@ -107,9 +107,14 @@ mandatory limitations.
 
 ### V1-FR-005 — CADEC auxiliary corpus
 
-The system shall search an approved, versioned CADEC subset and preserve corpus,
-annotation, split, and gold-versus-predicted provenance. CADEC output shall be
-identified as auxiliary and excluded from product-risk conclusions.
+The integrated M1B Option E surface shall verify and parse the exact approved,
+versioned external CADEC subset into metadata-only documents, provider-gold
+annotations, and locators while preserving corpus, annotation, split, and
+Option-A provenance. It shall not search, chunk, index, parse predicted
+artifacts, join report composition, or emit request/`SourceOutcome` execution.
+Text-bearing materialization and search are future M2 work gated by `ME-000C`.
+All CADEC output shall be identified as auxiliary and excluded from product-
+risk conclusions.
 
 ### V1-FR-006 — Reproducible ingestion
 
@@ -163,6 +168,17 @@ A bounded LangGraph workflow shall coordinate stable tools without embedding
 connector, normalization, retrieval, or citation-validation business logic in
 graph nodes. Connector failure shall produce explicit partial coverage rather
 than an empty-success result.
+
+Under M1B Option E, that generic workflow and partial-coverage rule applies to
+PubMed, DailyMed, and FAERS source execution. CADEC remains visible through
+exactly one M1B source plan entry with `planning_status=skipped_by_policy`,
+`reason_code=source_execution_not_authorized`, and reason `CADEC remains
+visible in the M1B source plan, but source execution is not authorized under
+Option E.` Visibility is distinct from execution: CADEC has no executable
+request, research-request connector invocation, `SourceOutcome`, report
+section, API/OpenAPI execution, tool, or graph node. Its exact external
+loader/parser fails closed at its standalone verification boundary and does
+not create report coverage.
 
 ### V1-FR-013 — Citation and safety gates
 
@@ -218,6 +234,16 @@ zero-result query. Partial zero-result and failed zero-result executions are
 evidence. Partial matches retain partial coverage. Final reports distinguish
 `no_match` from `indeterminate`, and run aggregation cannot promote partial or
 unavailable coverage to complete.
+
+M1B Option E explicitly distinguishes CADEC plan visibility from source
+execution. Exactly one CADEC plan entry is visible with
+`planning_status=skipped_by_policy`,
+`reason_code=source_execution_not_authorized`, and the frozen human-readable
+reason above. The exact empty `cadec_query_requests` tuple and unchanged
+`M1BSourceSection` preserve no executable request, research-request connector
+invocation, `SourceOutcome`, report section, or API/OpenAPI execution. Any
+later CADEC materialization or search remains an M2 concern subject to
+`ME-000C` and separate authorization.
 
 ## 6. V1 non-functional requirements
 
@@ -356,11 +382,18 @@ Acceptance:
 
 Acceptance:
 
-- Each source passes its own offline contract tests before joining the workflow.
+- DailyMed and FAERS pass their own offline contract tests before joining the
+  workflow; CADEC's exact loader/parser is validated offline but does not join
+  the M1B workflow under Option E.
 - DailyMed outputs identify product, SETID, SPL version, and label section.
 - FAERS outputs expose statistical unit and mandatory non-causal limitations.
 - CADEC remains visibly auxiliary and cannot affect product-risk conclusions.
-- Each added source can fail independently and produce partial coverage.
+- DailyMed and FAERS can fail independently and produce partial coverage.
+  CADEC loader/parser verification fails closed outside report execution and
+  remains visible through exactly one `skipped_by_policy` plan entry with
+  `reason_code=source_execution_not_authorized`; it produces no executable
+  request, research-request connector invocation, `SourceOutcome`, report
+  section, API/OpenAPI execution, or partial coverage.
 
 ### M2 — Retrieval and reranking evaluation
 
@@ -511,15 +544,22 @@ comparative risk, comparative safety, or ranking. No individual FAERS report,
 narrative, or provider payload crosses the report boundary. Ordinary tests are
 offline; the live harness is disabled pending separate exact Owner authority.
 
-## 15. M1B-CADEC-001 asset and standalone domain contract freeze
+## 15. M1B CADEC final executable surface and M2 boundary
 
-M1B-CADEC-001 resolves the CADEC asset-governance gate for an external-only
-approved corpus and adds source-neutral typed asset, document, provider-gold
-annotation, locator, split, vocabulary-reference, and provenance contracts. It
-does not add loader, ingestion, persistence, migration, search, index,
-training, tool, orchestration, API, or report-section execution. The existing
-empty `cadec_query_requests` tuple and M1B source-section union remain
-unchanged, so CADEC execution is disabled and OpenAPI is unaffected.
+M1B-CADEC-001 resolved the CADEC asset-governance gate for an external-only
+approved corpus and added source-neutral typed asset, document, provider-gold
+annotation, locator, split, vocabulary-reference, and provenance contracts.
+M1B-CADEC-002 then added the offline-only exact external loader and strict
+provider-gold parser. Owner-frozen Option E makes that CADEC-002 loader/parser
+the final executable M1B CADEC surface. The existing exact empty
+`M1BResearchRequestV1.cadec_query_requests` tuple and unchanged
+`M1BSourceSection` union remain closed. Exactly one visible CADEC M1B source
+plan entry has `planning_status=skipped_by_policy`,
+`reason_code=source_execution_not_authorized`, and reason `CADEC remains
+visible in the M1B source plan, but source execution is not authorized under
+Option E.` Visibility does not create an executable request, research-request
+connector invocation, `SourceOutcome`, CADEC report section, or API/OpenAPI
+execution.
 
 The exact asset has 1,250 canonical and 1,248 admitted documents. The exact
 sorted exclusions are `DICLOFENAC-SODIUM.7` and `LIPITOR.221`. Five malformed
@@ -539,4 +579,65 @@ no-provider-endorsement, and no-redistribution policy. Children bind the exact
 release manifest, audit, split membership, and parent lineage. Auxiliary use
 also prohibits ranking, advice, dosage, emergency guidance, and individualized
 medical advice. `MEDEVIDENCE_CADEC_SPLIT_V1` and its exact membership hashes are
-recorded in ADR-013. CADEC-002 is separately Owner-gated.
+recorded in [ADR-013](decisions/ADR-013-m1b-cadec-asset-contract.md).
+
+The integrated CADEC-002 surface verifies one retained immutable byte image of
+each explicit archive and manifest, applies finite ZIP and parser bounds, and
+emits only approved metadata-bearing documents, provider-gold annotations, and
+locators plus a content-free verification summary. Frozen exact facts are:
+
+- 1,250 canonical and 1,248 admitted documents; exact exclusions
+  `DICLOFENAC-SODIUM.7` and `LIPITOR.221`;
+- five malformed rows, kept distinct from 91 visible reference limitations
+  partitioned as 2 original, 44 MedDRA, and 45 SCT;
+- exactly two zero-byte documents, `LIPITOR.40` and `VOLTAREN-XR.9`, each with
+  zero rows in original, MedDRA, and SCT;
+- 24,478 provider-gold annotations and exact locators: 9,089 original, 6,300
+  MedDRA, and 9,089 SCT;
+- the sole exact CP1252 path/hash exception recorded in ADR-013, with UTF-8 for
+  every other admitted member; and
+- split counts 992 train, 119 development, and 137 test, with provider gold
+  only and the frozen REDIST, VOCAB, and Option-A provenance rules unchanged.
+
+This output is metadata-only and is **not directly retrieval-consumable**.
+M1B explicitly excludes structured retrieval, `search_local_adr_corpus`, a
+CADEC search tool, report composition, request/`SourceOutcome` execution,
+API/OpenAPI execution, persistence, migration, database ingestion, indexing,
+chunking, training, and retrieval evaluation.
+
+Future M2 owns both `search_local_adr_corpus` and a text-bearing materializer,
+subject to Owner gate `ME-000C`. That materializer must reread the exact
+approved external archive, verify the same immutable archive/manifest identity,
+preserve document, annotation, locator, split, and Option-A lineage, and emit
+exact text-bearing chunks with bounded offsets and hashes. Raw text remains
+outside Git. This is a future ownership freeze, not M2 implementation or
+authorization. `READY_FOR_M2-CADEC-RETRIEVAL-CONSUMPTION` is explicitly
+prohibited.
+
+Integration evidence is exact: CADEC-001 feature
+`51bbe29a94aa3a16af5d55be01b06f6aa331ab44`, merge
+`af111b8efce0d2a47df4c3ba20f213a812ca12da`, PR #19, independent closure
+`PASS` at `P0 0 / P1 0 / P2 0` after immutable failure history, terminal audit
+`PASS` at `0/0/0`, audited aggregate
+`35a4d2349410c16209197c24e1900ca28067de993276d2c865be082c61548482`, PR
+quality run `31726952106` with `windows-quality` and `compose-config` both
+`SUCCESS`, and merged-main quality run `31727139728` `SUCCESS`. CADEC-002
+feature `03fffef7ad8f68a9ca36c4961a5264b2e0b295ff`, merge
+`a2b97b5a3562fa68857d09fa9f4cd7562b98bd5a`, PR #20, immutable initial review
+`FAIL` at `P0 0 / P1 2 / P2 0`, one remediation batch, independent closure
+`PASS` at `0/0/0`, terminal audit `PASS` at `0/0/0`, audited aggregate
+`d307456bcfb4b5cf20392d93e922fb75d0d5684d9e5064c8a811ac960f973d9a`, PR
+run `31748194823` with both checks `SUCCESS`, and merged-main run `31748381436`
+with both checks `SUCCESS`.
+
+M1B-CADEC-003 is a documentation-only boundary closeout. Its
+[delivery record](../.delivery/M1B-CADEC-003.md) and
+[review boundary](reviews/M1B-CADEC-003-BOUNDARY-REVIEW-001.md) are
+`ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`. Immutable Review001
+remains `FAIL` at `P0 0 / P1 1 / P2 2`; the closure review after remediation
+batch 1/1 remains `FAIL` at `P0 0 / P1 1 / P2 1`. The Owner-authorized
+additional mechanical correction freezes visible `skipped_by_policy` planning
+without authorizing execution. No fresh-review PASS, terminal audit, commit,
+or completion is claimed. The exact post-terminal targets
+`M1B-CADEC-003_COMPLETE`, `M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
+`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` are not achieved in this candidate.
