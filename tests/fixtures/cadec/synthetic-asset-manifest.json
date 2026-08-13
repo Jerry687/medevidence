@@ -1,0 +1,9 @@
+{
+  "fixture_kind": "synthetic_nonproduction_cadec_inventory",
+  "production_admission_authorized": false,
+  "members": [
+    "cadec/",
+    "cadec/text/",
+    "cadec/text/SYNTHETIC.1.txt"
+  ]
+}

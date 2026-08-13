@@ -72,3 +72,18 @@ Remediation cycle 3 of 3 closed all five original findings and the later one-P1
 residual. Terminal Review 001 closure is `PASS` with `P0 0 / P1 0 / P2 0`.
 Terminal evidence audit and Git lifecycle remain pending; no terminal PASS or
 commit is claimed.
+
+## M1B-CADEC-002 narrow correction
+
+Owner-authorized CADEC-002 inspection established that two approved document
+text members are exactly zero bytes and that each corresponding original,
+MedDRA, and SCT annotation member is also zero bytes with zero rows. The
+existing `m1b.cadec.document.v1` contract therefore permits `text_length=0`;
+negative lengths still reject, positive behavior is unchanged, and identity,
+release, split, and provenance validation remain content-derived and exact.
+
+The loader must fail closed if any zero-length document has a row in any of
+its three annotation layers. This correction changes no schema version,
+approved subset, split, evidence meaning, persistence, tool, API, or reporting
+surface. The CADEC-002 candidate is `PENDING_INDEPENDENT_REVIEW`; terminal
+audit, commit, completion, and integration are not claimed.
