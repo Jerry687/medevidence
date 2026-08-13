@@ -51,6 +51,26 @@ def result_bounds() -> ResultBounds:
     )
 
 
+def test_cadec_request_execution_remains_disabled_at_public_boundary() -> None:
+    scope = make_scope(sources=(SourceType.CADEC,))
+    request = M1BResearchRequestV1(
+        request_id="request:00000000-0000-4000-8000-000000000001",
+        scope=scope,
+        requested_sources=(SourceType.CADEC,),
+        cadec_query_requests=(),
+    )
+
+    assert request.cadec_query_requests == ()
+    assert M1BResearchRequestV1.model_validate_json(request.model_dump_json()) == request
+    with pytest.raises(ValidationError):
+        M1BResearchRequestV1.model_validate(
+            {
+                **request.model_dump(mode="python"),
+                "cadec_query_requests": ({"query": "not-enabled"},),
+            }
+        )
+
+
 def make_scope(
     *,
     drugs: tuple[DrugConcept, ...] | None = None,

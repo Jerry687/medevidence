@@ -576,3 +576,27 @@ The offline gate covers:
 These tests establish contract behavior only. They make no live-source,
 completeness, incidence, causality, risk, comparative-safety, ranking, latency,
 or clinical claim.
+
+## 16. M1B-CADEC-001 deterministic asset-contract evaluation
+
+CADEC-001 tests are synthetic and metadata-only, offline with sockets disabled,
+and contain no real inventory/content beyond exact audited metadata. They test:
+
+- archive/manifest/audit hashes and byte sizes, counts, exclusions, and the
+  five-row malformed policy;
+- exact 992/119/137 split labels, counts, and membership hashes;
+- sole CP1252 path/hash and UTF-8 default;
+- provider-gold-only origin and no predicted admitted variant;
+- the 2/44/45 visible non-malformed reference-limitation partition;
+- exact CSIRO Data Licence ID 1061 policy, closed MedDRA/SNOMED CT
+  unstated-version/reference-only vocabulary metadata, and REDIST external/no-
+  redistribution/no-real-fixture policy;
+- exact release/manifest/audit/split admission, safe member labels, parent
+  lineage, Option-A ownership, deterministic identities, NFC, half-open spans,
+  bounds, ordering, uniqueness, mismatch, omission, drift, and instance bypass;
+  and
+- auxiliary-only claim restrictions plus unchanged empty request/no report
+  section/no OpenAPI boundary.
+
+This establishes standalone contract behavior only, not loader, real
+annotation, retrieval, search, index, model, clinical, or CADEC-002 behavior.

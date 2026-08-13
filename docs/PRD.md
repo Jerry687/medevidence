@@ -510,3 +510,33 @@ limitation tuple. Counts establish no incidence, causality, relative or
 comparative risk, comparative safety, or ranking. No individual FAERS report,
 narrative, or provider payload crosses the report boundary. Ordinary tests are
 offline; the live harness is disabled pending separate exact Owner authority.
+
+## 15. M1B-CADEC-001 asset and standalone domain contract freeze
+
+M1B-CADEC-001 resolves the CADEC asset-governance gate for an external-only
+approved corpus and adds source-neutral typed asset, document, provider-gold
+annotation, locator, split, vocabulary-reference, and provenance contracts. It
+does not add loader, ingestion, persistence, migration, search, index,
+training, tool, orchestration, API, or report-section execution. The existing
+empty `cadec_query_requests` tuple and M1B source-section union remain
+unchanged, so CADEC execution is disabled and OpenAPI is unaffected.
+
+The exact asset has 1,250 canonical and 1,248 admitted documents. The exact
+sorted exclusions are `DICLOFENAC-SODIUM.7` and `LIPITOR.221`. Five malformed
+rows are rejected and never repaired or reinterpreted. The separate 91
+reference-binding limitations (2 original-term, 44 MedDRA, 45 SCT) remain
+visible and are not malformed, rejected, normalized, repaired, or
+reinterpreted by this node. Only provider gold annotations are admitted; no
+predicted artifact is admitted.
+
+Raw corpus bytes remain external and non-redistributable, with no
+corpus-derived real fixtures in Git. Controlled vocabularies expose only
+the exact `MedDRA` and `SNOMED CT` references, exact unstated-version text, and
+`reference-only` legal status, never restricted identifiers, terms, hierarchy,
+or payload. The CSIRO Data Licence ID 1061 requires attribution and permits
+only non-commercial internal research under the conservative no-IP-assertion,
+no-provider-endorsement, and no-redistribution policy. Children bind the exact
+release manifest, audit, split membership, and parent lineage. Auxiliary use
+also prohibits ranking, advice, dosage, emergency guidance, and individualized
+medical advice. `MEDEVIDENCE_CADEC_SPLIT_V1` and its exact membership hashes are
+recorded in ADR-013. CADEC-002 is separately Owner-gated.

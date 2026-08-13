@@ -631,3 +631,32 @@ OpenAPI registration is conditional. The default M1A schema and the existing
 PubMed and DailyMed route/component projections remain protected; enabling the
 FAERS application adds only the frozen FAERS route and report-reachable
 components.
+
+## 19. M1B-CADEC-001 asset-freeze architecture
+
+CADEC-001 is metadata-only and standalone in `domain`:
+
+```text
+external archive + manifest + freeze audit
+  -> exact release/split/encoding/reference-limitation contract
+  -> corpus document / provider-gold annotation contracts
+  -> auxiliary-only exact locator contract
+```
+
+No arrow continues into ingestion, persistence, tools, orchestration, API,
+report composition, indexing, search, training, or M2.
+`M1BResearchRequestV1.cadec_query_requests` remains `tuple[()]`, CADEC is not
+added to `M1BSourceSection`, and generated API/OpenAPI behavior is unchanged.
+
+Every child uses Option A: `source + corpus_id + corpus_version + split +
+artifact identity`. The namespaced archive and manifest hashes supply the
+corpus ID/version without inventing a provider version; the exact manifest,
+terminal audit, and split-membership identities are repeated and validated.
+Documents require safe canonical member labels, annotations require the exact
+parent document artifact, and locators require the exact parent annotation
+artifact. Spans are zero-based, non-empty, half-open
+Unicode code-point intervals; multiple segments are ordinal-contiguous,
+ordered, non-overlapping, and document-bounded. Durable children have
+deterministic identities. NFC, strict frozen extra-forbid validation, exact
+split/hash metadata, and accepted-instance revalidation fail closed. Asset
+mismatch remains distinct from the five frozen malformed-row rejections.
