@@ -685,7 +685,7 @@ class CadecCorpusDocumentV1(_CadecCompositeOwner):
     document_record_id: SourceRecordId
     document_id: CorpusDocumentId
     member_path: CanonicalNfcText
-    text_length: int = Field(gt=0, le=1_000_000)
+    text_length: int = Field(ge=0, le=1_000_000)
     text_sha256: Sha256Digest
     provenance: CadecProvenanceContextV1
 

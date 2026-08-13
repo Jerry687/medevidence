@@ -1,0 +1,9 @@
+{
+  "document_id": "SYNTHETIC.1",
+  "layer": "original",
+  "rows": [
+    "T1\tADR 11 16;0 5\tgamma Alpha"
+  ],
+  "expected_domain_spans": [[0, 5], [11, 16]],
+  "expected_raw_out_of_order_transitions": 1
+}

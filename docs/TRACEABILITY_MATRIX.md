@@ -438,3 +438,18 @@ one-P1 residual. Terminal Review 001 closure is `PASS`
 (`P0 0 / P1 0 / P2 0`). Current state is
 `PASS_INDEPENDENT_REVIEW_PENDING_TERMINAL_AUDIT`; no terminal audit, Git,
 medical-source request, or CADEC-002 claim is made.
+
+### M1B-CADEC-002 loader candidate status
+
+The CADEC-002 candidate on baseline
+`af111b8efce0d2a47df4c3ba20f213a812ca12da` adds an offline-only exact
+archive/manifest loader and strict provider-gold parser. A narrow Owner
+correction permits zero-length `m1b.cadec.document.v1` text while retaining
+negative rejection and exact identity/release/split/provenance validation; a
+zero-length document fails closed unless all original, MedDRA, and SCT members
+contain zero rows. Synthetic focused and full offline validation are green,
+and two exact local archive checks produced identical safe summaries and
+ordered identity digests without emitting corpus or vocabulary payload.
+Status remains `PENDING_INDEPENDENT_REVIEW`;
+independent review, terminal audit, commit, completion, integration, network,
+persistence, tools, API/report execution, CADEC-003, and M2 are not claimed.

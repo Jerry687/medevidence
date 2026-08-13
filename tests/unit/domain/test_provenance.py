@@ -261,6 +261,68 @@ def test_cadec_option_a_composites_spans_and_identities_round_trip() -> None:
     assert annotation.spans[0].end_offset == 8
 
 
+def test_cadec_document_allows_zero_text_length() -> None:
+    document = cadec_document()
+    zero = CadecCorpusDocumentV1.create(
+        **{
+            **document.model_dump(
+                mode="python", exclude={"document_record_id", "text_length", "provenance"}
+            ),
+            "text_length": 0,
+            "provenance": document.provenance,
+        }
+    )
+
+    assert zero.text_length == 0
+    assert zero.schema_version == "m1b.cadec.document.v1"
+
+
+def test_cadec_document_rejects_negative_text_length() -> None:
+    document = cadec_document()
+    with pytest.raises(ValidationError):
+        CadecCorpusDocumentV1.model_validate(
+            {**document.model_dump(mode="python"), "text_length": -1}
+        )
+
+
+def test_cadec_positive_text_length_contract_is_unchanged() -> None:
+    document = cadec_document()
+
+    assert document.text_length == 20
+    document.validate_against(CadecReleaseManifestV1.create())
+
+
+def test_cadec_zero_length_document_identity_remains_content_derived() -> None:
+    document = cadec_document()
+    data = document.model_dump(
+        mode="python", exclude={"document_record_id", "text_length", "provenance"}
+    )
+    data["provenance"] = document.provenance
+    first = CadecCorpusDocumentV1.create(**data, text_length=0)
+    second = CadecCorpusDocumentV1.create(**data, text_length=0)
+
+    assert first.document_record_id == second.document_record_id
+    assert first.document_record_id != document.document_record_id
+
+
+def test_cadec_zero_length_document_binds_exact_release_split_and_provenance() -> None:
+    document = cadec_document()
+    zero = CadecCorpusDocumentV1.create(
+        **{
+            **document.model_dump(
+                mode="python", exclude={"document_record_id", "text_length", "provenance"}
+            ),
+            "text_length": 0,
+            "provenance": document.provenance,
+        }
+    )
+
+    zero.validate_against(CadecReleaseManifestV1.create())
+    assert zero.split is CadecSplit.TRAIN
+    assert zero.provenance.artifact_id == zero.artifact_id
+    assert zero.provenance.lineage_artifact_ids == ()
+
+
 def test_cadec_mismatch_is_distinct_from_frozen_malformed_row_rejection() -> None:
     document = cadec_document()
     original_annotation = cadec_annotation()
