@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from itertools import product
 
 import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    FAERS_MANDATORY_LIMITATIONS,
+    FAERS_PT_MAPPING,
     CoverageStatus,
     DailyMedCandidateLabel,
     DailyMedMarketingState,
     DailyMedResolution,
     ExecutionBounds,
     ExecutionStatus,
+    FaersAggregateBucketV1,
+    FaersAggregateQueryV1,
+    FaersAggregateRequestV1,
+    FaersAggregateResult,
+    FaersExecutionBoundsV1,
+    FaersIdentityStrategy,
+    FaersInclusiveDateRangeV1,
+    FaersPtTermV1,
     LabelSelectionDecision,
     LabelSelectionStatus,
     M1BSourcePlanEntryV1,
@@ -26,7 +36,206 @@ from medevidence.domain import (
     SourceType,
     classify_dailymed_selection,
     derive_identity,
+    sha256_digest,
 )
+
+
+def faers_query() -> FaersAggregateQueryV1:
+    return FaersAggregateQueryV1.create(
+        FaersAggregateRequestV1(
+            drug_concept_id="drug:alpha",
+            identity_strategy=FaersIdentityStrategy.HARMONIZED_SUBSTANCE,
+            identity_exact_value="ALPHA",
+            pt_values=("DIARRHOEA", "NAUSEA", "VOMITING"),
+            inclusive_date_range=FaersInclusiveDateRangeV1(
+                start_date=date(2025, 1, 1), end_date=date(2025, 12, 31)
+            ),
+            execution_bounds=FaersExecutionBoundsV1(
+                max_date_difference_days=365,
+                max_inclusive_calendar_dates=366,
+            ),
+            statistical_unit="provider_count_occurrence",
+        )
+    )
+
+
+def faers_outcome(*, count: int = 3, partial: bool = False) -> SourceOutcome:
+    return SourceOutcome(
+        source=SourceType.FAERS,
+        query_id=faers_query().query_id,
+        execution_status=ExecutionStatus.SUCCEEDED,
+        coverage_status=CoverageStatus.PARTIAL if partial else CoverageStatus.COMPLETE,
+        result_status=ResultStatus.MATCHES if count else ResultStatus.NO_MATCH,
+        configured_bounds=ExecutionBounds(
+            max_query_characters=512,
+            max_pages=5,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            max_total_seconds=30,
+        ),
+        valid_result_count=count,
+        pages_completed=1,
+        truncated=partial,
+        warning_codes=("source_coverage_incomplete",) if partial else (),
+    )
+
+
+def faers_buckets() -> tuple[FaersAggregateBucketV1, ...]:
+    query = faers_query()
+    return tuple(
+        FaersAggregateBucketV1(
+            query_id=query.query_id,
+            bucket_ordinal=ordinal,
+            reaction_pt=pt,
+            report_count=count,
+            identity_stratum=query.identity_stratum,
+        )
+        for ordinal, (pt, count) in enumerate((("DIARRHOEA", 9), ("NAUSEA", 4), ("VOMITING", 4)))
+    )
+
+
+def faers_result(**changes: object) -> FaersAggregateResult:
+    values: dict[str, object] = {
+        "query": faers_query(),
+        "buckets": faers_buckets(),
+        "source_outcome": faers_outcome(),
+        "retrieved_at_utc": datetime(2026, 8, 12, tzinfo=UTC),
+        "provider_as_of_utc": None,
+        "snapshot_id": "snapshot:faers",
+        "manifest_id": "manifest:faers",
+        "limitations": FAERS_MANDATORY_LIMITATIONS,
+    }
+    values.update(changes)
+    return FaersAggregateResult(**values)
+
+
+def test_faers_query_identity_closes_strategy_mapping_and_full_preimage() -> None:
+    query = faers_query()
+    assert query.identity_stratum == "harmonized_substance"
+    assert query.identity_field == "patient.drug.openfda.substance_name.exact"
+    assert query.pt_values == ("DIARRHOEA", "NAUSEA", "VOMITING")
+    assert query.query_id == faers_query().query_id
+    exact_preimage = query.model_dump(mode="python", exclude={"query_id"})
+    assert query.query_id == derive_identity("faers-query", exact_preimage)
+    assert exact_preimage["execution_bounds"]["max_date_difference_days"] == 365
+    assert exact_preimage["execution_bounds"]["max_inclusive_calendar_dates"] == 366
+    omitted_bound_preimage = dict(exact_preimage)
+    omitted_bound_preimage["execution_bounds"] = dict(exact_preimage["execution_bounds"])
+    del omitted_bound_preimage["execution_bounds"]["max_date_difference_days"]
+    assert derive_identity("faers-query", omitted_bound_preimage) != query.query_id
+    assert tuple((row.query_literal, row.display_name) for row in FAERS_PT_MAPPING) == (
+        ("DIARRHOEA", "Diarrhoea"),
+        ("NAUSEA", "Nausea"),
+        ("VOMITING", "Vomiting"),
+    )
+
+    for changes in (
+        {"identity_stratum": "native_medicinal_product"},
+        {"identity_field": "patient.drug.medicinalproduct.exact"},
+        {"identity_value": "BETA"},
+        {"pt_values": ("NAUSEA", "DIARRHOEA", "VOMITING")},
+        {"endpoint_mode": "raw_latest_report"},
+        {"statistical_unit": "patient"},
+        {"role_policy": "primary_suspect"},
+        {"effective_total_deadline_ms": 60_000},
+        {"identity_value": "e\u0301"},
+        {"identity_value": "ALPHA%20DRUG"},
+    ):
+        with pytest.raises(ValidationError):
+            FaersAggregateQueryV1(**{**query.model_dump(mode="python"), **changes})
+
+    for field, drift in (
+        ("max_date_difference_days", 364),
+        ("max_inclusive_calendar_dates", 365),
+    ):
+        forged_bounds = query.execution_bounds.model_copy(update={field: drift})
+        with pytest.raises(ValidationError):
+            FaersAggregateQueryV1.model_validate(
+                query.model_copy(update={"execution_bounds": forged_bounds})
+            )
+
+    for pair in (
+        ("NAUSEA", "Vomiting"),
+        ("Nausea", "Nausea"),
+        ("VOMITING", "vomiting"),
+        ("CONSTIPATION", "Constipation"),
+    ):
+        with pytest.raises(ValidationError):
+            FaersPtTermV1(query_literal=pair[0], display_name=pair[1])
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "Nausea",
+        "nausea",
+        "DIARRHEA",
+        "CONSTIPATION",
+        "ABDOMINAL PAIN",
+        "VOMITING ",
+        "VOMITING\u0301",
+        "UNKNOWN",
+    ],
+)
+def test_faers_bucket_rejects_alias_case_spelling_normalization_and_unknown(term: str) -> None:
+    with pytest.raises(ValidationError):
+        FaersAggregateBucketV1(
+            query_id=faers_query().query_id,
+            bucket_ordinal=0,
+            reaction_pt=term,
+            report_count=1,
+            identity_stratum="harmonized_substance",
+        )
+
+
+def test_faers_result_preserves_all_ties_and_exact_complete_collection() -> None:
+    result = faers_result()
+    assert tuple(bucket.reaction_pt for bucket in result.buckets) == (
+        "DIARRHOEA",
+        "NAUSEA",
+        "VOMITING",
+    )
+    assert len(result.buckets) == 3
+    assert "incidence" in result.limitations[1]
+    assert sha256_digest(result.model_dump_json()).startswith("sha256:")
+
+    base = result.model_dump(mode="python")
+    variants = (
+        {"buckets": result.buckets[:-1]},
+        {"buckets": (*result.buckets, result.buckets[-1])},
+        {"buckets": (result.buckets[0], result.buckets[2], result.buckets[1])},
+        {
+            "buckets": (
+                result.buckets[0],
+                result.buckets[1].model_copy(update={"bucket_ordinal": 2}),
+                result.buckets[2].model_copy(update={"bucket_ordinal": 3}),
+            )
+        },
+        {"limitations": result.limitations[:-1]},
+    )
+    for changes in variants:
+        with pytest.raises(ValidationError):
+            FaersAggregateResult(**{**base, **changes})
+    partial = FaersAggregateResult(
+        **{**base, "source_outcome": faers_outcome(count=3, partial=True)}
+    )
+    assert partial.source_outcome.coverage_status is CoverageStatus.PARTIAL
+
+
+def test_faers_complete_zero_is_no_match_but_partial_zero_is_indeterminate() -> None:
+    complete = faers_outcome(count=0)
+    assert complete.result_status is ResultStatus.NO_MATCH
+    partial = SourceOutcome(
+        **{
+            **complete.model_dump(mode="python"),
+            "coverage_status": CoverageStatus.PARTIAL,
+            "result_status": ResultStatus.INDETERMINATE,
+            "truncated": True,
+            "warning_codes": ("source_coverage_incomplete",),
+        }
+    )
+    assert partial.result_status is ResultStatus.INDETERMINATE
+
 
 VALID_TRIPLES = {
     (ExecutionStatus.SUCCEEDED, CoverageStatus.COMPLETE, ResultStatus.MATCHES),

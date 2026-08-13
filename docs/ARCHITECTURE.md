@@ -1,5 +1,16 @@
 # Architecture
 
+## M1B FAERS domain boundary
+
+FAERS-001 implements source-neutral domain contracts plus their mechanically
+additive representation in the existing enabled M1B OpenAPI envelope; it adds
+no FAERS route or execution path. Request/report envelopes contain typed FAERS
+request, query, result, section, and locator contracts. Frozen host,
+timeout, retry, cache, and freshness values are non-authorizing connector design
+metadata and perform no I/O. The future connector remains an outer adapter and
+cannot leak provider payloads, raw reports, role inference, persistence rows, or
+transport objects into the domain. No reverse dependency is introduced.
+
 ## 1. Status and objective
 
 This document freezes the V1 architecture. It separates stable drug-safety

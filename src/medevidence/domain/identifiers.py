@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta
@@ -67,6 +68,14 @@ class DurableModel(BaseModel):
 def _require_nonblank(value: str) -> str:
     if not value.strip():
         raise ValueError("value must contain at least one non-whitespace character")
+    return value
+
+
+def _require_canonical_nfc(value: str) -> str:
+    """Require exact NFC text without silently repairing caller input."""
+
+    if unicodedata.normalize("NFC", value) != value:
+        raise ValueError("value must already be Unicode NFC")
     return value
 
 
@@ -231,6 +240,12 @@ type ExactText = Annotated[
     str,
     StringConstraints(min_length=1),
     AfterValidator(_require_nonblank),
+]
+type CanonicalNfcText = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=512),
+    AfterValidator(_require_nonblank),
+    AfterValidator(_require_canonical_nfc),
 ]
 type UtcDateTime = Annotated[datetime, AfterValidator(_require_utc)]
 type CanonicalSetId = Annotated[str, AfterValidator(_require_canonical_setid)]

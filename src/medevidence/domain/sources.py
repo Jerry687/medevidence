@@ -16,6 +16,7 @@ from .identifiers import (
     AttemptId,
     CandidateId,
     CandidateSetId,
+    CanonicalNfcText,
     CanonicalSetId,
     CanonicalSplVersion,
     ConnectorVersion,
@@ -42,7 +43,15 @@ from .identifiers import (
     canonical_json,
     derive_identity,
 )
-from .scope import ExecutionBounds, SourceType
+from .scope import (
+    GI_PT_SET_M1B_V1,
+    ExecutionBounds,
+    FaersAggregateRequestV1,
+    FaersExecutionBoundsV1,
+    FaersIdentityStrategy,
+    FaersInclusiveDateRangeV1,
+    SourceType,
+)
 
 
 class PlanningStatus(StrEnum):
@@ -260,6 +269,311 @@ class SourceOutcome(DurableModel):
             raise ValueError("pages_completed exceeds configured bound")
         if self.valid_result_count > self.configured_bounds.max_records:
             raise ValueError("valid_result_count exceeds configured bound")
+        return self
+
+
+FAERS_PT_AUTHORITY: Final[Literal["MedDRA Version 29.0, English"]] = "MedDRA Version 29.0, English"
+FAERS_PT_VALUES: Final[tuple[Literal["DIARRHOEA", "NAUSEA", "VOMITING"], ...]] = (
+    "DIARRHOEA",
+    "NAUSEA",
+    "VOMITING",
+)
+
+
+class FaersPtTermV1(DurableModel):
+    """One exact query/display pair from the reference-only PT allowlist."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    query_literal: Literal["DIARRHOEA", "NAUSEA", "VOMITING"]
+    display_name: Literal["Diarrhoea", "Nausea", "Vomiting"]
+    authority: Literal["MedDRA Version 29.0, English"] = FAERS_PT_AUTHORITY
+
+    @model_validator(mode="after")
+    def validate_exact_pair(self) -> Self:
+        expected = {
+            "DIARRHOEA": "Diarrhoea",
+            "NAUSEA": "Nausea",
+            "VOMITING": "Vomiting",
+        }[self.query_literal]
+        if self.display_name != expected:
+            raise ValueError("FAERS query/display PT pair is not in the exact frozen mapping")
+        return self
+
+
+FAERS_PT_MAPPING: Final = (
+    FaersPtTermV1(query_literal="DIARRHOEA", display_name="Diarrhoea"),
+    FaersPtTermV1(query_literal="NAUSEA", display_name="Nausea"),
+    FaersPtTermV1(query_literal="VOMITING", display_name="Vomiting"),
+)
+FAERS_MANDATORY_LIMITATIONS: Final[tuple[LongText, ...]] = (
+    "Absence from the bounded GI_PT_SET_M1B_V1 buckets is not evidence that "
+    "gastrointestinal adverse events are absent.",
+    "Counts do not establish incidence, relative risk, causality, exposure, or a "
+    "product-safety ranking.",
+    "GI_PT_SET_M1B_V1 is a deliberately bounded, non-comprehensive three-term subset.",
+    "Missing receivedate values do not enter the bounded date stratum.",
+    "No drug-role predicate is applied, so suspect, concomitant, and interacting "
+    "roles are not distinguished.",
+    "Provider/openFDA version behavior is accepted as supplied; no additional "
+    "case-version reconstruction or deduplication is inferred.",
+    "Spontaneous reports are affected by duplicates or follow-ups, missing data, "
+    "confounding, reporting practice, stimulated or publicity reporting, product "
+    "exposure, and update lag.",
+)
+
+
+class FaersFreshnessOracleV1(DurableModel):
+    """Non-authorizing visibility requirements for later FAERS acquisition."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    retrieval_time_visible: Literal[True] = True
+    provider_as_of_visible_when_present: Literal[True] = True
+    update_lag_limitation_required: Literal[True] = True
+    result_cache: Literal["none"] = "none"
+    stale_fallback: Literal[False] = False
+    replay: Literal["exact_immutable_raw_snapshot_only"] = "exact_immutable_raw_snapshot_only"
+    authorizes_network_io: Literal[False] = False
+
+
+class FaersTransportPolicyV1(DurableModel):
+    """Frozen connector design contract; it never authorizes network I/O."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    scheme: Literal["https"] = "https"
+    host: Literal["api.fda.gov"] = "api.fda.gov"
+    port: Literal[443] = 443
+    path: Literal["/drug/event.json"] = "/drug/event.json"
+    method: Literal["GET"] = "GET"
+    max_redirects: Literal[0] = 0
+    count_grouping_field: Literal["patient.reaction.reactionmeddrapt.exact"] = (
+        "patient.reaction.reactionmeddrapt.exact"
+    )
+    connect_timeout_ms: Literal[5_000] = 5_000
+    read_timeout_ms: Literal[10_000] = 10_000
+    write_timeout_ms: Literal[5_000] = 5_000
+    pool_timeout_ms: Literal[5_000] = 5_000
+    acquisition_deadline_ms: Literal[30_000] = 30_000
+    max_attempts: Literal[2] = 2
+    backoff_base_ms: Literal[250] = 250
+    backoff_cap_ms: Literal[4_000] = 4_000
+    jitter_max_ms: Literal[100] = 100
+    retry_after_cap_ms: Literal[10_000] = 10_000
+    retryable_classes: tuple[
+        Literal["connect_timeout"],
+        Literal["read_timeout"],
+        Literal["http_408"],
+        Literal["http_429"],
+        Literal["http_5xx"],
+    ] = ("connect_timeout", "read_timeout", "http_408", "http_429", "http_5xx")
+    permanent_classes: tuple[
+        Literal["other_4xx"],
+        Literal["contract"],
+        Literal["parse"],
+        Literal["integrity"],
+    ] = (
+        "other_4xx",
+        "contract",
+        "parse",
+        "integrity",
+    )
+    max_response_bytes: Literal[5_242_880] = 5_242_880
+    max_cumulative_bytes: Literal[5_242_880] = 5_242_880
+    max_pages: Literal[5] = 5
+    max_records: Literal[100] = 100
+    page_size: Literal[100] = 100
+    freshness: FaersFreshnessOracleV1 = Field(default_factory=FaersFreshnessOracleV1)
+    ordinary_validation_hosts: tuple[()] = ()
+    medical_source_network_execution_authorized: Literal[False] = False
+
+
+FAERS_FRESHNESS_ORACLE: Final = FaersFreshnessOracleV1()
+FAERS_CONNECTOR_POLICY: Final = FaersTransportPolicyV1()
+
+
+_FAERS_IDENTITY_MAPPING: Final = {
+    FaersIdentityStrategy.HARMONIZED_SUBSTANCE: (
+        "harmonized_substance",
+        "patient.drug.openfda.substance_name.exact",
+    ),
+    FaersIdentityStrategy.NATIVE_MEDICINAL_PRODUCT: (
+        "native_medicinal_product",
+        "patient.drug.medicinalproduct.exact",
+    ),
+}
+
+
+class FaersAggregateQueryV1(DurableModel):
+    """Deterministic closed FAERS AST/query identity; no serializer or I/O."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.faers.query.v1"] = "m1b.faers.query.v1"
+    query_id: QueryId
+    execution_profile_id: Literal["FAERS_M1B_CONSTRAINED_V1"] = "FAERS_M1B_CONSTRAINED_V1"
+    effective_total_deadline_ms: Literal[30_000] = 30_000
+    generic_total_deadline_ceiling_ms: Literal[60_000] = 60_000
+    ast_schema_version: Literal["m1b.faers.ast.v1"] = "m1b.faers.ast.v1"
+    serializer_version: Literal["m1b.faers.serializer.v1"] = "m1b.faers.serializer.v1"
+    endpoint_path: Literal["/drug/event.json"] = "/drug/event.json"
+    endpoint_mode: Literal["provider_count_occurrence"] = "provider_count_occurrence"
+    statistical_unit: Literal["provider_count_occurrence"] = "provider_count_occurrence"
+    provider_latest_policy: Literal["provider_openfda_supplied_latest"] = (
+        "provider_openfda_supplied_latest"
+    )
+    dedup_policy: Literal["no_additional_inferred_deduplication"] = (
+        "no_additional_inferred_deduplication"
+    )
+    identity_strategy: FaersIdentityStrategy
+    identity_stratum: Literal["harmonized_substance", "native_medicinal_product"]
+    identity_field: Literal[
+        "patient.drug.openfda.substance_name.exact",
+        "patient.drug.medicinalproduct.exact",
+    ]
+    identity_value: CanonicalNfcText
+    identity_operation: Literal["exact_equality"] = "exact_equality"
+    pt_set_id: Literal["GI_PT_SET_M1B_V1"] = "GI_PT_SET_M1B_V1"
+    pt_authority_version: Literal["MedDRA Version 29.0, English"] = FAERS_PT_AUTHORITY
+    pt_values: tuple[Literal["DIARRHOEA", "NAUSEA", "VOMITING"], ...] = FAERS_PT_VALUES
+    inclusive_date_range: FaersInclusiveDateRangeV1
+    date_field: Literal["receivedate"] = "receivedate"
+    group_field: Literal["patient.reaction.reactionmeddrapt.exact"] = (
+        "patient.reaction.reactionmeddrapt.exact"
+    )
+    operation_grammar_version: Literal["m1b.faers.closed-grammar.v1"] = (
+        "m1b.faers.closed-grammar.v1"
+    )
+    ordering: Literal["report_count_desc_reaction_pt_asc"] = "report_count_desc_reaction_pt_asc"
+    role_policy: Literal["unfiltered_provider_roles"] = "unfiltered_provider_roles"
+    execution_bounds: FaersExecutionBoundsV1
+
+    @classmethod
+    def create(cls, request: FaersAggregateRequestV1) -> Self:
+        """Bind a validated request to its sole identity mapping and query ID."""
+
+        validated = FaersAggregateRequestV1.model_validate(request.model_dump(mode="python"))
+        stratum, field = _FAERS_IDENTITY_MAPPING[validated.identity_strategy]
+        values: dict[str, Any] = {
+            "identity_strategy": validated.identity_strategy,
+            "identity_stratum": stratum,
+            "identity_field": field,
+            "identity_value": validated.identity_exact_value,
+            "inclusive_date_range": validated.inclusive_date_range,
+            "execution_bounds": validated.execution_bounds,
+        }
+        provisional = cls.model_construct(query_id="query:pending", **values)
+        payload = provisional.model_dump(mode="python", exclude={"query_id"})
+        values["query_id"] = derive_identity("faers-query", payload)
+        return cls(**values)
+
+    @model_validator(mode="after")
+    def validate_query_identity(self) -> Self:
+        expected_stratum, expected_field = _FAERS_IDENTITY_MAPPING[self.identity_strategy]
+        if self.identity_stratum != expected_stratum or self.identity_field != expected_field:
+            raise ValueError("FAERS identity strategy/stratum/provider-field mapping drift")
+        if self.pt_values != GI_PT_SET_M1B_V1:
+            raise ValueError("FAERS PT values must equal the exact frozen tuple")
+        if "%" in self.identity_value:
+            raise ValueError("pre-encoded percent input is forbidden")
+        expected = derive_identity(
+            "faers-query",
+            self.model_dump(mode="python", exclude={"query_id"}),
+        )
+        if self.query_id != expected:
+            raise ValueError("query_id does not match the closed FAERS query preimage")
+        return self
+
+
+class FaersAggregateBucketV1(DurableModel):
+    """One provider occurrence bucket bound to a closed FAERS query."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.faers.bucket.v1"] = "m1b.faers.bucket.v1"
+    query_id: QueryId
+    bucket_ordinal: int = Field(ge=0, le=99)
+    reaction_pt: Literal["DIARRHOEA", "NAUSEA", "VOMITING"]
+    report_count: int = Field(ge=0)
+    statistical_unit: Literal["provider_count_occurrence"] = "provider_count_occurrence"
+    identity_stratum: Literal["harmonized_substance", "native_medicinal_product"]
+    role_policy: Literal["unfiltered_provider_roles"] = "unfiltered_provider_roles"
+
+    def validate_against(self, query: FaersAggregateQueryV1) -> None:
+        """Fail closed unless every bucket identity dimension equals its query."""
+
+        validated = type(self).model_validate(self.model_dump(mode="python"))
+        validated_query = FaersAggregateQueryV1.model_validate(query.model_dump(mode="python"))
+        if validated != self or validated_query != query:
+            raise ValueError("FAERS bucket or query differs from closed validation")
+        if (
+            self.query_id != query.query_id
+            or self.statistical_unit != query.statistical_unit
+            or self.identity_stratum != query.identity_stratum
+            or self.role_policy != query.role_policy
+            or self.reaction_pt not in query.pt_values
+        ):
+            raise ValueError("FAERS bucket identity must equal its exact parent query")
+
+
+class FaersAggregateResult(DurableModel):
+    """Narrative-free bounded aggregate result with truthful outcome semantics."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.faers.result.v1"] = "m1b.faers.result.v1"
+    query: FaersAggregateQueryV1
+    buckets: tuple[FaersAggregateBucketV1, ...] = Field(max_length=100)
+    source_outcome: SourceOutcome
+    retrieved_at_utc: UtcDateTime
+    provider_as_of_utc: UtcDateTime | None
+    snapshot_id: SnapshotId
+    manifest_id: ArtifactId
+    limitations: tuple[LongText, ...] = FAERS_MANDATORY_LIMITATIONS
+
+    @model_validator(mode="after")
+    def validate_aggregate(self) -> Self:
+        expected_bounds = ExecutionBounds(
+            max_query_characters=512,
+            max_pages=5,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            max_total_seconds=30,
+        )
+        if (
+            self.source_outcome.source is not SourceType.FAERS
+            or self.source_outcome.query_id != self.query.query_id
+            or self.source_outcome.configured_bounds != expected_bounds
+        ):
+            raise ValueError("FAERS result outcome must bind the exact query and profile bounds")
+        if self.limitations != FAERS_MANDATORY_LIMITATIONS:
+            raise ValueError("FAERS result requires the exact mandatory limitations")
+        if len(self.buckets) != self.source_outcome.valid_result_count:
+            raise ValueError("FAERS valid_result_count must equal the complete bucket collection")
+        expected_order = tuple(
+            sorted(self.buckets, key=lambda item: (-item.report_count, item.reaction_pt))
+        )
+        if self.buckets != expected_order:
+            raise ValueError("FAERS buckets must use report_count DESC then reaction_pt ASC")
+        if tuple(bucket.bucket_ordinal for bucket in self.buckets) != tuple(
+            range(len(self.buckets))
+        ):
+            raise ValueError("FAERS bucket ordinals must be contiguous from zero")
+        pts = tuple(bucket.reaction_pt for bucket in self.buckets)
+        if len(set(pts)) != len(pts):
+            raise ValueError("FAERS buckets must have unique reaction PT values")
+        if any(
+            bucket.query_id != self.query.query_id
+            or bucket.identity_stratum != self.query.identity_stratum
+            or bucket.role_policy != self.query.role_policy
+            or bucket.statistical_unit != self.query.statistical_unit
+            or bucket.reaction_pt not in self.query.pt_values
+            for bucket in self.buckets
+        ):
+            raise ValueError("FAERS bucket identity must equal its exact parent query")
+        for bucket in self.buckets:
+            bucket.validate_against(self.query)
         return self
 
 

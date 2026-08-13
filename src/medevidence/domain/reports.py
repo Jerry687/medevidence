@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Final, Literal, Self, cast
+from typing import Annotated, Any, Final, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, model_validator
 
-from .claims import Citation, DailyMedLocatorV1, EvidenceClaim
+from .claims import Citation, DailyMedLocatorV1, EvidenceClaim, FaersLocatorV1
 from .identifiers import (
     AcquisitionId,
     AcquisitionIntentId,
@@ -41,6 +41,7 @@ from .scope import (
     DailyMedSelectionMode,
     DailyMedSelectionRequestV1,
     ExecutionBounds,
+    FaersAggregateRequestV1,
     M1BResearchRequestV1,
     ResearchScope,
     SourceType,
@@ -51,6 +52,8 @@ from .sources import (
     DailyMedLabelVersion,
     DomainWarning,
     ExecutionStatus,
+    FaersAggregateQueryV1,
+    FaersAggregateResult,
     LabelSection,
     LabelSelectionDecision,
     LabelSelectionStatus,
@@ -751,7 +754,63 @@ class DailyMedLabelSectionV1(DurableModel):
         return self
 
 
-type M1BSourceSection = DailyMedLabelSectionV1
+class FaersAggregateSectionV1(DurableModel):
+    """Truthful source-indexed section for one closed FAERS aggregate request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.faers.report-section.v1"] = "m1b.faers.report-section.v1"
+    report_id: ReportId
+    run_id: RunId
+    source: Literal[SourceType.FAERS] = SourceType.FAERS
+    ordinal: int = Field(ge=0, le=7)
+    section_kind: Literal["faers_aggregate"] = "faers_aggregate"
+    request: FaersAggregateRequestV1
+    acquisition_outcome_refs: tuple[AcquisitionOutcomeRef] = Field(min_length=1, max_length=1)
+    result: FaersAggregateResult
+    locators: tuple[FaersLocatorV1, ...] = Field(max_length=100)
+    limitations: tuple[LongText, ...]
+
+    @model_validator(mode="after")
+    def validate_faers_section(self) -> Self:
+        ref = self.acquisition_outcome_refs[0]
+        if (
+            ref.run_id != self.run_id
+            or ref.source is not SourceType.FAERS
+            or ref.operation != "search"
+            or ref.query_id != self.result.query.query_id
+            or ref.snapshot_id != self.result.snapshot_id
+        ):
+            raise ValueError("FAERS section acquisition identity drift")
+        if FaersAggregateQueryV1.create(self.request) != self.result.query:
+            raise ValueError("FAERS section query must equal its exact closed request preimage")
+        if self.limitations != self.result.limitations:
+            raise ValueError("FAERS section limitations must equal its result limitations")
+        if len(self.locators) != len(self.result.buckets):
+            raise ValueError("FAERS locators must cover the complete bucket collection")
+        for locator, bucket in zip(self.locators, self.result.buckets, strict=True):
+            if (
+                locator.report_id != self.report_id
+                or locator.run_id != self.run_id
+                or locator.acquisition_id != ref.acquisition_id
+                or locator.snapshot_id != ref.snapshot_id
+                or locator.query_id != bucket.query_id
+                or locator.outcome_query_id != bucket.query_id
+                or locator.endpoint_mode != self.result.query.endpoint_mode
+                or locator.identity_stratum != bucket.identity_stratum
+                or locator.reaction_pt != bucket.reaction_pt
+                or locator.bucket_ordinal != bucket.bucket_ordinal
+                or locator.report_count != bucket.report_count
+                or locator.role_policy != bucket.role_policy
+            ):
+                raise ValueError("FAERS locator must equal the exact bucket at its ordinal")
+        return self
+
+
+type M1BSourceSection = Annotated[
+    DailyMedLabelSectionV1 | FaersAggregateSectionV1,
+    Field(discriminator="section_kind"),
+]
 
 
 class M1BResearchReportV1(DurableModel):
@@ -848,19 +907,23 @@ class M1BResearchReportV1(DurableModel):
             for section in self.source_sections
         ):
             raise ValueError("every source section must match the report identity")
-        if tuple(section.ordinal for section in self.source_sections) != tuple(
-            range(len(self.source_sections))
-        ):
-            raise ValueError("M1B source section ordinals must be contiguous and canonical")
+        for source in self.scope.selected_sources:
+            source_ordinals = tuple(
+                section.ordinal for section in self.source_sections if section.source is source
+            )
+            if source_ordinals != tuple(range(len(source_ordinals))):
+                raise ValueError(
+                    "M1B same-source section ordinals must be contiguous and canonical"
+                )
         request_keys = [canonical_json(section.request) for section in self.source_sections]
         if len(request_keys) != len(set(request_keys)):
-            raise ValueError("each DailyMed request may have exactly one source section")
+            raise ValueError("each source request may have exactly one source section")
         scope_drug_ids = {drug.concept_id for drug in self.scope.drugs}
         if any(
             section.request.drug_concept_id not in scope_drug_ids
             for section in self.source_sections
         ):
-            raise ValueError("every DailyMed section request drug must belong to report scope")
+            raise ValueError("every source section request drug must belong to report scope")
 
         refs = tuple(
             ref for section in self.source_sections for ref in section.acquisition_outcome_refs
@@ -875,13 +938,9 @@ class M1BResearchReportV1(DurableModel):
         dailymed_refs = tuple(ref for ref in refs if ref.source is SourceType.DAILYMED)
         if len(dailymed_refs) > 8:
             raise ValueError("executed DailyMed report acquisitions are bounded to eight")
-        ordinal_keys = tuple(
-            (ref.run_id, ref.source, ref.acquisition_ordinal) for ref in dailymed_refs
-        )
+        ordinal_keys = tuple((ref.run_id, ref.source, ref.acquisition_ordinal) for ref in refs)
         if len(set(ordinal_keys)) != len(ordinal_keys):
-            raise ValueError(
-                "DailyMed acquisition ordinals must be unique under run/source ownership"
-            )
+            raise ValueError("acquisition ordinals must be unique under run/source ownership")
         outcome_keys = tuple((outcome.source, outcome.query_id) for outcome in self.source_outcomes)
         if len(set(outcome_keys)) != len(outcome_keys) or set(outcome_keys) != set(ref_keys):
             raise ValueError("report outcomes must equal the exact section-reference union")
@@ -911,12 +970,17 @@ class M1BResearchReportV1(DurableModel):
                 raise ValueError("skipped source cannot have a section or outcome")
             if (
                 entry.planning_status is PlanningStatus.SELECTED
-                and source is SourceType.DAILYMED
+                and source in {SourceType.DAILYMED, SourceType.FAERS}
                 and (not has_outcome or not has_section)
             ):
-                raise ValueError("executed DailyMed source needs outcomes and truthful sections")
+                raise ValueError("executed source needs outcomes and truthful sections")
 
         for section in self.source_sections:
+            if isinstance(section, FaersAggregateSectionV1):
+                outcome = outcomes_by_key[(SourceType.FAERS, section.result.query.query_id)]
+                if outcome != section.result.source_outcome:
+                    raise ValueError("FAERS section result must bind the trusted report outcome")
+                continue
             discovery_ref = section.acquisition_outcome_refs[0]
             discovery = outcomes_by_key[(SourceType.DAILYMED, discovery_ref.query_id)]
             if section.selection_status is LabelSelectionStatus.NO_CANDIDATE:
@@ -1050,7 +1114,12 @@ class M1BResearchReportV1(DurableModel):
         request: M1BResearchRequestV1,
         *,
         trusted_acquisition_outcomes: tuple[
-            tuple[DailyMedSelectionRequestV1, AcquisitionOutcomeRef, SourceOutcome], ...
+            tuple[
+                DailyMedSelectionRequestV1 | FaersAggregateRequestV1,
+                AcquisitionOutcomeRef,
+                SourceOutcome,
+            ],
+            ...,
         ],
         trusted_selection_decisions: tuple[
             tuple[
@@ -1082,9 +1151,18 @@ class M1BResearchReportV1(DurableModel):
         if M1BResearchRequestV1.model_validate(request.model_dump(mode="python")) != request:
             raise ValueError("M1B request differs from closed validation")
         for owned_request, ref, outcome in trusted_acquisition_outcomes:
+            if isinstance(owned_request, DailyMedSelectionRequestV1):
+                validated_owned_request: DailyMedSelectionRequestV1 | FaersAggregateRequestV1 = (
+                    DailyMedSelectionRequestV1.model_validate(
+                        owned_request.model_dump(mode="python")
+                    )
+                )
+            else:
+                validated_owned_request = FaersAggregateRequestV1.model_validate(
+                    owned_request.model_dump(mode="python")
+                )
             if (
-                DailyMedSelectionRequestV1.model_validate(owned_request.model_dump(mode="python"))
-                != owned_request
+                validated_owned_request != owned_request
                 or AcquisitionOutcomeRef.model_validate(ref.model_dump(mode="python")) != ref
                 or SourceOutcome.model_validate(outcome.model_dump(mode="python")) != outcome
             ):
@@ -1113,7 +1191,11 @@ class M1BResearchReportV1(DurableModel):
             raise ValueError("M1B report source ownership must equal its exact request")
         echoed_requests = tuple(
             sorted(
-                (section.request for section in self.source_sections),
+                (
+                    section.request
+                    for section in self.source_sections
+                    if isinstance(section, DailyMedLabelSectionV1)
+                ),
                 key=lambda item: item.drug_concept_id,
             )
         )
@@ -1121,7 +1203,15 @@ class M1BResearchReportV1(DurableModel):
             raise ValueError(
                 "M1B report DailyMed section requests must exactly echo the canonical request"
             )
-
+        echoed_faers_requests = tuple(
+            section.request
+            for section in self.source_sections
+            if isinstance(section, FaersAggregateSectionV1)
+        )
+        if echoed_faers_requests != request.faers_query_requests:
+            raise ValueError(
+                "M1B report FAERS section requests must exactly echo the canonical request"
+            )
         report_ref_owners = tuple(
             (section.request, ref)
             for section in self.source_sections
@@ -1138,9 +1228,18 @@ class M1BResearchReportV1(DurableModel):
             )
 
         for owned_request, ref, outcome in trusted_acquisition_outcomes:
+            if isinstance(owned_request, DailyMedSelectionRequestV1):
+                permitted_requests: tuple[
+                    DailyMedSelectionRequestV1 | FaersAggregateRequestV1, ...
+                ] = request.dailymed_selection_requests
+                expected_source = SourceType.DAILYMED
+            else:
+                permitted_requests = request.faers_query_requests
+                expected_source = SourceType.FAERS
             if (
-                owned_request not in request.dailymed_selection_requests
+                owned_request not in permitted_requests
                 or ref.run_id != self.run_id
+                or ref.source is not expected_source
                 or ref.source is not outcome.source
                 or ref.query_id != outcome.query_id
             ):
@@ -1160,7 +1259,10 @@ class M1BResearchReportV1(DurableModel):
             raise ValueError("report outcomes must exactly equal trusted acquisition outcomes")
 
         decision_sections = tuple(
-            section for section in self.source_sections if section.selection_decision_id is not None
+            section
+            for section in self.source_sections
+            if isinstance(section, DailyMedLabelSectionV1)
+            and section.selection_decision_id is not None
         )
         expected_decision_owners = tuple(
             (section.request, cast(DecisionId, section.selection_decision_id))
@@ -1188,7 +1290,7 @@ class M1BResearchReportV1(DurableModel):
         expected_fetch_owners = tuple(
             (section.request, section.acquisition_outcome_refs[1])
             for section in self.source_sections
-            if section.retained_response is not None
+            if isinstance(section, DailyMedLabelSectionV1) and section.retained_response is not None
         )
         trusted_fetch_owners = tuple(
             (owned_request, fetch_ref)

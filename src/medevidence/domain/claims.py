@@ -48,6 +48,8 @@ from .sources import (
     DailyMedCandidateLabel,
     DailyMedLabelVersion,
     ExecutionStatus,
+    FaersAggregateBucketV1,
+    FaersAggregateQueryV1,
     LabelSection,
     LabelSelectionDecision,
     LabelSelectionStatus,
@@ -63,6 +65,60 @@ class CitationRelationship(StrEnum):
     SUPPORTS = "supports"
     CONTRADICTS = "contradicts"
     CONTEXT_ONLY = "context_only"
+
+
+class FaersLocatorV1(DurableModel):
+    """Closed narrative-free locator for one exact FAERS aggregate bucket."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.faers.locator.v1"] = "m1b.faers.locator.v1"
+    locator_kind: Literal["faers_aggregate_bucket"] = "faers_aggregate_bucket"
+    report_id: ReportId
+    run_id: RunId
+    source: Literal[SourceType.FAERS] = SourceType.FAERS
+    acquisition_id: AcquisitionId
+    snapshot_id: SnapshotId
+    outcome_query_id: QueryId
+    query_id: QueryId
+    endpoint_mode: Literal["provider_count_occurrence"] = "provider_count_occurrence"
+    identity_stratum: Literal["harmonized_substance", "native_medicinal_product"]
+    reaction_pt: Literal["DIARRHOEA", "NAUSEA", "VOMITING"]
+    bucket_ordinal: int = Field(ge=0, le=99)
+    report_count: int = Field(ge=0)
+    role_policy: Literal["unfiltered_provider_roles"] = "unfiltered_provider_roles"
+
+    @model_validator(mode="after")
+    def validate_query_alias(self) -> Self:
+        if self.outcome_query_id != self.query_id:
+            raise ValueError("FAERS locator outcome query must equal its aggregate query")
+        return self
+
+    def validate_against(
+        self,
+        query: FaersAggregateQueryV1,
+        bucket: FaersAggregateBucketV1,
+    ) -> None:
+        """Bind this locator to one exact parent query and bucket row."""
+
+        validated = type(self).model_validate(self.model_dump(mode="python"))
+        validated_query = FaersAggregateQueryV1.model_validate(query.model_dump(mode="python"))
+        validated_bucket = FaersAggregateBucketV1.model_validate(bucket.model_dump(mode="python"))
+        if validated != self or validated_query != query or validated_bucket != bucket:
+            raise ValueError("FAERS locator context differs from closed validation")
+        bucket.validate_against(query)
+        if (
+            self.query_id != query.query_id
+            or self.outcome_query_id != query.query_id
+            or self.endpoint_mode != query.endpoint_mode
+            or self.identity_stratum != query.identity_stratum
+            or self.role_policy != query.role_policy
+            or self.query_id != bucket.query_id
+            or self.reaction_pt != bucket.reaction_pt
+            or self.bucket_ordinal != bucket.bucket_ordinal
+            or self.report_count != bucket.report_count
+        ):
+            raise ValueError("FAERS locator must equal the exact bucket and parent query")
 
 
 class CitationValidationCode(StrEnum):

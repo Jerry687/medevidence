@@ -8,6 +8,9 @@ import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    GI_PT_DISPLAY_MAPPING_M1B_V1,
+    GI_PT_EXCLUSIONS_M1B_V1,
+    GI_PT_SET_M1B_V1,
     MAX_ADVERSE_REACTIONS,
     MAX_DRUGS,
     MAX_PAGES,
@@ -20,6 +23,10 @@ from medevidence.domain import (
     DailyMedSelectionMode,
     DailyMedSelectionRequestV1,
     DrugConcept,
+    FaersAggregateRequestV1,
+    FaersExecutionBoundsV1,
+    FaersIdentityStrategy,
+    FaersInclusiveDateRangeV1,
     InclusiveDateRange,
     M1BResearchRequestV1,
     QueryBounds,
@@ -404,4 +411,210 @@ def test_parallel_m1b_request_binds_canonical_scope_sources() -> None:
             scope=scope,
             requested_sources=(SourceType.PUBMED,),
             dailymed_selection_requests=(dailymed_request(),),
+        )
+
+
+def faers_request(**changes: object) -> FaersAggregateRequestV1:
+    values: dict[str, object] = {
+        "drug_concept_id": "drug:semaglutide",
+        "identity_strategy": FaersIdentityStrategy.HARMONIZED_SUBSTANCE,
+        "identity_exact_value": "SEMAGLUTIDE",
+        "pt_values": GI_PT_SET_M1B_V1,
+        "inclusive_date_range": FaersInclusiveDateRangeV1(
+            start_date=date(2025, 1, 1), end_date=date(2025, 12, 31)
+        ),
+        "execution_bounds": FaersExecutionBoundsV1(
+            max_date_difference_days=365,
+            max_inclusive_calendar_dates=366,
+        ),
+        "statistical_unit": "provider_count_occurrence",
+    }
+    values.update(changes)
+    return FaersAggregateRequestV1(**values)
+
+
+def test_faers_pt_set_is_exact_bounded_reference_only_mapping() -> None:
+    assert GI_PT_SET_M1B_V1 == ("DIARRHOEA", "NAUSEA", "VOMITING")
+    assert GI_PT_DISPLAY_MAPPING_M1B_V1 == (
+        ("DIARRHOEA", "Diarrhoea"),
+        ("NAUSEA", "Nausea"),
+        ("VOMITING", "Vomiting"),
+    )
+    assert GI_PT_EXCLUSIONS_M1B_V1 == ("ABDOMINAL PAIN", "CONSTIPATION")
+    request = faers_request()
+    assert request.pt_values == GI_PT_SET_M1B_V1
+    assert request.statistical_unit == "provider_count_occurrence"
+    dumped = request.model_dump(mode="python")
+    assert dumped["pt_values"] == GI_PT_SET_M1B_V1
+    assert dumped["statistical_unit"] == "provider_count_occurrence"
+
+    for field in ("pt_values", "statistical_unit"):
+        missing = request.model_dump(mode="python")
+        del missing[field]
+        with pytest.raises(ValidationError):
+            FaersAggregateRequestV1.model_validate(missing)
+
+    for value in (
+        ("NAUSEA", "DIARRHOEA", "VOMITING"),
+        ("DIARRHOEA", "NAUSEA"),
+        ("DIARRHOEA", "NAUSEA", "VOMITING", "CONSTIPATION"),
+        ("DIARRHOEA", "Nausea", "VOMITING"),
+        ("DIARRHEA", "NAUSEA", "VOMITING"),
+        ("DIARRHOEA", "NAUSEA", "VOMITING\u0301"),
+    ):
+        with pytest.raises(ValidationError):
+            FaersAggregateRequestV1(**{**request.model_dump(mode="python"), "pt_values": value})
+
+    with pytest.raises(ValidationError):
+        FaersAggregateRequestV1(
+            **{
+                **request.model_dump(mode="python"),
+                "statistical_unit": "patient",
+            }
+        )
+
+    drifted = request.model_copy(update={"pt_values": ("NAUSEA",)})
+    with pytest.raises(ValidationError):
+        FaersAggregateRequestV1.model_validate(drifted)
+
+
+def test_faers_receivedate_window_accepts_one_and_366_dates_only() -> None:
+    for end in (date(2025, 1, 1), date(2026, 1, 1)):
+        window = FaersInclusiveDateRangeV1(start_date=date(2025, 1, 1), end_date=end)
+        assert window.date_field == "receivedate"
+    for end in (date(2026, 1, 2), date(2026, 1, 3)):
+        with pytest.raises(ValidationError):
+            FaersInclusiveDateRangeV1(start_date=date(2025, 1, 1), end_date=end)
+    with pytest.raises(ValidationError):
+        FaersInclusiveDateRangeV1(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            date_field="receiptdate",
+        )
+
+
+def test_faers_date_bounds_are_required_exact_and_non_bypassable() -> None:
+    bounds = faers_request().execution_bounds
+    dumped = bounds.model_dump(mode="python")
+    assert dumped["max_date_difference_days"] == 365
+    assert dumped["max_inclusive_calendar_dates"] == 366
+
+    for field, drift in (
+        ("max_date_difference_days", 364),
+        ("max_inclusive_calendar_dates", 365),
+    ):
+        missing = dict(dumped)
+        del missing[field]
+        with pytest.raises(ValidationError):
+            FaersExecutionBoundsV1.model_validate(missing)
+        with pytest.raises(ValidationError):
+            FaersExecutionBoundsV1.model_validate({**dumped, field: drift})
+        forged = bounds.model_copy(update={field: drift})
+        with pytest.raises(ValidationError):
+            FaersExecutionBoundsV1.model_validate(forged)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("aggregation_mode", "raw_latest_report"),
+        ("role_policy", "primary_suspect"),
+        ("effective_total_deadline_ms", 30_001),
+        ("execution_profile_id", "ordinary"),
+        ("identity_exact_value", "SEMAGLUTIDE%20INJECTION"),
+        ("identity_exact_value", "e\u0301"),
+    ],
+)
+def test_faers_request_rejects_every_closed_contract_drift(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        FaersAggregateRequestV1(**{**faers_request().model_dump(mode="python"), field: value})
+    assert "role" not in FaersAggregateRequestV1.model_fields
+    assert "role_predicate" not in FaersAggregateRequestV1.model_fields
+
+
+def test_m1b_faers_request_envelope_is_exact_bounded_and_canonical() -> None:
+    drugs = tuple(
+        DrugConcept(concept_id=f"drug:{index}", preferred_term=f"drug {index}")
+        for index in range(4)
+    )
+    faers_scope = make_scope(drugs=drugs, sources=(SourceType.FAERS,))
+    requests = tuple(
+        faers_request(
+            drug_concept_id=drug.concept_id,
+            identity_strategy=strategy,
+            identity_exact_value=f"DRUG {drug.concept_id[-1]}",
+        )
+        for drug in drugs
+        for strategy in (
+            FaersIdentityStrategy.HARMONIZED_SUBSTANCE,
+            FaersIdentityStrategy.NATIVE_MEDICINAL_PRODUCT,
+        )
+    )
+    envelope = M1BResearchRequestV1(
+        request_id="request:00000000-0000-4000-8000-000000000001",
+        scope=faers_scope,
+        requested_sources=(SourceType.FAERS,),
+        faers_query_requests=requests,
+    )
+    assert len(envelope.faers_query_requests) == 8
+    assert M1BResearchRequestV1.model_validate(envelope.model_dump(mode="python")) == envelope
+
+    with pytest.raises(ValidationError):
+        M1BResearchRequestV1(
+            request_id=envelope.request_id,
+            scope=faers_scope,
+            requested_sources=(SourceType.FAERS,),
+            faers_query_requests=(*requests, requests[0]),
+        )
+    with pytest.raises(ValidationError, match="canonically sorted"):
+        M1BResearchRequestV1(
+            request_id=envelope.request_id,
+            scope=faers_scope,
+            requested_sources=(SourceType.FAERS,),
+            faers_query_requests=(requests[1], requests[0]),
+        )
+    with pytest.raises(ValidationError, match="unique by drug and identity strategy"):
+        M1BResearchRequestV1(
+            request_id=envelope.request_id,
+            scope=faers_scope,
+            requested_sources=(SourceType.FAERS,),
+            faers_query_requests=(requests[0], requests[0]),
+        )
+
+
+def test_m1b_faers_request_envelope_rejects_selection_and_scope_drift() -> None:
+    selected_scope = make_scope(sources=(SourceType.FAERS,))
+    selected_request = faers_request()
+    with pytest.raises(ValidationError, match="exactly when FAERS is requested"):
+        M1BResearchRequestV1(
+            request_id="request:00000000-0000-4000-8000-000000000001",
+            scope=selected_scope,
+            requested_sources=(SourceType.FAERS,),
+        )
+
+    dailymed_scope = make_scope(sources=(SourceType.DAILYMED,))
+    with pytest.raises(ValidationError, match="exactly when FAERS is requested"):
+        M1BResearchRequestV1(
+            request_id="request:00000000-0000-4000-8000-000000000001",
+            scope=dailymed_scope,
+            requested_sources=(SourceType.DAILYMED,),
+            dailymed_selection_requests=(dailymed_request(),),
+            faers_query_requests=(selected_request,),
+        )
+
+    with pytest.raises(ValidationError, match="must belong to the request scope"):
+        M1BResearchRequestV1(
+            request_id="request:00000000-0000-4000-8000-000000000001",
+            scope=selected_scope,
+            requested_sources=(SourceType.FAERS,),
+            faers_query_requests=(faers_request(drug_concept_id="drug:foreign"),),
+        )
+
+    drifted = selected_request.model_copy(update={"pt_values": ("NAUSEA",)})
+    with pytest.raises(ValidationError):
+        M1BResearchRequestV1(
+            request_id="request:00000000-0000-4000-8000-000000000001",
+            scope=selected_scope,
+            requested_sources=(SourceType.FAERS,),
+            faers_query_requests=(drifted,),
         )

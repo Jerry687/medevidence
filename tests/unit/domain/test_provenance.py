@@ -13,6 +13,8 @@ from medevidence.domain import (
     DAILYMED_LOINC_SECTION_ALLOWLIST,
     DAILYMED_LOINC_SECTION_ORACLE,
     DAILYMED_XML_SECURITY_POLICY,
+    FAERS_CONNECTOR_POLICY,
+    FAERS_FRESHNESS_ORACLE,
     MEDICAL_SOURCE_NETWORK_EXECUTION_AUTHORIZED,
     ORDINARY_VALIDATION_HOSTS,
     CoverageStatus,
@@ -26,6 +28,8 @@ from medevidence.domain import (
     DomainWarning,
     ExecutionBounds,
     ExecutionStatus,
+    FaersFreshnessOracleV1,
+    FaersTransportPolicyV1,
     FailureCode,
     LoincSectionDefinition,
     Provenance,
@@ -35,6 +39,42 @@ from medevidence.domain import (
     SourceType,
     sha256_digest,
 )
+
+
+def test_faers_transport_and_freshness_are_exact_non_authorizing_metadata() -> None:
+    policy = FAERS_CONNECTOR_POLICY
+    assert policy.host == "api.fda.gov"
+    assert policy.path == "/drug/event.json"
+    assert policy.max_redirects == 0
+    assert policy.acquisition_deadline_ms == 30_000
+    assert policy.ordinary_validation_hosts == ()
+    assert policy.medical_source_network_execution_authorized is False
+    assert FAERS_FRESHNESS_ORACLE.authorizes_network_io is False
+    assert FAERS_FRESHNESS_ORACLE.result_cache == "none"
+    assert FAERS_FRESHNESS_ORACLE.stale_fallback is False
+
+    for field, value in (
+        ("host", "example.org"),
+        ("path", "/other"),
+        ("max_redirects", 1),
+        ("max_attempts", 3),
+        ("acquisition_deadline_ms", 60_000),
+        ("max_response_bytes", 5_242_881),
+        ("ordinary_validation_hosts", ("api.fda.gov",)),
+        ("medical_source_network_execution_authorized", True),
+    ):
+        with pytest.raises(ValidationError):
+            FaersTransportPolicyV1(**{**policy.model_dump(mode="python"), field: value})
+
+    for field, value in (
+        ("result_cache", "memory"),
+        ("stale_fallback", True),
+        ("authorizes_network_io", True),
+    ):
+        with pytest.raises(ValidationError):
+            FaersFreshnessOracleV1(
+                **{**FAERS_FRESHNESS_ORACLE.model_dump(mode="python"), field: value}
+            )
 
 
 def bounds() -> ExecutionBounds:
