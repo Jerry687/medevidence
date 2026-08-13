@@ -413,6 +413,13 @@ class FaersPersistencePort(Protocol):
         """Return a trusted exact echo after durable persistence succeeds."""
 
 
+class FaersReportApplicationPort(Protocol):
+    """Build a validated FAERS report from already-trusted executions."""
+
+    def __call__(self, request: M1BResearchRequestV1) -> M1BResearchReportV1:
+        """Return the exact closed report for one typed request."""
+
+
 class AcquisitionPersistencePort(Protocol):
     """Capture and atomically register each completed acquisition."""
 

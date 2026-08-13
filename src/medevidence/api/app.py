@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from medevidence.domain import M1BResearchReportV1, M1BResearchRequestV1, ResearchReport
 from medevidence.tools import ResearchPubMedRequest
+from medevidence.tools.ports import FaersReportApplicationPort
 
 from .contracts import ApiInclusiveDateRange, ResearchPubMedApiRequest
 from .errors import ApiErrorDetail, ApiErrorResponse
@@ -21,6 +22,8 @@ from .routes import create_router
 
 _CODE_REVISION_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 _RESPONSE_COMPONENT_SUFFIX = "Response"
+_FAERS_ROUTE_REQUEST_COMPONENT = "M1BResearchRequestV1FaersRoute"
+_FAERS_ROUTE_RESPONSE_COMPONENT = "M1BResearchReportV1FaersRoute"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +36,7 @@ class ApiDependencies:
     utc_now: Callable[[], datetime]
     code_revision: str
     dailymed_application: Callable[[M1BResearchRequestV1], M1BResearchReportV1] | None = None
+    faers_application: FaersReportApplicationPort | None = None
 
     def __post_init__(self) -> None:
         if _CODE_REVISION_PATTERN.fullmatch(self.code_revision) is None:
@@ -43,9 +47,17 @@ def create_app(dependencies: ApiDependencies) -> FastAPI:
     """Create the offline-safe M1A API from explicit injected dependencies."""
 
     dailymed_enabled = dependencies.dailymed_application is not None
-    description = (
-        "Versioned research-only transport for bounded PubMed and DailyMed evidence.\n"
+    faers_enabled = dependencies.faers_application is not None
+    source_description = (
+        "PubMed, DailyMed, and FAERS"
+        if dailymed_enabled and faers_enabled
+        else "PubMed and DailyMed"
         if dailymed_enabled
+        else "PubMed and FAERS"
+    )
+    description = (
+        f"Versioned research-only transport for bounded {source_description} evidence.\n"
+        if dailymed_enabled or faers_enabled
         else "Versioned research-only transport for the bounded M1A PubMed vertical slice.\n"
     ) + (
         "Responses are draft, non-exportable, and source-attributed. The API does not\n"
@@ -70,11 +82,11 @@ def create_app(dependencies: ApiDependencies) -> FastAPI:
     )
     app.openapi_version = "3.1.0"
     app.include_router(create_router(dependencies))
-    _register_public_components(app, dailymed_enabled=dailymed_enabled)
+    _register_public_components(app, m1b_enabled=dailymed_enabled or faers_enabled)
     return app
 
 
-def _register_public_components(app: FastAPI, *, dailymed_enabled: bool) -> None:
+def _register_public_components(app: FastAPI, *, m1b_enabled: bool) -> None:
     original = app.openapi
 
     def openapi() -> dict[str, object]:
@@ -86,7 +98,7 @@ def _register_public_components(app: FastAPI, *, dailymed_enabled: bool) -> None
             ApiErrorDetail,
             ApiErrorResponse,
         ]
-        if dailymed_enabled:
+        if m1b_enabled:
             models.append(M1BResearchRequestV1)
         for model in models:
             components[model.__name__] = model.model_json_schema(
@@ -113,7 +125,7 @@ def _register_public_components(app: FastAPI, *, dailymed_enabled: bool) -> None
                 required = set(component.get("required", ()))
                 required.update(discriminator_fields)
                 component["required"] = sorted(required)
-        if dailymed_enabled:
+        if m1b_enabled:
             paths = schema.get("paths", {})
             if not isinstance(paths, dict):
                 raise ValueError("OpenAPI paths must be a mapping")
@@ -121,9 +133,160 @@ def _register_public_components(app: FastAPI, *, dailymed_enabled: bool) -> None
             if not isinstance(pubmed_path, dict):
                 raise ValueError("PubMed OpenAPI path is missing")
             _require_dailymed_response_fields(components, pubmed_path=pubmed_path)
+            faers_path = paths.get("/v1/research/faers")
+            if faers_path is not None:
+                if not isinstance(faers_path, dict):
+                    raise ValueError("FAERS OpenAPI path must be a mapping")
+                _register_faers_route_schemas(components, faers_path=faers_path)
         return cast(dict[str, object], schema)
 
     app.openapi = openapi  # type: ignore[method-assign]
+
+
+def _register_faers_route_schemas(
+    components: dict[str, object], *, faers_path: dict[str, object]
+) -> None:
+    """Constrain only the enabled FAERS route to its exact runtime source shape."""
+
+    _schema_component(components, "M1BResearchRequestV1")
+    components[_FAERS_ROUTE_REQUEST_COMPONENT] = {
+        "allOf": [
+            {"$ref": "#/components/schemas/M1BResearchRequestV1"},
+            {
+                "type": "object",
+                "properties": {
+                    "scope": _faers_scope_constraint("ResearchScope"),
+                    "requested_sources": _exact_faers_array(),
+                    "dailymed_selection_requests": _exact_empty_array(),
+                    "faers_query_requests": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "items": {"$ref": "#/components/schemas/FaersAggregateRequestV1"},
+                    },
+                    "cadec_query_requests": _exact_empty_array(),
+                },
+                "required": [
+                    "faers_query_requests",
+                ],
+            },
+        ]
+    }
+
+    _schema_component(components, "M1BResearchReportV1")
+    components[_FAERS_ROUTE_RESPONSE_COMPONENT] = {
+        "allOf": [
+            {"$ref": "#/components/schemas/M1BResearchReportV1"},
+            {
+                "type": "object",
+                "properties": {
+                    "scope": _faers_scope_constraint("ResearchScopeResponse"),
+                    "source_plan": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 1,
+                        "items": {
+                            "allOf": [
+                                {"$ref": "#/components/schemas/M1BSourcePlanEntryV1"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "source": {"const": "faers", "type": "string"},
+                                        "planning_status": {
+                                            "const": "selected",
+                                            "type": "string",
+                                        },
+                                        "reason_code": {"const": None},
+                                        "reason": {"const": None},
+                                    },
+                                    "required": [
+                                        "source",
+                                        "planning_status",
+                                        "reason_code",
+                                        "reason",
+                                    ],
+                                },
+                            ]
+                        },
+                    },
+                    "source_outcomes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "items": {
+                            "allOf": [
+                                {"$ref": "#/components/schemas/SourceOutcomeResponse"},
+                                {
+                                    "type": "object",
+                                    "properties": {"source": {"const": "faers", "type": "string"}},
+                                    "required": ["source"],
+                                },
+                            ]
+                        },
+                    },
+                    "source_sections": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "items": {"$ref": "#/components/schemas/FaersAggregateSectionV1"},
+                    },
+                },
+                "required": ["scope", "source_plan", "source_outcomes", "source_sections"],
+            },
+        ]
+    }
+
+    post = _schema_mapping(faers_path.get("post"), "FAERS post operation")
+    request_body = _schema_mapping(post.get("requestBody"), "FAERS request body")
+    request_content = _schema_mapping(request_body.get("content"), "FAERS request content")
+    request_media = _schema_mapping(
+        request_content.get("application/json"), "FAERS request media type"
+    )
+    request_media["schema"] = {"$ref": f"#/components/schemas/{_FAERS_ROUTE_REQUEST_COMPONENT}"}
+    responses = _schema_mapping(post.get("responses"), "FAERS responses")
+    response_200 = _schema_mapping(responses.get("200"), "FAERS 200 response")
+    response_content = _schema_mapping(response_200.get("content"), "FAERS response content")
+    response_media = _schema_mapping(
+        response_content.get("application/json"), "FAERS response media type"
+    )
+    response_media["schema"] = {"$ref": f"#/components/schemas/{_FAERS_ROUTE_RESPONSE_COMPONENT}"}
+
+
+def _faers_scope_constraint(component_name: str) -> dict[str, object]:
+    return {
+        "allOf": [
+            {"$ref": f"#/components/schemas/{component_name}"},
+            {
+                "type": "object",
+                "properties": {"selected_sources": _exact_faers_array()},
+                "required": ["selected_sources"],
+            },
+        ]
+    }
+
+
+def _exact_faers_array() -> dict[str, object]:
+    return {
+        "const": ["faers"],
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1,
+        "items": {"const": "faers", "type": "string"},
+    }
+
+
+def _exact_empty_array() -> dict[str, object]:
+    return {"const": [], "type": "array", "minItems": 0, "maxItems": 0}
+
+
+def _schema_component(components: dict[str, object], name: str) -> dict[str, object]:
+    return _schema_mapping(components.get(name), f"OpenAPI component {name}")
+
+
+def _schema_mapping(value: object, name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an OpenAPI mapping")
+    return cast(dict[str, object], value)
 
 
 def _require_dailymed_response_fields(

@@ -9,6 +9,7 @@ import warnings
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, date, datetime
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -41,6 +42,7 @@ def _client(
     *,
     request_id_factory: Callable[[], str] | None = None,
     dailymed_application: (Callable[[M1BResearchRequestV1], M1BResearchReportV1] | None) = None,
+    faers_application: (Callable[[M1BResearchRequestV1], M1BResearchReportV1] | None) = None,
 ) -> TestClient:
     return TestClient(
         create_app(
@@ -51,6 +53,7 @@ def _client(
                 utc_now=lambda: NOW,
                 code_revision="0" * 40,
                 dailymed_application=dailymed_application,
+                faers_application=faers_application,
             )
         )
     )
@@ -108,6 +111,131 @@ def test_additive_dailymed_route_returns_closed_nonexportable_report() -> None:
         "/v1/research/pubmed",
         "/v1/research/dailymed",
     }
+
+
+def test_additive_faers_route_is_conditional_and_returns_closed_report() -> None:
+    from tests.unit.tools.test_faers import RUN_ID as FAERS_RUN_ID
+    from tests.unit.tools.test_faers import _execution
+    from tests.unit.tools.test_faers_report import NOW as FAERS_NOW
+    from tests.unit.tools.test_faers_report import REPORT_ID, _report_request
+
+    from medevidence.tools import build_faers_report
+
+    request = _report_request()
+    execution = _execution(request.faers_query_requests[0])
+
+    def faers_application(observed: M1BResearchRequestV1) -> M1BResearchReportV1:
+        assert observed == request
+        return build_faers_report(
+            observed,
+            report_id=REPORT_ID,
+            run_id=FAERS_RUN_ID,
+            executions=(execution,),
+            retrieved_as_of=FAERS_NOW,
+        )
+
+    client = _client(_report, faers_application=faers_application)
+    response = client.post("/v1/research/faers", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == "m1b.report.v1"
+    assert body["status"] == "draft"
+    assert body["exportable"] is False
+    assert body["source_plan"] == [
+        {
+            "schema_version": "m1b.source-plan.v1",
+            "source": "faers",
+            "planning_status": "selected",
+            "reason_code": None,
+            "reason": None,
+        }
+    ]
+    assert set(client.app.openapi()["paths"]) == {
+        "/v1/research/pubmed",
+        "/v1/research/faers",
+    }
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    (
+        (("scope", "query_bounds", "max_query_characters"), 512.0),
+        (("faers_query_requests", 0, "effective_total_deadline_ms"), 30000.0),
+        (("faers_query_requests", 0, "execution_bounds", "max_pages"), True),
+        (("faers_query_requests", 0, "execution_bounds", "page_size"), "100"),
+        (("faers_query_requests", 0, "execution_bounds", "max_buckets"), 100.5),
+        (
+            ("faers_query_requests", 0, "execution_bounds", "max_response_bytes"),
+            10**100,
+        ),
+    ),
+)
+def test_faers_route_rejects_integer_type_drift_before_application_execution(
+    path: tuple[str | int, ...], value: object
+) -> None:
+    from tests.unit.tools.test_faers_report import _report_request
+
+    payload = _report_request().model_dump(mode="json")
+    target: Any = payload
+    for part in path[:-1]:
+        target = target[part]
+    target[path[-1]] = value
+    executed = False
+
+    def faers_application(_: M1BResearchRequestV1) -> M1BResearchReportV1:
+        nonlocal executed
+        executed = True
+        raise AssertionError("invalid raw request must not execute the FAERS application")
+
+    response = _client(_report, faers_application=faers_application).post(
+        "/v1/research/faers",
+        content=json.dumps(payload),
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert executed is False
+
+
+@pytest.mark.parametrize("entrypoint", ("mapping", "model_construct"))
+def test_faers_route_rejects_missing_response_presence_and_request_drift(
+    entrypoint: str,
+) -> None:
+    from tests.unit.tools.test_faers import RUN_ID as FAERS_RUN_ID
+    from tests.unit.tools.test_faers import _execution
+    from tests.unit.tools.test_faers_report import NOW as FAERS_NOW
+    from tests.unit.tools.test_faers_report import REPORT_ID, _report_request
+
+    from medevidence.tools import build_faers_report
+
+    request = _report_request()
+    valid = build_faers_report(
+        request,
+        report_id=REPORT_ID,
+        run_id=FAERS_RUN_ID,
+        executions=(_execution(request.faers_query_requests[0]),),
+        retrieved_as_of=FAERS_NOW,
+    )
+    payload = deepcopy(valid.model_dump(mode="python"))
+    del payload["source_sections"][0]["result"]["limitations"]
+    returned: object = payload
+    if entrypoint == "model_construct":
+        returned = M1BResearchReportV1.model_construct(**payload)
+    response = _client(
+        _report,
+        faers_application=lambda _: returned,  # type: ignore[arg-type,return-value]
+    ).post("/v1/research/faers", json=request.model_dump(mode="json"))
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "tool_contract_error"
+
+    forged = valid.model_copy(update={"request_id": "request:00000000-0000-4000-8000-000000000099"})
+    drift_response = _client(
+        _report,
+        faers_application=lambda _: forged,
+    ).post("/v1/research/faers", json=request.model_dump(mode="json"))
+    assert drift_response.status_code == 502
+    assert drift_response.json()["error"]["code"] == "tool_contract_error"
 
 
 def test_dailymed_route_rejects_response_request_drift() -> None:

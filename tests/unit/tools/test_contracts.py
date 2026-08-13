@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import get_type_hints
 
 import pytest
 from pydantic import ValidationError
@@ -24,6 +25,7 @@ from medevidence.domain import (
 from medevidence.tools import ResearchPubMedRequest, SearchPubMedRequest, SearchPubMedResponse
 from medevidence.tools.contracts import AcquisitionIntentInput
 from medevidence.tools.ports import (
+    FaersReportApplicationPort,
     PersistedAcquisition,
     PersistedPublicationBinding,
     PersistedPublicationLineageEdge,
@@ -32,6 +34,13 @@ from medevidence.tools.ports import (
 )
 
 NOW = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
+
+
+def test_faers_report_application_port_has_stable_typed_boundary() -> None:
+    hints = get_type_hints(FaersReportApplicationPort.__call__)
+
+    assert hints["request"].__name__ == "M1BResearchRequestV1"
+    assert hints["return"].__name__ == "M1BResearchReportV1"
 
 
 def _scope(*, term: str = "semaglutide") -> ResearchScope:

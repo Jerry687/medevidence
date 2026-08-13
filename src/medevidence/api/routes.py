@@ -1,4 +1,4 @@
-"""Versioned M1A PubMed and additive M1B DailyMed application routes."""
+"""Versioned M1A PubMed and additive M1B source application routes."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from medevidence.domain import (
     sha256_digest,
 )
 from medevidence.tools import ResearchPubMedRequest
+from medevidence.tools.ports import FaersReportApplicationPort
 from medevidence.tools.pubmed import build_pubmed_query, query_identity
 
 from .contracts import (
@@ -40,6 +41,7 @@ from .contracts import (
     RequestContractFailure,
     ResearchPubMedApiRequest,
     validate_raw_dailymed_request,
+    validate_raw_faers_request,
     validate_raw_json_request,
 )
 from .errors import (
@@ -74,6 +76,9 @@ class _Dependencies(Protocol):
     def dailymed_application(
         self,
     ) -> Callable[[M1BResearchRequestV1], M1BResearchReportV1] | None: ...
+
+    @property
+    def faers_application(self) -> FaersReportApplicationPort | None: ...
 
     @property
     def request_id_factory(self) -> Callable[[], str]: ...
@@ -161,6 +166,76 @@ def create_router(dependencies: _Dependencies) -> APIRouter:
         except Exception:
             return _error_json(ApiErrorCode.INTERNAL_ERROR, request_id, ())
         return report
+
+    if dependencies.faers_application is not None:
+
+        @router.post(
+            "/v1/research/faers",
+            operation_id="research_faers_v1",
+            tags=["research"],
+            summary="Research FAERS aggregate evidence",
+            description=(
+                "Build an additive M1B FAERS report from exact trusted aggregate evidence.\n"
+                "The response remains research-only, draft, and non-exportable."
+            ),
+            response_description="Validated draft FAERS research report.",
+            response_model=M1BResearchReportV1,
+            responses=_faers_documented_responses(),
+            openapi_extra={
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/M1BResearchRequestV1FaersRoute"
+                            }
+                        }
+                    },
+                }
+            },
+        )
+        async def research_faers(request: Request) -> M1BResearchReportV1 | JSONResponse:
+            try:
+                request_id = dependencies.request_id_factory()
+                if _REQUEST_ID_PATTERN.fullmatch(request_id) is None:
+                    raise ValueError("request ID factory returned an invalid identity")
+            except Exception:
+                request_id = f"request:{uuid4()}"
+            try:
+                raw = await _bounded_body(request)
+                api_request = validate_raw_faers_request(
+                    raw,
+                    content_type=request.headers.get("content-type"),
+                    content_encoding=request.headers.get("content-encoding"),
+                )
+                request_id = api_request.request_id
+            except RequestContractFailure as error:
+                return _error_json(error.code, request_id, error.field_paths)
+
+            try:
+                if dependencies.faers_application is None:
+                    raise ToolContractFailure()
+                returned = dependencies.faers_application(api_request)
+                raw_report = (
+                    returned.model_dump(
+                        mode="python",
+                        warnings="error",
+                        exclude_unset=True,
+                    )
+                    if isinstance(returned, M1BResearchReportV1)
+                    else returned
+                )
+                report = M1BResearchReportV1.model_validate(raw_report, strict=True)
+                _require_serialized_presence(raw_report, report)
+                _validate_faers_response(report, api_request)
+            except ApplicationFailure as error:
+                return _error_json(error.code, request_id, error.field_paths)
+            except (ValidationError, PydanticSerializationError):
+                tool_error = ToolContractFailure()
+                return _error_json(tool_error.code, request_id, tool_error.field_paths)
+            except Exception:
+                return _error_json(ApiErrorCode.INTERNAL_ERROR, request_id, ())
+            return report
 
     if dependencies.dailymed_application is None:
         return router
@@ -328,6 +403,13 @@ def _dailymed_documented_responses() -> dict[int | str, dict[str, object]]:
     return responses
 
 
+def _faers_documented_responses() -> dict[int | str, dict[str, object]]:
+    responses = _dailymed_documented_responses()
+    response = responses[200]
+    response["description"] = "Validated draft FAERS research report."
+    return responses
+
+
 def _require_serialized_presence(raw: object, parsed: object) -> None:
     """Reject any omitted field before defaults can complete a returned contract."""
 
@@ -360,6 +442,26 @@ def _validate_dailymed_response(
         or report.source_plan != expected_plan
         or tuple(section.request for section in report.source_sections)
         != request.dailymed_selection_requests
+    ):
+        raise ToolContractFailure()
+
+
+def _validate_faers_response(
+    report: M1BResearchReportV1,
+    request: M1BResearchRequestV1,
+) -> None:
+    expected_plan = (
+        M1BSourcePlanEntryV1(
+            source=SourceType.FAERS,
+            planning_status=PlanningStatus.SELECTED,
+        ),
+    )
+    if (
+        report.request_id != request.request_id
+        or report.scope != request.scope
+        or report.source_plan != expected_plan
+        or tuple(section.request for section in report.source_sections)
+        != request.faers_query_requests
     ):
         raise ToolContractFailure()
 

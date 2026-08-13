@@ -607,3 +607,27 @@ explicitly injected source-neutral application function, reconstructs the
 returned report, and checks request, scope, planning, and request-section echo
 parity. Composition supplies no default DailyMed transport or live fallback.
 When the callable is absent the M1A application surface remains unchanged.
+
+## 18. M1B-FAERS-003 report and API architecture
+
+```text
+trusted FAERS-002 aggregate executions
+  -> tools/faers_report.py
+  -> FaersAggregateSectionV1 + exact FaersLocatorV1 bucket set
+  -> M1BResearchReportV1.validate_against(...)
+  -> optional injected FAERS report application port
+  -> POST /v1/research/faers
+```
+
+The report tool reconstructs every execution and proves request, query,
+acquisition outcome, snapshot, bucket, locator, and limitation equality before
+returning a draft. It cannot consume individual FAERS reports or narratives.
+The API validates raw JSON before model construction, invokes only the injected
+application, reconstructs the returned report with required-field presence,
+and checks exact request/scope/plan/section parity. Composition supplies no
+default connector, persistence adapter, credential, or network fallback.
+
+OpenAPI registration is conditional. The default M1A schema and the existing
+PubMed and DailyMed route/component projections remain protected; enabling the
+FAERS application adds only the frozen FAERS route and report-reachable
+components.

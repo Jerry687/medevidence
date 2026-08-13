@@ -104,6 +104,7 @@ from medevidence.tools.ports import (
     AcquisitionFailureCode,
     FaersExecutionPort,
     FaersPersistencePort,
+    FaersReportApplicationPort,
     PersistedAcquisition,
     PersistedPublicationBinding,
     PersistedPublicationLineageEdge,
@@ -362,8 +363,9 @@ def create_api_dependencies(
     utc_now: Callable[[], datetime],
     transport_factory: Callable[[], httpx.BaseTransport],
     dailymed_application: (Callable[[M1BResearchRequestV1], M1BResearchReportV1] | None) = None,
+    faers_application: FaersReportApplicationPort | None = None,
 ) -> ApiDependencies:
-    """Build deferred PubMed adapters and forward an optional DailyMed application."""
+    """Build deferred PubMed adapters and forward optional M1B applications."""
 
     resolved_root = snapshot_root.absolute()
 
@@ -421,6 +423,7 @@ def create_api_dependencies(
         utc_now=utc_now,
         code_revision=code_revision,
         dailymed_application=dailymed_application,
+        faers_application=faers_application,
     )
 
 
