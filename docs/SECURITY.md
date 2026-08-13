@@ -449,3 +449,30 @@ of GI adverse events. The FAERS application is optional and injected; no
 default connector, credential, host permission, persistence adapter, or network
 fallback is installed. The live harness is unconditionally skipped without a
 separate exact one-run Owner authorization.
+
+## 21. M1B-CADEC-001 asset trust boundary
+
+CADEC archive/member bytes, annotations, vocabulary material, manifest, and
+freeze audit remain untrusted external inputs. CADEC-001 admits no such bytes
+to Git and performs no acquisition or medical-source request. The release
+contract binds only exact hashes, sizes, counts, split membership hashes,
+encoding policy, and governance state.
+
+REDIST is fail-closed: external raw only, no redistribution, and no real
+corpus-derived fixtures. The exact CSIRO Data Licence ID 1061 policy requires
+attribution, non-commercial internal research only, no IP assertion over the
+data, and no implied provider accuracy or endorsement. Vocabulary models admit
+only `MedDRA` or `SNOMED CT`, exact unstated-version text, `reference-only`
+legal status, and false emission flags; identifiers, terms, hierarchy, payload,
+or redistributable assertions reject. The sole CP1252 exception requires the exact path and byte hash;
+all other text is UTF-8. Unicode identifiers must already be NFC.
+
+Five malformed rows remain rejected without repair or reinterpretation. The
+separate 91 reference-binding limitations remain visible without being
+relabeled or normalized away. Only provider-gold origin is representable.
+Auxiliary locators retain prohibited clinical, causal, incidence, regulatory,
+product-risk/comparison, diagnosis, treatment, ranking, advice, dosage,
+emergency-guidance, and individualized-medical-advice contexts. They also
+closed-revalidate identity, policy, span, release, split, and exact parent
+lineage. CADEC-002 requires new Owner authorization for any loader, execution,
+persistence, search, index, report, or API boundary.

@@ -9,11 +9,20 @@ import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    CADEC_CORPUS_ID,
+    CADEC_CORPUS_VERSION,
+    CADEC_PROHIBITED_CLAIM_CONTEXTS,
     FAERS_MANDATORY_LIMITATIONS,
     RESEARCH_ONLY_NOTICE,
     AbstractSection,
     AcquisitionOutcomeRef,
     AdverseEventConcept,
+    CadecCorpusAnnotationV1,
+    CadecCorpusDocumentV1,
+    CadecLocatorV1,
+    CadecProvenanceContextV1,
+    CadecReleaseManifestV1,
+    CadecSplit,
     Citation,
     CitationRelationship,
     ClaimUseContext,
@@ -74,9 +83,170 @@ from medevidence.domain import (
     SourcePlanEntry,
     SourcePlanReasonCode,
     SourceType,
+    TextSpanSegmentV1,
     derive_identity,
     sha256_digest,
 )
+
+
+def cadec_report_document() -> CadecCorpusDocumentV1:
+    provenance = CadecProvenanceContextV1.create(
+        corpus_id=CADEC_CORPUS_ID,
+        corpus_version=CADEC_CORPUS_VERSION,
+        split=CadecSplit.TRAIN,
+        artifact_id="artifact:synthetic-document",
+        artifact_sha256=sha256_digest(b"synthetic document bytes"),
+    )
+    return CadecCorpusDocumentV1.create(
+        corpus_id=provenance.corpus_id,
+        corpus_version=provenance.corpus_version,
+        split=provenance.split,
+        artifact_id=provenance.artifact_id,
+        artifact_sha256=provenance.artifact_sha256,
+        document_id="SYNTHETIC.1",
+        member_path="cadec/text/SYNTHETIC.1.txt",
+        text_length=20,
+        text_sha256=sha256_digest(b"synthetic text value"),
+        provenance=provenance,
+    )
+
+
+def cadec_report_annotation() -> CadecCorpusAnnotationV1:
+    document = cadec_report_document()
+    provenance = CadecProvenanceContextV1.create(
+        corpus_id=document.corpus_id,
+        corpus_version=document.corpus_version,
+        split=document.split,
+        artifact_id="artifact:synthetic-annotation",
+        artifact_sha256=sha256_digest(b"synthetic annotation bytes"),
+        lineage_artifact_ids=(document.artifact_id,),
+    )
+    return CadecCorpusAnnotationV1.create(
+        corpus_id=provenance.corpus_id,
+        corpus_version=provenance.corpus_version,
+        split=provenance.split,
+        artifact_id=provenance.artifact_id,
+        artifact_sha256=provenance.artifact_sha256,
+        annotation_id="SYNTHETIC.1.ann.1",
+        layer="original",
+        member_path="cadec/original/SYNTHETIC.1.ann",
+        document_id=document.document_id,
+        document_artifact_id=document.artifact_id,
+        document_text_sha256=document.text_sha256,
+        spans=(TextSpanSegmentV1(ordinal=0, start_offset=2, end_offset=8),),
+        surface_text_sha256=sha256_digest(b"span-value"),
+        provenance=provenance,
+    )
+
+
+def cadec_report_locator(annotation: CadecCorpusAnnotationV1) -> CadecLocatorV1:
+    return CadecLocatorV1.create(
+        corpus_id=annotation.corpus_id,
+        corpus_version=annotation.corpus_version,
+        release_manifest_sha256=annotation.release_manifest_sha256,
+        terminal_freeze_audit_sha256=annotation.terminal_freeze_audit_sha256,
+        split=annotation.split,
+        split_membership_sha256=annotation.split_membership_sha256,
+        artifact_id=annotation.artifact_id,
+        artifact_sha256=annotation.artifact_sha256,
+        document_id=annotation.document_id,
+        document_artifact_id=annotation.document_artifact_id,
+        document_text_sha256=annotation.document_text_sha256,
+        annotation_id=annotation.annotation_id,
+        annotation_record_id=annotation.annotation_record_id,
+        annotation_layer=annotation.layer,
+        annotation_member_path=annotation.member_path,
+        parent_artifact_lineage=(annotation.artifact_id,),
+        spans=annotation.spans,
+    )
+
+
+def test_cadec_locator_is_auxiliary_only_and_not_admitted_to_m1b_section_union() -> None:
+    document = cadec_report_document()
+    annotation = cadec_report_annotation()
+    locator = cadec_report_locator(annotation)
+
+    locator.validate_against(
+        document=document,
+        annotation=annotation,
+        release_manifest=CadecReleaseManifestV1.create(),
+    )
+    assert locator.use_context == "auxiliary_nlp_or_retrieval_only"
+    assert locator.prohibited_claim_contexts == CADEC_PROHIBITED_CLAIM_CONTEXTS
+    assert CadecLocatorV1.model_validate_json(locator.model_dump_json()) == locator
+
+
+def test_cadec_locator_rejects_claim_policy_and_annotation_forgery() -> None:
+    annotation = cadec_report_annotation()
+    locator = cadec_report_locator(annotation)
+    with pytest.raises(ValidationError):
+        CadecLocatorV1.model_validate(
+            locator.model_copy(update={"prohibited_claim_contexts": ("clinical",)})
+        )
+
+
+def test_cadec_prohibited_claim_contexts_are_exact_and_closed() -> None:
+    expected = (
+        "advice",
+        "causal",
+        "clinical",
+        "diagnosis",
+        "dosage",
+        "emergency_guidance",
+        "incidence",
+        "individualized_medical_advice",
+        "product_comparison",
+        "product_risk",
+        "ranking",
+        "regulatory",
+        "treatment",
+    )
+    annotation = cadec_report_annotation()
+    locator = cadec_report_locator(annotation)
+
+    assert expected == CADEC_PROHIBITED_CLAIM_CONTEXTS
+    assert locator.prohibited_claim_contexts == expected
+    for drifted in (expected[:-1], (*expected[:-1], "affirmative_support")):
+        with pytest.raises(ValidationError):
+            CadecLocatorV1.model_validate(
+                locator.model_copy(update={"prohibited_claim_contexts": drifted})
+            )
+
+
+def test_cadec_locator_validate_against_rejects_forged_self_fields() -> None:
+    release = CadecReleaseManifestV1.create()
+    document = cadec_report_document()
+    annotation = cadec_report_annotation()
+    locator = cadec_report_locator(annotation)
+    forged_values = (
+        {"locator_id": "locator:forged"},
+        {"use_context": "affirmative_support"},
+        {
+            "prohibited_claim_contexts": (
+                *CADEC_PROHIBITED_CLAIM_CONTEXTS[:-1],
+                "clinical",
+            )
+        },
+        {"spans": (locator.spans[0].model_copy(update={"end_offset": 0}),)},
+        {"release_manifest_sha256": f"sha256:{'0' * 64}"},
+        {"parent_artifact_lineage": ("artifact:forged",)},
+    )
+    for changes in forged_values:
+        with pytest.raises(ValidationError):
+            locator.model_copy(update=changes).validate_against(
+                document=document,
+                annotation=annotation,
+                release_manifest=release,
+            )
+
+    forged = annotation.model_copy(update={"artifact_id": "artifact:forged"})
+    with pytest.raises(ValueError, match="CADEC annotation"):
+        locator.validate_against(
+            document=document,
+            annotation=forged,
+            release_manifest=CadecReleaseManifestV1.create(),
+        )
+
 
 NOW = datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
 RUN_ID = "run:00000000-0000-4000-8000-000000000002"

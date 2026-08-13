@@ -408,7 +408,9 @@ recorded `FAIL - P0 0 / P1 0 / P2 1` because delivery still said staging was
 zero despite the disclosed stage-and-unstage sequence. That accounting is now
 corrected. Fresh read-only final-byte rebind remains pending. No commit, push,
 PR, merge, integrated verification, completion, or CADEC execution is claimed.
-Medical-source requests are zero, and M1B-CADEC-001 has not started.
+Medical-source requests are zero. M1B-CADEC-001 is
+`PASS_INDEPENDENT_REVIEW_PENDING_TERMINAL_AUDIT`; no terminal audit, commit,
+push, PR, merge, integration, or CADEC-002 claim is made.
 
 ### M1B-DM-001 Review 011 status
 
@@ -419,3 +421,20 @@ caller-controlled intrinsic decision validation and invalid existing
 `SourceOutcome` acceptance by the classifier/report-construction boundary.
 Remediation and Review 012 remain pending; no audit, PASS, Git, network,
 integration, or DM-002 claim is made.
+
+### M1B-CADEC-001 independent-review status
+
+The uncommitted CADEC-001 candidate is based on
+`46c799368e9cd1ed3f2a2c956931d921999044e1` and resolves six standalone gates:
+external freeze evidence; admitted/excluded and malformed policy; project
+split; encoding exception; reference-binding limitations; and
+REDIST/VOCAB/Option-A provenance plus auxiliary safety. ADR-013 records exact
+identities. No loader, request element, report section, API/OpenAPI, connector,
+persistence, search, index, training, M2, or CADEC-002 behavior is added.
+
+Independent Review 001 initially returned `FAIL` (`P0 0 / P1 5 / P2 0`).
+Remediation cycle 3 of 3 closed all five original findings and the later
+one-P1 residual. Terminal Review 001 closure is `PASS`
+(`P0 0 / P1 0 / P2 0`). Current state is
+`PASS_INDEPENDENT_REVIEW_PENDING_TERMINAL_AUDIT`; no terminal audit, Git,
+medical-source request, or CADEC-002 claim is made.

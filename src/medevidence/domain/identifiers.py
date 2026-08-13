@@ -321,6 +321,15 @@ type FailureId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
 type SnapshotId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
 type ArtifactId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
 type SourceRecordId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type CorpusId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type CorpusVersion = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=128),
+    AfterValidator(_require_nonblank),
+    AfterValidator(_require_canonical_nfc),
+]
+type CorpusDocumentId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
+type CorpusAnnotationId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
 type PublicationNoticeId = Annotated[str, StringConstraints(pattern=_STABLE_ID_PATTERN)]
 type ConnectorVersion = Annotated[
     str,

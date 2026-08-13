@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal, Self
+from typing import Any, Final, Literal, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -18,6 +18,8 @@ from .identifiers import (
     CanonicalSplVersion,
     CitationId,
     ClaimId,
+    CorpusAnnotationId,
+    CorpusDocumentId,
     DecisionId,
     DurableModel,
     ExactText,
@@ -33,6 +35,7 @@ from .identifiers import (
     Sha256Digest,
     SnapshotId,
     SourceOutcomeId,
+    SourceRecordId,
     WarningCode,
     derive_identity,
 )
@@ -44,6 +47,11 @@ from .publications import (
 )
 from .scope import SourceType
 from .sources import (
+    CadecAnnotationOrigin,
+    CadecCorpusAnnotationV1,
+    CadecCorpusDocumentV1,
+    CadecReleaseManifestV1,
+    CadecSplit,
     CoverageStatus,
     DailyMedCandidateLabel,
     DailyMedLabelVersion,
@@ -56,6 +64,7 @@ from .sources import (
     ResultStatus,
     RetainedSplResponse,
     SourceOutcome,
+    TextSpanSegmentV1,
 )
 
 
@@ -119,6 +128,170 @@ class FaersLocatorV1(DurableModel):
             or self.report_count != bucket.report_count
         ):
             raise ValueError("FAERS locator must equal the exact bucket and parent query")
+
+
+type CadecProhibitedClaimContext = Literal[
+    "advice",
+    "causal",
+    "clinical",
+    "diagnosis",
+    "dosage",
+    "emergency_guidance",
+    "incidence",
+    "individualized_medical_advice",
+    "product_comparison",
+    "product_risk",
+    "ranking",
+    "regulatory",
+    "treatment",
+]
+CADEC_PROHIBITED_CLAIM_CONTEXTS: Final[tuple[CadecProhibitedClaimContext, ...]] = (
+    "advice",
+    "causal",
+    "clinical",
+    "diagnosis",
+    "dosage",
+    "emergency_guidance",
+    "incidence",
+    "individualized_medical_advice",
+    "product_comparison",
+    "product_risk",
+    "ranking",
+    "regulatory",
+    "treatment",
+)
+
+
+class CadecLocatorV1(DurableModel):
+    """Auxiliary-only exact locator for provider-gold CADEC annotation spans."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.cadec.locator.v1"] = "m1b.cadec.locator.v1"
+    locator_id: SourceRecordId
+    locator_kind: Literal["cadec_provider_gold_annotation"] = "cadec_provider_gold_annotation"
+    source: Literal[SourceType.CADEC] = SourceType.CADEC
+    corpus_id: Literal["sha256:4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"]
+    corpus_version: Literal[
+        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+    ]
+    release_manifest_sha256: Literal[
+        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+    ]
+    terminal_freeze_audit_sha256: Literal[
+        "sha256:18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
+    ]
+    split: CadecSplit
+    split_membership_sha256: Sha256Digest
+    artifact_id: ArtifactId
+    artifact_sha256: Sha256Digest
+    document_id: CorpusDocumentId
+    document_artifact_id: ArtifactId
+    document_text_sha256: Sha256Digest
+    annotation_id: CorpusAnnotationId
+    annotation_record_id: SourceRecordId
+    annotation_layer: Literal["original", "meddra", "sct"]
+    annotation_member_path: ExactText
+    parent_artifact_lineage: tuple[ArtifactId] = Field(min_length=1, max_length=1)
+    origin: Literal[CadecAnnotationOrigin.PROVIDER_GOLD] = CadecAnnotationOrigin.PROVIDER_GOLD
+    spans: tuple[TextSpanSegmentV1, ...] = Field(min_length=1, max_length=256)
+    use_context: Literal["auxiliary_nlp_or_retrieval_only"] = "auxiliary_nlp_or_retrieval_only"
+    prohibited_claim_contexts: tuple[CadecProhibitedClaimContext, ...] = (
+        CADEC_PROHIBITED_CLAIM_CONTEXTS
+    )
+
+    @classmethod
+    def create(cls, **values: Any) -> Self:
+        """Derive a stable locator identity from the exact annotation composite."""
+
+        data = dict(values)
+        provisional = cls.model_construct(locator_id="pending", **data)
+        data["locator_id"] = derive_identity(
+            "cadec-locator", provisional.model_dump(mode="python", exclude={"locator_id"})
+        )
+        return cls.model_validate(data)
+
+    @model_validator(mode="after")
+    def validate_locator(self) -> Self:
+        if self.prohibited_claim_contexts != CADEC_PROHIBITED_CLAIM_CONTEXTS:
+            raise ValueError("CADEC locator must retain every prohibited claim context")
+        validated_spans = tuple(
+            TextSpanSegmentV1.model_validate(span.model_dump(mode="python")) for span in self.spans
+        )
+        if validated_spans != self.spans:
+            raise ValueError("CADEC locator spans differ from closed validation")
+        if self.parent_artifact_lineage != (self.artifact_id,):
+            raise ValueError("CADEC locator must retain exact parent annotation artifact lineage")
+        expected = derive_identity(
+            "cadec-locator", self.model_dump(mode="python", exclude={"locator_id"})
+        )
+        if self.locator_id != expected:
+            raise ValueError("CADEC locator identity does not match content")
+        return self
+
+    def validate_against(
+        self,
+        *,
+        document: CadecCorpusDocumentV1,
+        annotation: CadecCorpusAnnotationV1,
+        release_manifest: CadecReleaseManifestV1,
+    ) -> None:
+        """Bind the locator to one exact document and provider-gold annotation."""
+
+        validated_self = type(self).model_validate(self.model_dump(mode="python"))
+        validated_document = CadecCorpusDocumentV1.model_validate(
+            document.model_dump(mode="python")
+        )
+        validated_annotation = CadecCorpusAnnotationV1.model_validate(
+            annotation.model_dump(mode="python")
+        )
+        if validated_self != self:
+            raise ValueError("CADEC locator differs from closed validation")
+        if validated_document != document or validated_annotation != annotation:
+            raise ValueError("CADEC locator parents differ from closed validation")
+        validated_annotation.validate_against(validated_document, release_manifest)
+        if (
+            self.source,
+            self.corpus_id,
+            self.corpus_version,
+            self.release_manifest_sha256,
+            self.terminal_freeze_audit_sha256,
+            self.split,
+            self.split_membership_sha256,
+            self.artifact_id,
+            self.artifact_sha256,
+            self.document_id,
+            self.document_artifact_id,
+            self.document_text_sha256,
+            self.annotation_id,
+            self.annotation_record_id,
+            self.annotation_layer,
+            self.annotation_member_path,
+            self.parent_artifact_lineage,
+            self.origin,
+            self.spans,
+        ) != (
+            annotation.source,
+            annotation.corpus_id,
+            annotation.corpus_version,
+            annotation.release_manifest_sha256,
+            annotation.terminal_freeze_audit_sha256,
+            annotation.split,
+            annotation.split_membership_sha256,
+            annotation.artifact_id,
+            annotation.artifact_sha256,
+            annotation.document_id,
+            annotation.document_artifact_id,
+            annotation.document_text_sha256,
+            annotation.annotation_id,
+            annotation.annotation_record_id,
+            annotation.layer,
+            annotation.member_path,
+            (annotation.artifact_id,),
+            annotation.origin,
+            annotation.spans,
+        ):
+            raise ValueError("CADEC locator does not equal its annotation composite")
 
 
 class CitationValidationCode(StrEnum):

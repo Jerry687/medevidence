@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from enum import StrEnum
 from typing import Any, Final, Literal, Self
@@ -20,6 +21,8 @@ from .identifiers import (
     CanonicalSetId,
     CanonicalSplVersion,
     ConnectorVersion,
+    CorpusAnnotationId,
+    CorpusDocumentId,
     DecisionId,
     DurableModel,
     FailureId,
@@ -270,6 +273,608 @@ class SourceOutcome(DurableModel):
         if self.valid_result_count > self.configured_bounds.max_records:
             raise ValueError("valid_result_count exceeds configured bound")
         return self
+
+
+CADEC_ARCHIVE_SHA256: Final = "4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"
+CADEC_EXTERNAL_MANIFEST_BYTES: Final = 1_699_979
+CADEC_EXTERNAL_MANIFEST_SHA256: Final = (
+    "1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+)
+CADEC_TERMINAL_FREEZE_AUDIT_BYTES: Final = 6_354
+CADEC_TERMINAL_FREEZE_AUDIT_SHA256: Final = (
+    "18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
+)
+CADEC_CANONICAL_DOCUMENT_COUNT: Final = 1_250
+CADEC_APPROVED_DOCUMENT_COUNT: Final = 1_248
+CADEC_EXCLUDED_DOCUMENT_IDS: Final = ("DICLOFENAC-SODIUM.7", "LIPITOR.221")
+CADEC_MALFORMED_ROW_COUNT: Final = 5
+CADEC_SPLIT_PROJECT: Final = "MEDEVIDENCE_CADEC_SPLIT_V1"
+CADEC_CP1252_MEMBER: Final = "cadec/sct/LIPITOR.253.ann"
+CADEC_CP1252_MEMBER_SHA256: Final = (
+    "0deeb944656f03381dd8adb2914570f4759e70cd43c8a7c81a5c56cfefb0da96"
+)
+CADEC_TRAIN_MEMBERSHIP_SHA256: Final = (
+    "e533c904637a86b447ce4cee5973b4041ff8de1679fcb073e78a0525835c8329"
+)
+CADEC_DEVELOPMENT_MEMBERSHIP_SHA256: Final = (
+    "dd219af2c42b717fb1df7d24b04de9bb031c099d4deb513091c6d49d4b2b799f"
+)
+CADEC_TEST_MEMBERSHIP_SHA256: Final = (
+    "6bf824a4fe7a708a836cf08b007734622bb02c2fecf0d1441febfb0103a3e26a"
+)
+CADEC_CORPUS_ID: Final[
+    Literal["sha256:4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"]
+] = "sha256:4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"
+CADEC_CORPUS_VERSION: Final[
+    Literal["sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"]
+] = "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+CADEC_LICENCE_RECORD_SHA256: Final = (
+    "e799218a8f6eda79156913d0aaae0e7023cb80fe7e99b2db45c09ae0051ec941"
+)
+CADEC_LICENCE_DEED_SHA256: Final = (
+    "43f05a5739d32d39f326b16dbe051840ba35c4aa168efff97f9564b63b2592fa"
+)
+CADEC_VOCABULARY_VERSION_UNSTATED: Final = "not stated in retained provider/archive metadata"
+CADEC_MANDATORY_LIMITATIONS: Final[tuple[LongText, ...]] = (
+    "CADEC is an auxiliary NLP and retrieval corpus and cannot support advice, causal, "
+    "clinical, diagnosis, dosage, emergency-guidance, incidence, individualized-medical-"
+    "advice, product-comparison, product-risk, ranking, regulatory, or treatment conclusions.",
+    "The approved asset contains 91 visible reference-binding limitations; these are "
+    "not malformed rows and were not rejected, normalized, repaired, or reinterpreted.",
+    "The corpus is not a population denominator or representative surveillance sample.",
+)
+
+
+class CadecSplit(StrEnum):
+    """Owner-frozen project split labels for the approved CADEC asset."""
+
+    TRAIN = "train"
+    DEVELOPMENT = "development"
+    TEST = "test"
+
+
+class CadecAnnotationOrigin(StrEnum):
+    """Only the provider-supplied gold annotations are admitted by CADEC-001."""
+
+    PROVIDER_GOLD = "provider_gold"
+
+
+class CadecControlledVocabularyLayer(StrEnum):
+    """Exact high-level vocabulary layer identities retained by the freeze."""
+
+    MEDDRA = "MedDRA"
+    SNOMED_CT = "SNOMED CT"
+
+
+class CadecEncodingExceptionV1(DurableModel):
+    """The sole non-UTF-8 member admitted by the external freeze."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.cadec.encoding-exception.v1"] = "m1b.cadec.encoding-exception.v1"
+    member_path: Literal["cadec/sct/LIPITOR.253.ann"] = CADEC_CP1252_MEMBER
+    encoding: Literal["cp1252"] = "cp1252"
+    sha256: Literal["0deeb944656f03381dd8adb2914570f4759e70cd43c8a7c81a5c56cfefb0da96"] = (
+        CADEC_CP1252_MEMBER_SHA256
+    )
+
+
+class CadecSplitSummaryV1(DurableModel):
+    """Exact count and ordered-membership digest for one project split."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.cadec.split-summary.v1"] = "m1b.cadec.split-summary.v1"
+    split_project: Literal["MEDEVIDENCE_CADEC_SPLIT_V1"] = CADEC_SPLIT_PROJECT
+    split: CadecSplit
+    document_count: int = Field(ge=0, le=1_248)
+    membership_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_exact_split(self) -> Self:
+        expected = {
+            CadecSplit.TRAIN: (992, CADEC_TRAIN_MEMBERSHIP_SHA256),
+            CadecSplit.DEVELOPMENT: (119, CADEC_DEVELOPMENT_MEMBERSHIP_SHA256),
+            CadecSplit.TEST: (137, CADEC_TEST_MEMBERSHIP_SHA256),
+        }[self.split]
+        if (self.document_count, self.membership_sha256) != expected:
+            raise ValueError("CADEC split count and membership hash must equal the freeze")
+        return self
+
+
+CADEC_SPLIT_SUMMARIES: Final = (
+    CadecSplitSummaryV1(
+        split=CadecSplit.TRAIN,
+        document_count=992,
+        membership_sha256=CADEC_TRAIN_MEMBERSHIP_SHA256,
+    ),
+    CadecSplitSummaryV1(
+        split=CadecSplit.DEVELOPMENT,
+        document_count=119,
+        membership_sha256=CADEC_DEVELOPMENT_MEMBERSHIP_SHA256,
+    ),
+    CadecSplitSummaryV1(
+        split=CadecSplit.TEST,
+        document_count=137,
+        membership_sha256=CADEC_TEST_MEMBERSHIP_SHA256,
+    ),
+)
+
+
+class CadecReferenceBindingLimitationSummaryV1(DurableModel):
+    """Visible non-malformed reference-binding limitations in the approved asset."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.cadec.reference-binding-limitations.v1"] = (
+        "m1b.cadec.reference-binding-limitations.v1"
+    )
+    original_term_count: Literal[2] = 2
+    meddra_count: Literal[44] = 44
+    sct_count: Literal[45] = 45
+    total_count: Literal[91] = 91
+    disposition: Literal[
+        "visible_limitation_not_malformed_rejected_normalized_repaired_or_reinterpreted"
+    ] = "visible_limitation_not_malformed_rejected_normalized_repaired_or_reinterpreted"
+
+    @model_validator(mode="after")
+    def validate_total(self) -> Self:
+        if self.original_term_count + self.meddra_count + self.sct_count != self.total_count:
+            raise ValueError("CADEC reference-binding limitation total is inconsistent")
+        return self
+
+
+class CadecLicencePolicyV1(DurableModel):
+    """Exact conservative CSIRO Data Licence identity and project policy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.cadec.licence-policy.v1"] = "m1b.cadec.licence-policy.v1"
+    licence_name: Literal["CSIRO Data Licence"] = "CSIRO Data Licence"
+    licence_id: Literal[1061] = 1061
+    attribution_required: Literal[True] = True
+    non_commercial_internal_research_only: Literal[True] = True
+    intellectual_property_assertion_over_data_allowed: Literal[False] = False
+    provider_accuracy_or_endorsement_may_be_implied: Literal[False] = False
+    raw_archive_or_corpus_redistribution_allowed: Literal[False] = False
+    licence_record_sha256: Literal[
+        "e799218a8f6eda79156913d0aaae0e7023cb80fe7e99b2db45c09ae0051ec941"
+    ] = CADEC_LICENCE_RECORD_SHA256
+    licence_deed_sha256: Literal[
+        "43f05a5739d32d39f326b16dbe051840ba35c4aa168efff97f9564b63b2592fa"
+    ] = CADEC_LICENCE_DEED_SHA256
+
+
+class ControlledVocabularyRefV1(DurableModel):
+    """Closed high-level layer reference without terminology content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.controlled-vocabulary-ref.v1"] = "m1b.controlled-vocabulary-ref.v1"
+    reference: CadecControlledVocabularyLayer
+    version: Literal["not stated in retained provider/archive metadata"] = (
+        CADEC_VOCABULARY_VERSION_UNSTATED
+    )
+    legal_status: Literal["reference-only"] = "reference-only"
+    identifiers_emitted: Literal[False] = False
+    terms_emitted: Literal[False] = False
+    hierarchy_emitted: Literal[False] = False
+    payload_emitted: Literal[False] = False
+
+
+class TextSpanSegmentV1(DurableModel):
+    """A zero-based, non-empty, half-open Unicode code-point span."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.text-span-segment.v1"] = "m1b.text-span-segment.v1"
+    ordinal: int = Field(ge=0, le=255)
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_span(self) -> Self:
+        if self.end_offset <= self.start_offset:
+            raise ValueError("text span must be non-empty and half-open")
+        return self
+
+
+class CadecReleaseManifestV1(DurableModel):
+    """Closed metadata-only CADEC release and asset-admission contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m1b.cadec.release-manifest.v1"] = "m1b.cadec.release-manifest.v1"
+    work_item: Literal["M1B-CADEC-001"] = "M1B-CADEC-001"
+    source: Literal[SourceType.CADEC] = SourceType.CADEC
+    corpus_id: Literal["sha256:4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"]
+    corpus_version: Literal[
+        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+    ]
+    archive_sha256: Literal["4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"]
+    external_manifest_bytes: Literal[1_699_979]
+    external_manifest_sha256: Literal[
+        "1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+    ]
+    terminal_freeze_audit_bytes: Literal[6_354]
+    terminal_freeze_audit_sha256: Literal[
+        "18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
+    ]
+    canonical_document_count: Literal[1_250]
+    approved_document_count: Literal[1_248]
+    excluded_document_ids: tuple[Literal["DICLOFENAC-SODIUM.7"], Literal["LIPITOR.221"]]
+    malformed_row_count: Literal[5]
+    malformed_row_policy: Literal["reject_never_repair_or_reinterpret"]
+    default_text_encoding: Literal["utf-8"]
+    encoding_exceptions: tuple[CadecEncodingExceptionV1, ...]
+    split_project: Literal["MEDEVIDENCE_CADEC_SPLIT_V1"]
+    split_summaries: tuple[CadecSplitSummaryV1, ...]
+    reference_binding_limitations: CadecReferenceBindingLimitationSummaryV1
+    licence: CadecLicencePolicyV1
+    controlled_vocabulary_refs: tuple[ControlledVocabularyRefV1, ControlledVocabularyRefV1]
+    admitted_annotation_origins: tuple[Literal[CadecAnnotationOrigin.PROVIDER_GOLD]]
+    predicted_artifact_admitted: Literal[False]
+    controlled_vocabulary_policy: Literal["reference_version_legal_status_only"]
+    raw_asset_storage: Literal["external_only"]
+    redistribution: Literal["prohibited"]
+    corpus_derived_real_fixtures: Literal[False]
+
+    @classmethod
+    def create(cls) -> Self:
+        """Construct exact freeze metadata without pretending a provider version label."""
+
+        return cls(
+            corpus_id=CADEC_CORPUS_ID,
+            corpus_version=CADEC_CORPUS_VERSION,
+            archive_sha256=CADEC_ARCHIVE_SHA256,
+            external_manifest_bytes=CADEC_EXTERNAL_MANIFEST_BYTES,
+            external_manifest_sha256=CADEC_EXTERNAL_MANIFEST_SHA256,
+            terminal_freeze_audit_bytes=CADEC_TERMINAL_FREEZE_AUDIT_BYTES,
+            terminal_freeze_audit_sha256=CADEC_TERMINAL_FREEZE_AUDIT_SHA256,
+            canonical_document_count=CADEC_CANONICAL_DOCUMENT_COUNT,
+            approved_document_count=CADEC_APPROVED_DOCUMENT_COUNT,
+            excluded_document_ids=CADEC_EXCLUDED_DOCUMENT_IDS,
+            malformed_row_count=CADEC_MALFORMED_ROW_COUNT,
+            malformed_row_policy="reject_never_repair_or_reinterpret",
+            default_text_encoding="utf-8",
+            encoding_exceptions=(CadecEncodingExceptionV1(),),
+            split_project=CADEC_SPLIT_PROJECT,
+            split_summaries=CADEC_SPLIT_SUMMARIES,
+            reference_binding_limitations=CadecReferenceBindingLimitationSummaryV1(),
+            licence=CadecLicencePolicyV1(),
+            controlled_vocabulary_refs=(
+                ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.MEDDRA),
+                ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.SNOMED_CT),
+            ),
+            admitted_annotation_origins=(CadecAnnotationOrigin.PROVIDER_GOLD,),
+            predicted_artifact_admitted=False,
+            controlled_vocabulary_policy="reference_version_legal_status_only",
+            raw_asset_storage="external_only",
+            redistribution="prohibited",
+            corpus_derived_real_fixtures=False,
+        )
+
+    @model_validator(mode="after")
+    def validate_exact_freeze(self) -> Self:
+        if self.excluded_document_ids != tuple(sorted(CADEC_EXCLUDED_DOCUMENT_IDS)):
+            raise ValueError("CADEC exclusions must be exact, unique, and sorted")
+        if self.encoding_exceptions != (CadecEncodingExceptionV1(),):
+            raise ValueError("CADEC has exactly one frozen CP1252 exception")
+        if self.split_summaries != CADEC_SPLIT_SUMMARIES:
+            raise ValueError("CADEC split summaries must equal the exact project freeze")
+        if self.licence != CadecLicencePolicyV1():
+            raise ValueError("CADEC licence identity and policy must equal the exact freeze")
+        expected_vocabulary_refs = (
+            ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.MEDDRA),
+            ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.SNOMED_CT),
+        )
+        if self.controlled_vocabulary_refs != expected_vocabulary_refs:
+            raise ValueError("CADEC vocabulary references must equal the exact high-level layers")
+        if sum(item.document_count for item in self.split_summaries) != (
+            self.approved_document_count
+        ):
+            raise ValueError("CADEC split counts must equal approved document count")
+        if self.canonical_document_count - len(self.excluded_document_ids) != (
+            self.approved_document_count
+        ):
+            raise ValueError("CADEC admitted-document arithmetic is inconsistent")
+        return self
+
+
+class _CadecCompositeOwner(DurableModel):
+    """Direct Option-A source/corpus/split/artifact ownership fields."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    source: Literal[SourceType.CADEC] = SourceType.CADEC
+    corpus_id: Literal[
+        "sha256:4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"
+    ] = CADEC_CORPUS_ID
+    corpus_version: Literal[
+        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+    ] = CADEC_CORPUS_VERSION
+    release_manifest_sha256: Literal[
+        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+    ] = CADEC_CORPUS_VERSION
+    terminal_freeze_audit_sha256: Literal[
+        "sha256:18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
+    ] = "sha256:18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
+    split: CadecSplit
+    split_membership_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    artifact_id: ArtifactId
+    artifact_sha256: Sha256Digest
+
+    @model_validator(mode="after")
+    def validate_release_binding(self) -> Self:
+        expected = {
+            CadecSplit.TRAIN: CADEC_TRAIN_MEMBERSHIP_SHA256,
+            CadecSplit.DEVELOPMENT: CADEC_DEVELOPMENT_MEMBERSHIP_SHA256,
+            CadecSplit.TEST: CADEC_TEST_MEMBERSHIP_SHA256,
+        }[self.split]
+        if self.split_membership_sha256 != f"sha256:{expected}":
+            raise ValueError("CADEC child must bind the exact project split membership manifest")
+        return self
+
+    def validate_against_release(self, release_manifest: CadecReleaseManifestV1) -> None:
+        """Require the exact closed release, manifest, audit, and split identity."""
+
+        validated_release = CadecReleaseManifestV1.model_validate(
+            release_manifest.model_dump(mode="python")
+        )
+        if validated_release != release_manifest:
+            raise ValueError("CADEC release manifest differs from closed validation")
+        split_row = next(
+            row for row in validated_release.split_summaries if row.split is self.split
+        )
+        if (
+            self.source is not validated_release.source
+            or self.corpus_id != validated_release.corpus_id
+            or self.corpus_version != validated_release.corpus_version
+            or self.release_manifest_sha256
+            != f"sha256:{validated_release.external_manifest_sha256}"
+            or self.terminal_freeze_audit_sha256
+            != f"sha256:{validated_release.terminal_freeze_audit_sha256}"
+            or self.split_membership_sha256 != f"sha256:{split_row.membership_sha256}"
+        ):
+            raise ValueError("CADEC child does not bind the exact approved release")
+
+
+def _cadec_split_membership_digest(split: CadecSplit) -> Sha256Digest:
+    raw_digest = {
+        CadecSplit.TRAIN: CADEC_TRAIN_MEMBERSHIP_SHA256,
+        CadecSplit.DEVELOPMENT: CADEC_DEVELOPMENT_MEMBERSHIP_SHA256,
+        CadecSplit.TEST: CADEC_TEST_MEMBERSHIP_SHA256,
+    }[split]
+    return f"sha256:{raw_digest}"
+
+
+class CadecProvenanceContextV1(_CadecCompositeOwner):
+    """Source-neutral lineage context owned by one exact CADEC child artifact."""
+
+    schema_version: Literal["m1b.cadec.provenance-context.v1"] = "m1b.cadec.provenance-context.v1"
+    provenance_context_id: SourceRecordId
+    lineage_artifact_ids: tuple[ArtifactId, ...] = ()
+
+    @classmethod
+    def create(cls, **values: Any) -> Self:
+        data = dict(values)
+        data.setdefault("split_membership_sha256", _cadec_split_membership_digest(data["split"]))
+        provisional = cls.model_construct(provenance_context_id="pending", **data)
+        data["provenance_context_id"] = derive_identity(
+            "cadec-provenance",
+            provisional.model_dump(mode="python", exclude={"provenance_context_id"}),
+        )
+        return cls.model_validate(data)
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> Self:
+        if self.lineage_artifact_ids != tuple(sorted(set(self.lineage_artifact_ids))):
+            raise ValueError("CADEC lineage artifact IDs must be unique and sorted")
+        expected = derive_identity(
+            "cadec-provenance", self.model_dump(mode="python", exclude={"provenance_context_id"})
+        )
+        if self.provenance_context_id != expected:
+            raise ValueError("CADEC provenance context identity does not match content")
+        return self
+
+
+class CadecCorpusDocumentV1(_CadecCompositeOwner):
+    """Metadata-only approved CADEC document; raw corpus text remains external."""
+
+    schema_version: Literal["m1b.cadec.document.v1"] = "m1b.cadec.document.v1"
+    document_record_id: SourceRecordId
+    document_id: CorpusDocumentId
+    member_path: CanonicalNfcText
+    text_length: int = Field(gt=0, le=1_000_000)
+    text_sha256: Sha256Digest
+    provenance: CadecProvenanceContextV1
+
+    @classmethod
+    def create(cls, **values: Any) -> Self:
+        """Derive the document record identity from its closed metadata."""
+
+        data = dict(values)
+        data.setdefault("split_membership_sha256", _cadec_split_membership_digest(data["split"]))
+        provisional = cls.model_construct(document_record_id="pending", **data)
+        data["document_record_id"] = derive_identity(
+            "cadec-document", provisional.model_dump(mode="python", exclude={"document_record_id"})
+        )
+        return cls.model_validate(data)
+
+    @model_validator(mode="after")
+    def validate_document(self) -> Self:
+        validated = CadecProvenanceContextV1.model_validate(
+            self.provenance.model_dump(mode="python")
+        )
+        if (
+            validated.source,
+            validated.corpus_id,
+            validated.corpus_version,
+            validated.split,
+            validated.artifact_id,
+            validated.artifact_sha256,
+        ) != (
+            self.source,
+            self.corpus_id,
+            self.corpus_version,
+            self.split,
+            self.artifact_id,
+            self.artifact_sha256,
+        ):
+            raise ValueError("CADEC document must own its exact Option-A provenance composite")
+        expected = derive_identity(
+            "cadec-document", self.model_dump(mode="python", exclude={"document_record_id"})
+        )
+        if self.document_record_id != expected:
+            raise ValueError("CADEC document identity does not match content")
+        if self.document_id in CADEC_EXCLUDED_DOCUMENT_IDS:
+            raise ValueError("excluded CADEC document cannot be admitted")
+        if re.fullmatch(r"[A-Z0-9][A-Z0-9-]*\.[1-9][0-9]*", self.document_id) is None:
+            raise ValueError("CADEC document ID is not a canonical archive document label")
+        expected_member_path = f"cadec/text/{self.document_id}.txt"
+        if self.member_path != expected_member_path:
+            raise ValueError("CADEC document member path is not the exact canonical safe label")
+        if self.provenance.lineage_artifact_ids:
+            raise ValueError("CADEC document provenance must have no parent artifact lineage")
+        return self
+
+    def validate_against(self, release_manifest: CadecReleaseManifestV1) -> None:
+        """Revalidate this document and bind it to the exact approved release."""
+
+        validated_self = type(self).model_validate(self.model_dump(mode="python"))
+        if validated_self != self:
+            raise ValueError("CADEC document differs from closed validation")
+        validated_self.validate_against_release(release_manifest)
+
+
+class CadecCorpusAnnotationV1(_CadecCompositeOwner):
+    """Provider-gold span metadata without terminology identifiers or payload."""
+
+    schema_version: Literal["m1b.cadec.annotation.v1"] = "m1b.cadec.annotation.v1"
+    annotation_record_id: SourceRecordId
+    annotation_id: CorpusAnnotationId
+    layer: Literal["original", "meddra", "sct"]
+    member_path: CanonicalNfcText
+    document_id: CorpusDocumentId
+    document_artifact_id: ArtifactId
+    document_text_sha256: Sha256Digest
+    origin: Literal[CadecAnnotationOrigin.PROVIDER_GOLD] = CadecAnnotationOrigin.PROVIDER_GOLD
+    spans: tuple[TextSpanSegmentV1, ...] = Field(min_length=1, max_length=256)
+    surface_text_sha256: Sha256Digest
+    controlled_vocabulary_refs: tuple[ControlledVocabularyRefV1, ...] = ()
+    provenance: CadecProvenanceContextV1
+    reference_binding_limited: bool = False
+
+    @classmethod
+    def create(cls, **values: Any) -> Self:
+        """Derive the annotation record identity from provider-gold metadata."""
+
+        data = dict(values)
+        data.setdefault("split_membership_sha256", _cadec_split_membership_digest(data["split"]))
+        provisional = cls.model_construct(annotation_record_id="pending", **data)
+        data["annotation_record_id"] = derive_identity(
+            "cadec-annotation",
+            provisional.model_dump(mode="python", exclude={"annotation_record_id"}),
+        )
+        return cls.model_validate(data)
+
+    @model_validator(mode="after")
+    def validate_annotation(self) -> Self:
+        validated_provenance = CadecProvenanceContextV1.model_validate(
+            self.provenance.model_dump(mode="python")
+        )
+        if (
+            validated_provenance.source,
+            validated_provenance.corpus_id,
+            validated_provenance.corpus_version,
+            validated_provenance.split,
+            validated_provenance.artifact_id,
+            validated_provenance.artifact_sha256,
+        ) != (
+            self.source,
+            self.corpus_id,
+            self.corpus_version,
+            self.split,
+            self.artifact_id,
+            self.artifact_sha256,
+        ):
+            raise ValueError("CADEC annotation must own its exact Option-A provenance composite")
+        validated_spans = tuple(
+            TextSpanSegmentV1.model_validate(span.model_dump(mode="python")) for span in self.spans
+        )
+        if validated_spans != self.spans:
+            raise ValueError("CADEC annotation spans differ from closed validation")
+        if tuple(span.ordinal for span in self.spans) != tuple(range(len(self.spans))):
+            raise ValueError("CADEC span ordinals must be contiguous from zero")
+        if any(
+            left.end_offset > right.start_offset
+            for left, right in zip(self.spans, self.spans[1:], strict=False)
+        ):
+            raise ValueError("CADEC spans must be ordered and non-overlapping")
+        refs = tuple(
+            ControlledVocabularyRefV1.model_validate(item.model_dump(mode="python"))
+            for item in self.controlled_vocabulary_refs
+        )
+        expected_refs = {
+            "original": (),
+            "meddra": (ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.MEDDRA),),
+            "sct": (ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.SNOMED_CT),),
+        }[self.layer]
+        if refs != self.controlled_vocabulary_refs or refs != expected_refs:
+            raise ValueError(
+                "controlled vocabulary references must exactly match the annotation layer"
+            )
+        expected = derive_identity(
+            "cadec-annotation", self.model_dump(mode="python", exclude={"annotation_record_id"})
+        )
+        if self.annotation_record_id != expected:
+            raise ValueError("CADEC annotation identity does not match content")
+        if self.document_id in CADEC_EXCLUDED_DOCUMENT_IDS:
+            raise ValueError("annotation for an excluded CADEC document cannot be admitted")
+        expected_member_path = f"cadec/{self.layer}/{self.document_id}.ann"
+        if self.member_path != expected_member_path:
+            raise ValueError("CADEC annotation member path is not the exact canonical safe label")
+        if self.provenance.lineage_artifact_ids != (self.document_artifact_id,):
+            raise ValueError("CADEC annotation must retain exact parent document artifact lineage")
+        return self
+
+    def validate_against(
+        self,
+        document: CadecCorpusDocumentV1,
+        release_manifest: CadecReleaseManifestV1,
+    ) -> None:
+        """Reject cross-document, cross-release, hash, split, or bounds drift."""
+
+        validated_self = type(self).model_validate(self.model_dump(mode="python"))
+        if validated_self != self:
+            raise ValueError("CADEC annotation differs from closed validation")
+        validated_document = CadecCorpusDocumentV1.model_validate(
+            document.model_dump(mode="python")
+        )
+        if validated_document != document:
+            raise ValueError("CADEC document differs from closed validation")
+        validated_document.validate_against(release_manifest)
+        validated_self.validate_against_release(release_manifest)
+        if (
+            self.source,
+            self.corpus_id,
+            self.corpus_version,
+            self.split,
+            self.document_id,
+            self.document_artifact_id,
+            self.document_text_sha256,
+        ) != (
+            document.source,
+            document.corpus_id,
+            document.corpus_version,
+            document.split,
+            document.document_id,
+            document.artifact_id,
+            document.text_sha256,
+        ):
+            raise ValueError("CADEC annotation does not match its exact document composite")
+        if any(span.end_offset > document.text_length for span in self.spans):
+            raise ValueError("CADEC annotation span exceeds document text bounds")
 
 
 FAERS_PT_AUTHORITY: Final[Literal["MedDRA Version 29.0, English"]] = "MedDRA Version 29.0, English"

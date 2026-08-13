@@ -401,3 +401,40 @@ geography, outcome, or other provider record is admitted.
 
 This work item makes no FAERS/openFDA or other medical-source request. The live
 module is a disabled authorization harness and supplies no source evidence.
+
+## 14. M1B-CADEC-001 exact asset contract
+
+The external raw archive SHA-256 is
+`4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a`.
+The external manifest is 1,699,979 bytes with SHA-256
+`1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa`;
+the terminal freeze audit is 6,354 bytes with SHA-256
+`18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753`.
+These bind contracts without copying external artifacts or archive bytes.
+
+Canonical/admitted counts are 1,250/1,248; exact sorted exclusions are
+`DICLOFENAC-SODIUM.7` and `LIPITOR.221`. Five malformed rows reject and are
+never repaired or reinterpreted. All text is UTF-8 except exactly
+`cadec/sct/LIPITOR.253.ann`, decoded as CP1252 only at SHA-256
+`0deeb944656f03381dd8adb2914570f4759e70cd43c8a7c81a5c56cfefb0da96`.
+
+| `MEDEVIDENCE_CADEC_SPLIT_V1` split | Count | Membership SHA-256 |
+|---|---:|---|
+| train | 992 | `e533c904637a86b447ce4cee5973b4041ff8de1679fcb073e78a0525835c8329` |
+| development | 119 | `dd219af2c42b717fb1df7d24b04de9bb031c099d4deb513091c6d49d4b2b799f` |
+| test | 137 | `6bf824a4fe7a708a836cf08b007734622bb02c2fecf0d1441febfb0103a3e26a` |
+
+Only provider gold is admitted; no predicted artifact is admitted. The 91
+reference-binding limitations (2 original, 44 MedDRA, 45 SCT) remain visible
+and non-malformed. Vocabulary is closed to `MedDRA` and `SNOMED CT`, each with
+version `not stated in retained provider/archive metadata` and legal status
+`reference-only`; identifiers, terms, hierarchy, and payload emission are all
+false. The licence is `CSIRO Data Licence`, ID 1061: attribution required,
+non-commercial internal research only, no intellectual-property assertion over
+the data, no implied provider accuracy/endorsement, and no redistribution.
+REDIST remains raw external/no redistribution/no corpus-derived real fixtures.
+
+Option-A children use the namespaced archive SHA as corpus ID and namespaced
+manifest SHA as corpus version, plus the exact manifest, terminal audit, split
+membership, and artifact lineage. Document labels must be canonical safe
+`cadec/text/<document_id>.txt` paths and cannot be either exact exclusion.

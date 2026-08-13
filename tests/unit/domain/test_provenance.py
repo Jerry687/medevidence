@@ -8,6 +8,16 @@ import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    CADEC_CORPUS_ID,
+    CADEC_CORPUS_VERSION,
+    CADEC_CP1252_MEMBER,
+    CADEC_CP1252_MEMBER_SHA256,
+    CADEC_EXTERNAL_MANIFEST_BYTES,
+    CADEC_EXTERNAL_MANIFEST_SHA256,
+    CADEC_LICENCE_DEED_SHA256,
+    CADEC_LICENCE_RECORD_SHA256,
+    CADEC_TERMINAL_FREEZE_AUDIT_BYTES,
+    CADEC_TERMINAL_FREEZE_AUDIT_SHA256,
     DAILYMED_CONNECTOR_TRUST_ALLOWLIST,
     DAILYMED_HISTORICAL_ZIP_POLICY,
     DAILYMED_LOINC_SECTION_ALLOWLIST,
@@ -17,6 +27,16 @@ from medevidence.domain import (
     FAERS_FRESHNESS_ORACLE,
     MEDICAL_SOURCE_NETWORK_EXECUTION_AUTHORIZED,
     ORDINARY_VALIDATION_HOSTS,
+    CadecControlledVocabularyLayer,
+    CadecCorpusAnnotationV1,
+    CadecCorpusDocumentV1,
+    CadecEncodingExceptionV1,
+    CadecLicencePolicyV1,
+    CadecProvenanceContextV1,
+    CadecReferenceBindingLimitationSummaryV1,
+    CadecReleaseManifestV1,
+    CadecSplit,
+    ControlledVocabularyRefV1,
     CoverageStatus,
     DailyMedConnectorTrustAllowlist,
     DailyMedHistoricalZipPolicy,
@@ -37,8 +57,297 @@ from medevidence.domain import (
     SourceFailure,
     SourceOutcome,
     SourceType,
+    TextSpanSegmentV1,
     sha256_digest,
 )
+
+
+def cadec_document() -> CadecCorpusDocumentV1:
+    provenance = CadecProvenanceContextV1.create(
+        corpus_id=CADEC_CORPUS_ID,
+        corpus_version=CADEC_CORPUS_VERSION,
+        split=CadecSplit.TRAIN,
+        artifact_id="artifact:synthetic-document",
+        artifact_sha256=sha256_digest(b"synthetic document bytes"),
+    )
+    return CadecCorpusDocumentV1.create(
+        corpus_id=provenance.corpus_id,
+        corpus_version=provenance.corpus_version,
+        split=provenance.split,
+        artifact_id=provenance.artifact_id,
+        artifact_sha256=provenance.artifact_sha256,
+        document_id="SYNTHETIC.1",
+        member_path="cadec/text/SYNTHETIC.1.txt",
+        text_length=20,
+        text_sha256=sha256_digest(b"synthetic text value"),
+        provenance=provenance,
+    )
+
+
+def cadec_annotation() -> CadecCorpusAnnotationV1:
+    document = cadec_document()
+    provenance = CadecProvenanceContextV1.create(
+        corpus_id=document.corpus_id,
+        corpus_version=document.corpus_version,
+        split=document.split,
+        artifact_id="artifact:synthetic-annotation",
+        artifact_sha256=sha256_digest(b"synthetic annotation bytes"),
+        lineage_artifact_ids=(document.artifact_id,),
+    )
+    return CadecCorpusAnnotationV1.create(
+        corpus_id=provenance.corpus_id,
+        corpus_version=provenance.corpus_version,
+        split=provenance.split,
+        artifact_id=provenance.artifact_id,
+        artifact_sha256=provenance.artifact_sha256,
+        annotation_id="SYNTHETIC.1.ann.1",
+        layer="original",
+        member_path="cadec/original/SYNTHETIC.1.ann",
+        document_id=document.document_id,
+        document_artifact_id=document.artifact_id,
+        document_text_sha256=document.text_sha256,
+        spans=(TextSpanSegmentV1(ordinal=0, start_offset=2, end_offset=8),),
+        surface_text_sha256=sha256_digest(b"span-value"),
+        provenance=provenance,
+    )
+
+
+def test_cadec_external_evidence_encoding_and_reference_limitations_are_exact() -> None:
+    manifest = CadecReleaseManifestV1.create()
+    exception = CadecEncodingExceptionV1()
+    summary = CadecReferenceBindingLimitationSummaryV1()
+
+    assert (manifest.external_manifest_bytes, manifest.external_manifest_sha256) == (
+        CADEC_EXTERNAL_MANIFEST_BYTES,
+        CADEC_EXTERNAL_MANIFEST_SHA256,
+    )
+    assert (manifest.terminal_freeze_audit_bytes, manifest.terminal_freeze_audit_sha256) == (
+        CADEC_TERMINAL_FREEZE_AUDIT_BYTES,
+        CADEC_TERMINAL_FREEZE_AUDIT_SHA256,
+    )
+    assert (exception.member_path, exception.encoding, exception.sha256) == (
+        CADEC_CP1252_MEMBER,
+        "cp1252",
+        CADEC_CP1252_MEMBER_SHA256,
+    )
+    assert (summary.original_term_count, summary.meddra_count, summary.sct_count) == (2, 44, 45)
+    assert summary.total_count == 91
+    assert "not_malformed" in summary.disposition
+
+
+def test_cadec_release_and_licence_are_exact_closed_external_evidence() -> None:
+    manifest = CadecReleaseManifestV1.create()
+    licence = manifest.licence
+
+    assert (manifest.corpus_id, manifest.corpus_version) == (
+        CADEC_CORPUS_ID,
+        CADEC_CORPUS_VERSION,
+    )
+    assert licence == CadecLicencePolicyV1()
+    assert (licence.licence_name, licence.licence_id) == ("CSIRO Data Licence", 1061)
+    assert licence.attribution_required is True
+    assert licence.non_commercial_internal_research_only is True
+    assert licence.intellectual_property_assertion_over_data_allowed is False
+    assert licence.provider_accuracy_or_endorsement_may_be_implied is False
+    assert licence.raw_archive_or_corpus_redistribution_allowed is False
+    assert (licence.licence_record_sha256, licence.licence_deed_sha256) == (
+        CADEC_LICENCE_RECORD_SHA256,
+        CADEC_LICENCE_DEED_SHA256,
+    )
+
+    for field, value in (
+        ("licence_id", 1062),
+        ("attribution_required", False),
+        ("non_commercial_internal_research_only", False),
+        ("intellectual_property_assertion_over_data_allowed", True),
+        ("provider_accuracy_or_endorsement_may_be_implied", True),
+        ("raw_archive_or_corpus_redistribution_allowed", True),
+    ):
+        with pytest.raises(ValidationError):
+            CadecLicencePolicyV1.model_validate({**licence.model_dump(mode="python"), field: value})
+
+
+def test_controlled_vocabulary_contract_cannot_carry_restricted_payload() -> None:
+    reference = ControlledVocabularyRefV1(
+        reference=CadecControlledVocabularyLayer.MEDDRA,
+    )
+    assert reference.version == "not stated in retained provider/archive metadata"
+    assert reference.legal_status == "reference-only"
+    assert CadecReleaseManifestV1.create().controlled_vocabulary_refs == (
+        reference,
+        ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.SNOMED_CT),
+    )
+    for forbidden in ("identifier", "term", "hierarchy", "payload"):
+        with pytest.raises(ValidationError):
+            ControlledVocabularyRefV1.model_validate(
+                {**reference.model_dump(mode="python"), forbidden: "restricted"}
+            )
+    for field, value in (
+        ("reference", "RxNorm"),
+        ("version", "2026"),
+        ("legal_status", "redistributable"),
+        ("identifiers_emitted", True),
+        ("terms_emitted", True),
+        ("hierarchy_emitted", True),
+        ("payload_emitted", True),
+    ):
+        with pytest.raises(ValidationError):
+            ControlledVocabularyRefV1.model_validate(
+                {**reference.model_dump(mode="python"), field: value}
+            )
+
+
+def _cadec_annotation_for_layer(
+    layer: str,
+    controlled_vocabulary_refs: tuple[ControlledVocabularyRefV1, ...],
+) -> CadecCorpusAnnotationV1:
+    original_annotation = cadec_annotation()
+    annotation_data = original_annotation.model_dump(
+        mode="python", exclude={"annotation_record_id"}
+    )
+    annotation_data.update(
+        layer=layer,
+        member_path=f"cadec/{layer}/{original_annotation.document_id}.ann",
+        spans=original_annotation.spans,
+        controlled_vocabulary_refs=controlled_vocabulary_refs,
+        provenance=original_annotation.provenance,
+    )
+    return CadecCorpusAnnotationV1.create(**annotation_data)
+
+
+def test_cadec_annotation_vocabulary_refs_are_exact_function_of_layer() -> None:
+    meddra = ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.MEDDRA)
+    sct = ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.SNOMED_CT)
+
+    for layer, expected_refs in (
+        ("original", ()),
+        ("meddra", (meddra,)),
+        ("sct", (sct,)),
+    ):
+        annotation = _cadec_annotation_for_layer(layer, expected_refs)
+        assert annotation.layer == layer
+        assert annotation.controlled_vocabulary_refs == expected_refs
+
+
+def test_cadec_annotation_rejects_wrong_empty_extra_or_cross_layer_vocabulary_refs() -> None:
+    meddra = ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.MEDDRA)
+    sct = ControlledVocabularyRefV1(reference=CadecControlledVocabularyLayer.SNOMED_CT)
+
+    for layer, invalid_refs in (
+        ("original", (meddra,)),
+        ("meddra", ()),
+        ("meddra", (sct,)),
+        ("meddra", (meddra, sct)),
+        ("sct", ()),
+        ("sct", (meddra,)),
+        ("sct", (sct, meddra)),
+    ):
+        with pytest.raises(
+            ValidationError,
+            match="controlled vocabulary references must exactly match the annotation layer",
+        ):
+            _cadec_annotation_for_layer(layer, invalid_refs)
+
+
+def test_cadec_option_a_composites_spans_and_identities_round_trip() -> None:
+    document = cadec_document()
+    annotation = cadec_annotation()
+
+    annotation.validate_against(document, CadecReleaseManifestV1.create())
+    assert CadecCorpusDocumentV1.model_validate_json(document.model_dump_json()) == document
+    assert CadecCorpusAnnotationV1.model_validate_json(annotation.model_dump_json()) == annotation
+    assert annotation.origin.value == "provider_gold"
+    assert annotation.spans[0].start_offset == 2
+    assert annotation.spans[0].end_offset == 8
+
+
+def test_cadec_mismatch_is_distinct_from_frozen_malformed_row_rejection() -> None:
+    document = cadec_document()
+    original_annotation = cadec_annotation()
+    annotation_data = original_annotation.model_dump(
+        mode="python", exclude={"annotation_record_id"}
+    )
+    annotation_data.update(
+        document_id="SYNTHETIC.2",
+        member_path="cadec/original/SYNTHETIC.2.ann",
+        spans=original_annotation.spans,
+        controlled_vocabulary_refs=original_annotation.controlled_vocabulary_refs,
+        provenance=original_annotation.provenance,
+    )
+    annotation = CadecCorpusAnnotationV1.create(**annotation_data)
+    with pytest.raises(ValueError, match="does not match its exact document composite"):
+        annotation.validate_against(document, CadecReleaseManifestV1.create())
+
+    assert (
+        CadecReleaseManifestV1.create().malformed_row_policy == "reject_never_repair_or_reinterpret"
+    )
+
+
+def test_cadec_rejects_nfc_span_order_and_existing_instance_bypasses() -> None:
+    with pytest.raises(ValidationError):
+        CadecProvenanceContextV1.create(
+            corpus_id=CADEC_CORPUS_ID,
+            corpus_version="e\u0301",
+            split=CadecSplit.TRAIN,
+            artifact_id="artifact:synthetic",
+            artifact_sha256=sha256_digest(b"synthetic"),
+        )
+    with pytest.raises(ValidationError):
+        TextSpanSegmentV1(ordinal=0, start_offset=3, end_offset=3)
+
+    annotation = cadec_annotation()
+    forged_span = annotation.spans[0].model_copy(update={"end_offset": 0})
+    forged = annotation.model_copy(update={"spans": (forged_span,)})
+    with pytest.raises(ValidationError):
+        CadecCorpusAnnotationV1.model_validate(forged)
+
+
+def test_cadec_release_admission_member_labels_and_lineage_fail_closed() -> None:
+    release = CadecReleaseManifestV1.create()
+    document = cadec_document()
+    annotation = cadec_annotation()
+
+    document.validate_against(release)
+    annotation.validate_against(document, release)
+
+    for change in (
+        {"document_id": "DICLOFENAC-SODIUM.7", "member_path": "cadec/text/DICLOFENAC-SODIUM.7.txt"},
+        {"document_id": "../SYNTHETIC.1", "member_path": "cadec/text/../SYNTHETIC.1.txt"},
+        {"member_path": "../cadec/text/SYNTHETIC.1.txt"},
+    ):
+        with pytest.raises(ValidationError):
+            CadecCorpusDocumentV1.model_validate(
+                document.model_copy(update=change).model_dump(mode="python")
+            )
+
+    foreign_release = release.model_copy(update={"external_manifest_sha256": "0" * 64})
+    with pytest.raises(ValidationError):
+        document.validate_against(foreign_release)
+
+    missing_lineage = annotation.model_copy(
+        update={"provenance": annotation.provenance.model_copy(update={"lineage_artifact_ids": ()})}
+    )
+    with pytest.raises(ValidationError):
+        missing_lineage.validate_against(document, release)
+
+    cross_split = annotation.model_copy(update={"split": CadecSplit.DEVELOPMENT})
+    with pytest.raises(ValidationError):
+        cross_split.validate_against(document, release)
+
+
+def test_cadec_annotation_validate_against_rejects_forged_self_fields() -> None:
+    release = CadecReleaseManifestV1.create()
+    document = cadec_document()
+    annotation = cadec_annotation()
+    forged_values = (
+        {"annotation_record_id": "annotation:forged"},
+        {"reference_binding_limited": True},
+        {"spans": (annotation.spans[0].model_copy(update={"end_offset": 0}),)},
+        {"provenance": annotation.provenance.model_copy(update={"artifact_id": "artifact:forged"})},
+    )
+    for changes in forged_values:
+        with pytest.raises(ValidationError):
+            annotation.model_copy(update=changes).validate_against(document, release)
 
 
 def test_faers_transport_and_freshness_are_exact_non_authorizing_metadata() -> None:

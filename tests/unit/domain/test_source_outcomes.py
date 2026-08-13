@@ -9,8 +9,18 @@ import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    CADEC_APPROVED_DOCUMENT_COUNT,
+    CADEC_ARCHIVE_SHA256,
+    CADEC_CANONICAL_DOCUMENT_COUNT,
+    CADEC_EXCLUDED_DOCUMENT_IDS,
+    CADEC_MALFORMED_ROW_COUNT,
+    CADEC_SPLIT_PROJECT,
+    CADEC_SPLIT_SUMMARIES,
     FAERS_MANDATORY_LIMITATIONS,
     FAERS_PT_MAPPING,
+    CadecAnnotationOrigin,
+    CadecReleaseManifestV1,
+    CadecSplit,
     CoverageStatus,
     DailyMedCandidateLabel,
     DailyMedMarketingState,
@@ -38,6 +48,56 @@ from medevidence.domain import (
     derive_identity,
     sha256_digest,
 )
+
+
+def test_cadec_release_freezes_exact_admission_split_and_origin_metadata() -> None:
+    manifest = CadecReleaseManifestV1.create()
+
+    assert manifest.archive_sha256 == CADEC_ARCHIVE_SHA256
+    assert manifest.canonical_document_count == CADEC_CANONICAL_DOCUMENT_COUNT == 1_250
+    assert manifest.approved_document_count == CADEC_APPROVED_DOCUMENT_COUNT == 1_248
+    assert (
+        manifest.excluded_document_ids
+        == CADEC_EXCLUDED_DOCUMENT_IDS
+        == (
+            "DICLOFENAC-SODIUM.7",
+            "LIPITOR.221",
+        )
+    )
+    assert manifest.malformed_row_count == CADEC_MALFORMED_ROW_COUNT == 5
+    assert manifest.split_project == CADEC_SPLIT_PROJECT
+    assert manifest.split_summaries == CADEC_SPLIT_SUMMARIES
+    assert tuple((row.split, row.document_count) for row in manifest.split_summaries) == (
+        (CadecSplit.TRAIN, 992),
+        (CadecSplit.DEVELOPMENT, 119),
+        (CadecSplit.TEST, 137),
+    )
+    assert manifest.admitted_annotation_origins == (CadecAnnotationOrigin.PROVIDER_GOLD,)
+    assert manifest.predicted_artifact_admitted is False
+
+
+def test_cadec_release_rejects_omission_drift_and_forged_accepted_instances() -> None:
+    manifest = CadecReleaseManifestV1.create()
+    payload = manifest.model_dump(mode="python")
+    payload.pop("external_manifest_sha256")
+    with pytest.raises(ValidationError):
+        CadecReleaseManifestV1.model_validate(payload)
+
+    with pytest.raises(ValidationError):
+        CadecReleaseManifestV1.model_validate(
+            {**manifest.model_dump(mode="python"), "malformed_row_count": 4}
+        )
+
+    forged = manifest.model_copy(
+        update={
+            "split_summaries": (
+                manifest.split_summaries[0].model_copy(update={"document_count": 991}),
+                *manifest.split_summaries[1:],
+            )
+        }
+    )
+    with pytest.raises(ValidationError):
+        CadecReleaseManifestV1.model_validate(forged)
 
 
 def faers_query() -> FaersAggregateQueryV1:
