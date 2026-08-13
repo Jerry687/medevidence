@@ -1,4 +1,4 @@
-"""Explicit M1A composition with an optional additive DailyMed application."""
+"""Explicit M1A composition with optional additive M1B application seams."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ from medevidence.connectors.pubmed import (
 from medevidence.connectors.pubmed.policy import PubMedConnectorConfig
 from medevidence.domain import (
     CoverageStatus,
+    FaersAggregateRequestV1,
+    FaersAggregateResult,
     M1BResearchReportV1,
     M1BResearchRequestV1,
     PublicationRecord,
@@ -94,11 +96,14 @@ from medevidence.tools import (
     ResearchPubMedRequest,
     ResolvedConceptCatalog,
     SearchPubMedResponse,
+    fetch_faers_aggregate,
     research_pubmed_draft,
 )
 from medevidence.tools.contracts import AcquisitionIntentInput, RunIntentInput
 from medevidence.tools.ports import (
     AcquisitionFailureCode,
+    FaersExecutionPort,
+    FaersPersistencePort,
     PersistedAcquisition,
     PersistedPublicationBinding,
     PersistedPublicationLineageEdge,
@@ -417,6 +422,23 @@ def create_api_dependencies(
         code_revision=code_revision,
         dailymed_application=dailymed_application,
     )
+
+
+def create_faers_aggregate_tool(
+    *,
+    execution: FaersExecutionPort,
+    persistence: FaersPersistencePort,
+) -> Callable[[FaersAggregateRequestV1], FaersAggregateResult]:
+    """Bind injected FAERS ports without executing a request during construction."""
+
+    def application(request: FaersAggregateRequestV1) -> FaersAggregateResult:
+        return fetch_faers_aggregate(
+            request,
+            execution=execution,
+            persistence=persistence,
+        )
+
+    return application
 
 
 def _search_execution(
@@ -1178,4 +1200,4 @@ def _utc_text(value: datetime) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-__all__ = ["create_api_dependencies"]
+__all__ = ["create_api_dependencies", "create_faers_aggregate_tool"]

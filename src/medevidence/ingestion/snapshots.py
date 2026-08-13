@@ -227,6 +227,21 @@ class SnapshotStore:
 
         return self._store_dailymed_bytes(body, stable_spl=False)
 
+    def store_faers_response(self, body: bytes) -> SnapshotWrite:
+        """Publish one exact bounded FAERS aggregate response outside Git."""
+
+        if len(body) > RAW_RESPONSE_BYTE_CAPACITY:
+            raise SnapshotCapacityError("FAERS response exceeds 5,242,880 bytes")
+        digest = sha256(body).hexdigest()
+        relative = f"faers/raw/sha256/{digest[:2]}/{digest}.bin"
+        published = self.publish_bytes(relative, body, artifact_class="raw")
+        return SnapshotWrite(
+            artifact_id=f"sha256:{digest}",
+            path=published.path,
+            byte_size=published.byte_size,
+            reused_existing=published.reused_existing,
+        )
+
     def store_dailymed_spl(
         self,
         body: bytes,
@@ -275,6 +290,18 @@ class SnapshotStore:
                 raise SnapshotIntegrityError(
                     "stable SPL content is not the exact selected label"
                 ) from error
+        return target
+
+    def verify_faers(self, artifact_id: Sha256Digest) -> Path:
+        """Verify one exact content-addressed FAERS aggregate response."""
+
+        digest = artifact_id.removeprefix("sha256:")
+        relative = f"faers/raw/sha256/{digest[:2]}/{digest}.bin"
+        target = self.root.joinpath(*PurePosixPath(relative).parts)
+        self._require_safe_path(target, allow_missing_leaf=False)
+        if not target.is_file():
+            raise SnapshotIntegrityError("FAERS snapshot file is missing")
+        self._verify_file(target, digest, target.stat().st_size)
         return target
 
     def validate_dailymed_spl(
@@ -415,10 +442,16 @@ class SnapshotStore:
                 committed_files += 1
                 committed_bytes += size
                 relative = path.relative_to(self.root).as_posix()
-                if (
-                    relative.startswith("pubmed/sha256/")
-                    and relative.endswith(".bin")
-                    and len(PurePosixPath(relative).parts) == 4
+                parts = PurePosixPath(relative).parts
+                if relative.endswith(".bin") and (
+                    (relative.startswith("pubmed/sha256/") and len(parts) == 4)
+                    or (
+                        (
+                            relative.startswith("dailymed/raw/sha256/")
+                            or relative.startswith("faers/raw/sha256/")
+                        )
+                        and len(parts) == 5
+                    )
                 ):
                     raw_bytes += size
         return _Ledger(

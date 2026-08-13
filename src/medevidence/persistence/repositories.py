@@ -21,6 +21,8 @@ from medevidence.domain import (
     DailyMedMarketingState,
     ExecutionBounds,
     ExecutionStatus,
+    FaersAggregateQueryV1,
+    FaersAggregateResult,
     LabelSection,
     LabelSelectionDecision,
     Provenance,
@@ -38,12 +40,14 @@ from .session import _create_engine
 logger = logging.getLogger(__name__)
 
 PUBLICATION_BYTE_CAPACITY = 31_457_280
-_SPECIALIZED_DAILYMED_TABLES = frozenset(
+_SPECIALIZED_M1B_TABLES = frozenset(
     {
         "m1b_dailymed_selection_decisions",
         "m1b_dailymed_label_versions",
         "m1b_dailymed_sections",
         "m1b_dailymed_label_supersession",
+        "m1b_faers_queries",
+        "m1b_faers_buckets",
     }
 )
 
@@ -583,6 +587,8 @@ def _values(row: Mapping[str, object]) -> dict[str, object]:
 
 
 def _normalize(value: object) -> object:
+    if isinstance(value, sa.sql.elements.Null):
+        return None
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, tuple):
@@ -758,7 +764,7 @@ class PersistenceRepository:
 
         if table_name not in models.M1B_TABLE_ORDER:
             raise ValueError("table_name is outside the frozen DM002 persistence inventory")
-        if table_name in _SPECIALIZED_DAILYMED_TABLES:
+        if table_name in _SPECIALIZED_M1B_TABLES:
             raise ValueError(
                 f"{table_name} requires its specialized authoritative repository method"
             )
@@ -849,6 +855,10 @@ class PersistenceRepository:
                     or values["split"] is not None
                 ):
                     raise ValueError("DailyMed stable SPL artifact identity/path contract drift")
+        if table_name == "m1b_snapshot_artifacts" and values["source"] == "faers":
+            ordinal = values["ordinal"]
+            if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal not in {0, 1}:
+                raise ValueError("FAERS snapshot membership exceeds the two-attempt profile")
         if table_name == "m1b_dailymed_selection_decisions":
             if not authoritative_decision_context:
                 raise ValueError(
@@ -1076,6 +1086,196 @@ class PersistenceRepository:
                     seen.add(current)
                     pending.extend(adjacency.get(current, ()))
             return self._insert_or_verify_m1b_connection(connection, table_name, table, values)
+
+    def insert_or_verify_faers_result(
+        self,
+        *,
+        run_id: str,
+        acquisition_id: str,
+        result: FaersAggregateResult,
+    ) -> tuple[dict[str, object], tuple[dict[str, object], ...]]:
+        """Persist one exact FAERS query and its complete ordered bucket collection."""
+
+        trusted = FaersAggregateResult.model_validate(result.model_dump(mode="python"))
+        query = FaersAggregateQueryV1.model_validate(trusted.query.model_dump(mode="python"))
+        if trusted != result or query != result.query:
+            raise ValueError("FAERS result differs from closed validation")
+        query_row = self._faers_query_row(
+            run_id=run_id,
+            acquisition_id=acquisition_id,
+            result=trusted,
+        )
+        bucket_rows = tuple(
+            {
+                "acquisition_id": acquisition_id,
+                "source": "faers",
+                "run_id": run_id,
+                "query_id": query.query_id,
+                "bucket_ordinal": bucket.bucket_ordinal,
+                "reaction_pt": bucket.reaction_pt,
+                "report_count": bucket.report_count,
+                "statistical_unit": bucket.statistical_unit,
+                "identity_stratum": bucket.identity_stratum,
+                "role_policy": bucket.role_policy,
+            }
+            for bucket in trusted.buckets
+        )
+        with self._engine.begin() as connection:
+            self._validate_faers_parent_ownership(
+                connection,
+                run_id=run_id,
+                acquisition_id=acquisition_id,
+                result=trusted,
+            )
+            stored_query = self._insert_or_verify_m1b_connection(
+                connection,
+                "m1b_faers_queries",
+                models.m1b_faers_queries,
+                query_row,
+            )
+            stored_query["role_predicate_json"] = None
+            existing = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(models.m1b_faers_buckets)
+                    .where(
+                        models.m1b_faers_buckets.c.run_id == run_id,
+                        models.m1b_faers_buckets.c.source == "faers",
+                        models.m1b_faers_buckets.c.acquisition_id == acquisition_id,
+                        models.m1b_faers_buckets.c.query_id == query.query_id,
+                    )
+                    .order_by(models.m1b_faers_buckets.c.bucket_ordinal)
+                )
+                .mappings()
+                .all()
+            )
+            if existing:
+                if len(existing) != len(bucket_rows) or any(
+                    any(_normalize(stored[name]) != _normalize(expected[name]) for name in expected)
+                    for stored, expected in zip(existing, bucket_rows, strict=True)
+                ):
+                    raise PersistenceConflict("m1b_faers_buckets", "pk_m1b_faers_buckets")
+                return stored_query, existing
+            stored_buckets = tuple(
+                self._insert_or_verify_m1b_connection(
+                    connection,
+                    "m1b_faers_buckets",
+                    models.m1b_faers_buckets,
+                    row,
+                )
+                for row in bucket_rows
+            )
+            return stored_query, stored_buckets
+
+    @staticmethod
+    def _faers_query_row(
+        *,
+        run_id: str,
+        acquisition_id: str,
+        result: FaersAggregateResult,
+    ) -> dict[str, object]:
+        query = result.query
+        bounds = query.execution_bounds
+        return {
+            "generic_total_deadline_ceiling_ms": query.generic_total_deadline_ceiling_ms,
+            "effective_total_deadline_ms": query.effective_total_deadline_ms,
+            "execution_profile_id": query.execution_profile_id,
+            "outcome_query_id": result.source_outcome.query_id,
+            "acquisition_id": acquisition_id,
+            "source": "faers",
+            "run_id": run_id,
+            "query_id": query.query_id,
+            "snapshot_id": result.snapshot_id,
+            "ast_schema_version": query.ast_schema_version,
+            "serializer_version": query.serializer_version,
+            "endpoint_mode": query.endpoint_mode,
+            "provider_path": query.endpoint_path,
+            "identity_stratum": query.identity_stratum,
+            "identity_field": query.identity_field,
+            "identity_value": query.identity_value,
+            "pt_set_id": query.pt_set_id,
+            "pt_authority_version": query.pt_authority_version,
+            "pt_values": list(query.pt_values),
+            "date_field": query.date_field,
+            "start_date": query.inclusive_date_range.start_date,
+            "end_date": query.inclusive_date_range.end_date,
+            "role_policy": query.role_policy,
+            "role_predicate_json": sa.null(),
+            "provider_latest_policy": query.provider_latest_policy,
+            "bounds_json": {
+                "max_query_characters": bounds.max_query_characters,
+                "max_pages": bounds.max_pages,
+                "page_size": bounds.page_size,
+                "max_returned_raw_records": bounds.max_returned_raw_records,
+                "max_response_bytes": bounds.max_response_bytes,
+                "max_cumulative_bytes": bounds.max_cumulative_bytes,
+                "effective_total_deadline_ms": bounds.effective_total_deadline_ms,
+                "generic_total_deadline_ceiling_ms": bounds.generic_total_deadline_ceiling_ms,
+            },
+            "retrieved_at_utc": result.retrieved_at_utc,
+        }
+
+    @staticmethod
+    def _validate_faers_parent_ownership(
+        connection: Connection,
+        *,
+        run_id: str,
+        acquisition_id: str,
+        result: FaersAggregateResult,
+    ) -> None:
+        snapshot = (
+            connection.execute(
+                sa.select(models.m1b_snapshots).where(
+                    models.m1b_snapshots.c.run_id == run_id,
+                    models.m1b_snapshots.c.source == "faers",
+                    models.m1b_snapshots.c.acquisition_id == acquisition_id,
+                    models.m1b_snapshots.c.query_id == result.query.query_id,
+                    models.m1b_snapshots.c.snapshot_id == result.snapshot_id,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if snapshot is None or snapshot["manifest_artifact_id"] != result.manifest_id:
+            raise ValueError("FAERS result requires its exact trusted snapshot and manifest")
+        outcome = (
+            connection.execute(
+                sa.select(models.m1b_source_outcomes).where(
+                    models.m1b_source_outcomes.c.run_id == run_id,
+                    models.m1b_source_outcomes.c.source == "faers",
+                    models.m1b_source_outcomes.c.acquisition_id == acquisition_id,
+                    models.m1b_source_outcomes.c.query_id == result.query.query_id,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if outcome is None:
+            raise ValueError("FAERS result requires its exact trusted SourceOutcome")
+        expected_outcome = {
+            "query_id": result.source_outcome.query_id,
+            "source": "faers",
+            "execution_status": result.source_outcome.execution_status.value,
+            "coverage_status": result.source_outcome.coverage_status.value,
+            "result_status": result.source_outcome.result_status.value,
+            "max_query_characters": result.source_outcome.configured_bounds.max_query_characters,
+            "max_pages": result.source_outcome.configured_bounds.max_pages,
+            "max_records": result.source_outcome.configured_bounds.max_records,
+            "max_payload_bytes": result.source_outcome.configured_bounds.max_payload_bytes,
+            "max_total_seconds": result.source_outcome.configured_bounds.max_total_seconds,
+            "valid_result_count": result.source_outcome.valid_result_count,
+            "pages_completed": result.source_outcome.pages_completed,
+            "truncated": result.source_outcome.truncated,
+            "failure_id": result.source_outcome.failure_id,
+            "warning_codes": list(result.source_outcome.warning_codes),
+            "schema_version": result.source_outcome.schema_version,
+            "snapshot_id": result.snapshot_id,
+        }
+        if any(
+            _normalize(outcome[name]) != _normalize(value)
+            for name, value in expected_outcome.items()
+        ):
+            raise ValueError("FAERS trusted SourceOutcome differs from the result")
 
     def insert_or_verify_publication_version(
         self,

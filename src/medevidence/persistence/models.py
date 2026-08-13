@@ -878,7 +878,7 @@ sa.Index(
     registration_observation.c.observed_at_utc.desc(),
 )
 
-# M1B-DM-002 is additive: the inherited thirteen M1A tables above remain byte-stable.
+# M1B source migrations are additive: the inherited thirteen M1A tables remain byte-stable.
 M1B_TABLE_ORDER = (
     "m1b_artifacts",
     "m1b_artifact_lineage",
@@ -895,6 +895,8 @@ M1B_TABLE_ORDER = (
     "m1b_dailymed_label_versions",
     "m1b_dailymed_sections",
     "m1b_dailymed_label_supersession",
+    "m1b_faers_queries",
+    "m1b_faers_buckets",
 )
 
 
@@ -1525,7 +1527,7 @@ m1b_snapshot_artifacts = sa.Table(
     _m1b_ck("ck_member_hash", "content_hash ~ '^sha256:[0-9a-f]{64}$'"),
     _m1b_ck(
         "ck_member_termination",
-        "termination_reason IN ('complete_response','payload_limit','stream_error','deadline_exceeded')",
+        "termination_reason IN ('complete_response','payload_limit','stream_error','read_timeout','deadline_exceeded')",
     ),
     _m1b_ck("ck_member_completion", "body_complete=(termination_reason='complete_response')"),
     _m1b_ck("ck_member_http_status", "http_status IS NULL OR http_status BETWEEN 100 AND 599"),
@@ -2087,6 +2089,141 @@ m1b_dailymed_label_supersession = sa.Table(
             "m1b_snapshots.manifest_artifact_id",
         ],
         "fk_dm_sup_snapshot",
+    ),
+    schema=SCHEMA,
+)
+
+m1b_faers_queries = sa.Table(
+    "m1b_faers_queries",
+    metadata,
+    _column("generic_total_deadline_ceiling_ms", sa.Integer()),
+    _column("effective_total_deadline_ms", sa.Integer()),
+    _column("execution_profile_id", sa.Text()),
+    _column("outcome_query_id", sa.Text()),
+    _column("acquisition_id", sa.Text()),
+    _column("source", sa.Text()),
+    _column("run_id", sa.Text()),
+    _column("query_id", sa.Text()),
+    _column("snapshot_id", sa.Text()),
+    _column("ast_schema_version", sa.Text()),
+    _column("serializer_version", sa.Text()),
+    _column("endpoint_mode", sa.Text()),
+    _column("provider_path", sa.Text()),
+    _column("identity_stratum", sa.Text()),
+    _column("identity_field", sa.Text()),
+    _column("identity_value", sa.Text()),
+    _column("pt_set_id", sa.Text()),
+    _column("pt_authority_version", sa.Text()),
+    _column("pt_values", postgresql.JSONB()),
+    _column("date_field", sa.Text()),
+    _column("start_date", sa.Date()),
+    _column("end_date", sa.Date()),
+    _column("role_policy", sa.Text()),
+    _column("role_predicate_json", postgresql.JSONB(), True),
+    _column("provider_latest_policy", sa.Text()),
+    _column("bounds_json", postgresql.JSONB()),
+    _column("retrieved_at_utc", sa.DateTime(timezone=True)),
+    _m1b_ck(
+        "ck_m1b_faers_queries_closed_fields",
+        "identity_field IN ('patient.drug.openfda.substance_name.exact','patient.drug.medicinalproduct.exact') AND date_field IN ('receivedate','receiptdate') AND endpoint_mode IN ('raw_latest_report','provider_count_occurrence') AND provider_path = '/drug/event.json'",
+    ),
+    _m1b_ck(
+        "ck_m1b_faers_queries_identity_mapping",
+        "(identity_stratum='harmonized_substance' AND identity_field='patient.drug.openfda.substance_name.exact') OR (identity_stratum='native_medicinal_product' AND identity_field='patient.drug.medicinalproduct.exact')",
+    ),
+    _m1b_ck(
+        "ck_m1b_faers_queries_date_span",
+        "end_date >= start_date AND end_date <= start_date + 365",
+    ),
+    _m1b_ck(
+        "ck_m1b_faers_queries_role_mapping",
+        "(role_policy = 'unfiltered_provider_roles' AND role_predicate_json IS NULL) OR (role_policy = 'frozen_authoritative_mapping' AND role_predicate_json IS NOT NULL)",
+    ),
+    _m1b_ck(
+        "ck_m1b_faers_queries_pt_tuple",
+        "pt_set_id = 'GI_PT_SET_M1B_V1' AND jsonb_typeof(pt_values) = 'array' AND jsonb_array_length(pt_values) BETWEEN 1 AND 100",
+    ),
+    sa.UniqueConstraint(
+        "run_id", "source", "acquisition_id", "query_id", name="uq_m1b_faers_queries_binding"
+    ),
+    _m1b_fk(
+        ["run_id", "source", "acquisition_id", "query_id", "snapshot_id"],
+        [
+            "m1b_snapshots.run_id",
+            "m1b_snapshots.source",
+            "m1b_snapshots.acquisition_id",
+            "m1b_snapshots.query_id",
+            "m1b_snapshots.snapshot_id",
+        ],
+        "fk_m1b_faers_queries_snapshot_binding",
+    ),
+    _m1b_fk(
+        ["run_id", "source", "acquisition_id", "outcome_query_id"],
+        [
+            "m1b_source_outcomes.run_id",
+            "m1b_source_outcomes.source",
+            "m1b_source_outcomes.acquisition_id",
+            "m1b_source_outcomes.query_id",
+        ],
+        "fk_m1b_faers_queries_outcome_binding",
+    ),
+    _m1b_ck("ck_m1b_faers_queries_source", "source = 'faers'"),
+    _m1b_ck(
+        "ck_m1b_faers_queries_profile",
+        "execution_profile_id='FAERS_M1B_CONSTRAINED_V1' AND effective_total_deadline_ms=30000 AND generic_total_deadline_ceiling_ms=60000",
+    ),
+    _m1b_ck(
+        "ck_m1b_faers_queries_closed_bounds",
+        'bounds_json = \'{"max_query_characters"\\:512,"max_pages"\\:5,"page_size"\\:100,"max_returned_raw_records"\\:100,"max_response_bytes"\\:5242880,"max_cumulative_bytes"\\:5242880,"effective_total_deadline_ms"\\:30000,"generic_total_deadline_ceiling_ms"\\:60000}\'::jsonb',
+    ),
+    sa.PrimaryKeyConstraint(
+        "run_id", "source", "acquisition_id", "query_id", name="pk_m1b_faers_queries"
+    ),
+    schema=SCHEMA,
+)
+
+m1b_faers_buckets = sa.Table(
+    "m1b_faers_buckets",
+    metadata,
+    *[_column(name, sa.Text()) for name in ("acquisition_id", "source", "run_id", "query_id")],
+    _column("bucket_ordinal", sa.Integer()),
+    _column("reaction_pt", sa.Text()),
+    _column("report_count", sa.BigInteger()),
+    _column("statistical_unit", sa.Text()),
+    _column("identity_stratum", sa.Text()),
+    _column("role_policy", sa.Text()),
+    sa.PrimaryKeyConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "query_id",
+        "bucket_ordinal",
+        name="pk_m1b_faers_buckets",
+    ),
+    _m1b_fk(
+        ["run_id", "source", "acquisition_id", "query_id"],
+        [
+            "m1b_faers_queries.run_id",
+            "m1b_faers_queries.source",
+            "m1b_faers_queries.acquisition_id",
+            "m1b_faers_queries.query_id",
+        ],
+        "fk_m1b_faers_buckets_query_binding",
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "query_id",
+        "reaction_pt",
+        name="uq_m1b_faers_buckets_pt",
+    ),
+    _m1b_ck("ck_m1b_faers_buckets_source", "source = 'faers'"),
+    _m1b_ck("ck_m1b_faers_buckets_count_nonnegative", "report_count >= 0"),
+    _m1b_ck("ck_m1b_faers_buckets_ordinal", "bucket_ordinal BETWEEN 0 AND 99"),
+    _m1b_ck(
+        "ck_m1b_faers_buckets_statistical_unit",
+        "statistical_unit IN ('provider_latest_safety_report_record','provider_count_occurrence')",
     ),
     schema=SCHEMA,
 )

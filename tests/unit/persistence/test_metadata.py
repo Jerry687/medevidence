@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import cast
@@ -15,6 +17,22 @@ from sqlalchemy import Connection
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
+from medevidence.domain import (
+    FAERS_MANDATORY_LIMITATIONS,
+    CoverageStatus,
+    ExecutionBounds,
+    ExecutionStatus,
+    FaersAggregateBucketV1,
+    FaersAggregateQueryV1,
+    FaersAggregateRequestV1,
+    FaersAggregateResult,
+    FaersExecutionBoundsV1,
+    FaersIdentityStrategy,
+    FaersInclusiveDateRangeV1,
+    ResultStatus,
+    SourceOutcome,
+    SourceType,
+)
 from medevidence.persistence import models
 from medevidence.persistence import repositories as repository_module
 from medevidence.persistence.repositories import (
@@ -88,9 +106,18 @@ def _m1b_migration_module() -> ModuleType:
     return module
 
 
+def _faers_migration_module() -> ModuleType:
+    path = Path("alembic/versions/20260809_02_m1b_faers.py")
+    spec = importlib.util.spec_from_file_location("m1bfaers002_revision", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_exact_object_counts_and_names() -> None:
     assert tuple(table.name for table in models.TABLE_ORDER) == EXPECTED_TABLES
-    assert len(models.metadata.tables) == 28
+    assert len(models.metadata.tables) == 30
     assert len(_constraints(sa.CheckConstraint)) == 62
     assert len(_constraints(sa.ForeignKeyConstraint)) == 17
     assert len(_constraints(sa.PrimaryKeyConstraint)) == 13
@@ -175,8 +202,7 @@ def test_raw_bytes_have_no_postgresql_column() -> None:
 
 
 def test_m1b_dm002_exact_frozen_inventory_and_counts() -> None:
-    tables = [models.metadata.tables[f"{models.SCHEMA}.{name}"] for name in models.M1B_TABLE_ORDER]
-    assert models.M1B_TABLE_ORDER == (
+    dm_table_order = (
         "m1b_artifacts",
         "m1b_artifact_lineage",
         "m1b_acquisitions",
@@ -193,6 +219,8 @@ def test_m1b_dm002_exact_frozen_inventory_and_counts() -> None:
         "m1b_dailymed_sections",
         "m1b_dailymed_label_supersession",
     )
+    assert models.M1B_TABLE_ORDER[: len(dm_table_order)] == dm_table_order
+    tables = [models.metadata.tables[f"{models.SCHEMA}.{name}"] for name in dm_table_order]
     assert sum(len(table.columns) for table in tables) == 201
     assert (
         sum(
@@ -235,16 +263,150 @@ def test_m1b_migration_embeds_exact_immutable_postgresql_ddl() -> None:
             CreateTable(models.metadata.tables[f"{models.SCHEMA}.{name}"]).compile(
                 dialect=postgresql.dialect()
             )
+        ).replace("'stream_error','read_timeout',", "'stream_error',")
+        if name == "m1b_snapshot_artifacts"
+        else str(
+            CreateTable(models.metadata.tables[f"{models.SCHEMA}.{name}"]).compile(
+                dialect=postgresql.dialect()
+            )
         )
         for name in module._CREATE_ORDER
     )
-
     assert module.revision == "m1bdm002001"
     assert module.down_revision == "m1a003b0001"
-    assert module.TABLE_ORDER == models.M1B_TABLE_ORDER
+    assert models.M1B_TABLE_ORDER[: len(module.TABLE_ORDER)] == module.TABLE_ORDER
     assert statements == expected
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "medevidence.persistence" not in source
+
+
+def test_m1b_faers002_exact_frozen_inventory_and_migration() -> None:
+    assert models.M1B_TABLE_ORDER[-2:] == ("m1b_faers_queries", "m1b_faers_buckets")
+    query = models.m1b_faers_queries
+    buckets = models.m1b_faers_buckets
+    assert len(query.columns) == 27
+    assert len(buckets.columns) == 10
+    assert {column.name for column in query.columns if column.nullable} == {"role_predicate_json"}
+    assert not any(column.nullable for column in buckets.columns)
+    assert len(query.foreign_key_constraints) == 2
+    assert len(buckets.foreign_key_constraints) == 1
+    assert {
+        constraint.name
+        for constraint in query.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+    } == {"uq_m1b_faers_queries_binding"}
+    assert {
+        constraint.name
+        for constraint in buckets.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+    } == {"uq_m1b_faers_buckets_pt"}
+    assert all(
+        fk.onupdate == "RESTRICT" and fk.ondelete == "RESTRICT"
+        for table in (query, buckets)
+        for fk in table.foreign_key_constraints
+    )
+    module = _faers_migration_module()
+    expected = tuple(
+        str(
+            CreateTable(models.metadata.tables[f"{models.SCHEMA}.{name}"]).compile(
+                dialect=postgresql.dialect()
+            )
+        )
+        for name in module._CREATE_ORDER
+    )
+    termination_projection = (
+        "ALTER TABLE medevidence.m1b_snapshot_artifacts "
+        "DROP CONSTRAINT ck_member_termination, ADD CONSTRAINT ck_member_termination "
+        "CHECK (termination_reason IN "
+        "('complete_response','payload_limit','stream_error','read_timeout','deadline_exceeded'))"
+    )
+    assert module.revision == "m1bfaers002001"
+    assert module.down_revision == "m1bdm002001"
+    assert models.M1B_TABLE_ORDER[-2:] == module.TABLE_ORDER
+    assert module._ddl_statements() == (termination_projection, *expected)
+    assert "medevidence.persistence" not in Path(module.__file__).read_text(encoding="utf-8")
+
+
+def test_faers_snapshot_membership_rejects_duplicate_artifact_identity() -> None:
+    membership = models.m1b_snapshot_artifacts
+    unique_columns = {
+        constraint.name: tuple(column.name for column in constraint.columns)
+        for constraint in membership.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+    }
+    assert unique_columns["uq_m1b_snapshot_artifacts_membership"] == (
+        "run_id",
+        "source",
+        "acquisition_id",
+        "snapshot_id",
+        "artifact_id",
+    )
+    assert "content_hash" in membership.c
+    assert any(
+        tuple(element.parent.name for element in constraint.elements)
+        == (
+            "artifact_id",
+            "source",
+            "content_hash",
+        )
+        for constraint in membership.foreign_key_constraints
+    )
+
+
+def test_faers_snapshot_persistence_rejects_third_response_membership() -> None:
+    for ordinal in (0, 1):
+        PersistenceRepository._validate_m1b_row(
+            "m1b_snapshot_artifacts",
+            {"source": "faers", "ordinal": ordinal},
+        )
+    with pytest.raises(ValueError, match="two-attempt profile"):
+        PersistenceRepository._validate_m1b_row(
+            "m1b_snapshot_artifacts",
+            {"source": "faers", "ordinal": 2},
+        )
+
+
+def test_faers_read_timeout_is_the_only_additive_persisted_termination() -> None:
+    membership = models.m1b_snapshot_artifacts
+    check = next(
+        constraint
+        for constraint in membership.constraints
+        if isinstance(constraint, sa.CheckConstraint) and constraint.name == "ck_member_termination"
+    )
+    assert str(check.sqltext) == (
+        "termination_reason IN "
+        "('complete_response','payload_limit','stream_error','read_timeout','deadline_exceeded')"
+    )
+
+
+def test_faers_migration_executes_valid_closed_bounds_json_without_bind_rewriting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _faers_migration_module()
+    statements: list[str] = []
+
+    class DriverConnection:
+        def exec_driver_sql(self, statement: str) -> None:
+            statements.append(statement)
+
+    monkeypatch.setattr(module.op, "get_bind", lambda: DriverConnection())
+    module.upgrade()
+    assert statements == list(module._ddl_statements())
+    assert statements[0].startswith("ALTER TABLE medevidence.m1b_snapshot_artifacts")
+    assert "'read_timeout'" in statements[0]
+    query_ddl = statements[1]
+    match = re.search(r"bounds_json = '(\{[^']+\})'::jsonb", query_ddl)
+    assert match is not None
+    assert json.loads(match.group(1)) == {
+        "max_query_characters": 512,
+        "max_pages": 5,
+        "page_size": 100,
+        "max_returned_raw_records": 100,
+        "max_response_bytes": 5_242_880,
+        "max_cumulative_bytes": 5_242_880,
+        "effective_total_deadline_ms": 30_000,
+        "generic_total_deadline_ceiling_ms": 60_000,
+    }
 
 
 def test_m1b_dm002_nullability_matches_the_exact_freeze() -> None:
@@ -296,6 +458,7 @@ def test_m1b_dm002_nullability_matches_the_exact_freeze() -> None:
         "m1b_dailymed_label_supersession.observed_query_id",
         "m1b_dailymed_label_supersession.observed_snapshot_id",
         "m1b_dailymed_label_supersession.observed_manifest_id",
+        "m1b_faers_queries.role_predicate_json",
     }
 
 
@@ -306,6 +469,8 @@ def test_m1b_dm002_nullability_matches_the_exact_freeze() -> None:
         "m1b_dailymed_label_versions",
         "m1b_dailymed_sections",
         "m1b_dailymed_label_supersession",
+        "m1b_faers_queries",
+        "m1b_faers_buckets",
     ),
 )
 def test_generic_m1b_repository_rejects_specialized_dailymed_tables(
@@ -317,6 +482,86 @@ def test_generic_m1b_repository_rejects_specialized_dailymed_tables(
             repository.insert_or_verify_m1b(table_name, {})
     finally:
         repository.close()
+
+
+def _faers_result() -> FaersAggregateResult:
+    query = FaersAggregateQueryV1.create(
+        FaersAggregateRequestV1(
+            drug_concept_id="drug:synthetic",
+            identity_strategy=FaersIdentityStrategy.HARMONIZED_SUBSTANCE,
+            identity_exact_value="SYNTHETIC",
+            pt_values=("DIARRHOEA", "NAUSEA", "VOMITING"),
+            inclusive_date_range=FaersInclusiveDateRangeV1(
+                start_date=date(2025, 1, 1), end_date=date(2025, 12, 31)
+            ),
+            statistical_unit="provider_count_occurrence",
+            execution_bounds=FaersExecutionBoundsV1(
+                max_date_difference_days=365,
+                max_inclusive_calendar_dates=366,
+            ),
+        )
+    )
+    buckets = tuple(
+        FaersAggregateBucketV1(
+            query_id=query.query_id,
+            bucket_ordinal=ordinal,
+            reaction_pt=pt,
+            report_count=count,
+            identity_stratum=query.identity_stratum,
+        )
+        for ordinal, (pt, count) in enumerate((("NAUSEA", 8), ("VOMITING", 4)))
+    )
+    outcome = SourceOutcome(
+        source=SourceType.FAERS,
+        query_id=query.query_id,
+        execution_status=ExecutionStatus.SUCCEEDED,
+        coverage_status=CoverageStatus.COMPLETE,
+        result_status=ResultStatus.MATCHES,
+        configured_bounds=ExecutionBounds(
+            max_query_characters=512,
+            max_pages=5,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            max_total_seconds=30,
+        ),
+        valid_result_count=2,
+        pages_completed=1,
+        truncated=False,
+    )
+    return FaersAggregateResult(
+        query=query,
+        buckets=buckets,
+        source_outcome=outcome,
+        retrieved_at_utc=datetime(2026, 8, 12, tzinfo=UTC),
+        provider_as_of_utc=None,
+        snapshot_id="snapshot:faers",
+        manifest_id="manifest:faers",
+        limitations=FAERS_MANDATORY_LIMITATIONS,
+    )
+
+
+def test_faers_persistence_projection_is_exact_and_closed() -> None:
+    result = _faers_result()
+    row = PersistenceRepository._faers_query_row(
+        run_id="run:00000000-0000-4000-8000-000000000001",
+        acquisition_id="acquisition:faers",
+        result=result,
+    )
+    assert set(row) == {column.name for column in models.m1b_faers_queries.columns}
+    assert row["pt_values"] == ["DIARRHOEA", "NAUSEA", "VOMITING"]
+    assert isinstance(row["role_predicate_json"], sa.sql.elements.Null)
+    assert row["date_field"] == "receivedate"
+    assert row["endpoint_mode"] == "provider_count_occurrence"
+    assert row["bounds_json"] == {
+        "max_query_characters": 512,
+        "max_pages": 5,
+        "page_size": 100,
+        "max_returned_raw_records": 100,
+        "max_response_bytes": 5_242_880,
+        "max_cumulative_bytes": 5_242_880,
+        "effective_total_deadline_ms": 30_000,
+        "generic_total_deadline_ceiling_ms": 60_000,
+    }
 
 
 class _CapacityResult:

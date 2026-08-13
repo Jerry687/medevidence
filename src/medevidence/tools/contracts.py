@@ -1,4 +1,4 @@
-"""Strict source-neutral contracts for bounded PubMed application tools."""
+"""Strict source-neutral contracts for bounded source application tools."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ from medevidence.domain import (
     DailyMedSelectionRequestV1,
     DecisionId,
     DrugConcept,
+    FaersAggregateQueryV1,
+    FaersAggregateRequestV1,
+    FaersAggregateResult,
     LabelSelectionDecision,
     LabelSelectionStatus,
     Pmid,
@@ -66,6 +69,48 @@ type TrustedDailyMedFetchEvidence = tuple[
     ArtifactId,
     Sha256Digest,
 ]
+
+
+class FaersAggregateExecution(DurableModel):
+    """Exact narrative-free evidence produced by one bounded FAERS execution."""
+
+    schema_version: Literal["m1b.faers.tool-execution.v1"] = "m1b.faers.tool-execution.v1"
+    request: FaersAggregateRequestV1
+    acquisition_outcome_ref: AcquisitionOutcomeRef
+    result: FaersAggregateResult
+
+    @model_validator(mode="after")
+    def validate_execution_binding(self) -> Self:
+        request = FaersAggregateRequestV1.model_validate(self.request.model_dump(mode="python"))
+        result = FaersAggregateResult.model_validate(self.result.model_dump(mode="python"))
+        reference = AcquisitionOutcomeRef.model_validate(
+            self.acquisition_outcome_ref.model_dump(mode="python")
+        )
+        query = FaersAggregateQueryV1.create(request)
+        if (
+            request != self.request
+            or result != self.result
+            or reference != self.acquisition_outcome_ref
+        ):
+            raise ValueError("FAERS execution contains an unvalidated nested contract")
+        if result.query != query:
+            raise ValueError("FAERS execution result belongs to another exact request")
+        if (
+            reference.source is not SourceType.FAERS
+            or reference.operation != "search"
+            or reference.query_id != query.query_id
+            or reference.snapshot_id != result.snapshot_id
+            or result.source_outcome.query_id != reference.query_id
+        ):
+            raise ValueError("FAERS execution acquisition identity drift")
+        return self
+
+
+class PersistedFaersAggregate(DurableModel):
+    """Trusted insert-or-verify echo for one immutable FAERS aggregate."""
+
+    schema_version: Literal["m1b.faers.tool-persisted.v1"] = "m1b.faers.tool-persisted.v1"
+    execution: FaersAggregateExecution
 
 
 class DailyMedDiscoveryRequest(DurableModel):
