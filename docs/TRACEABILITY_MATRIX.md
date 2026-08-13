@@ -141,7 +141,7 @@ conclusion; the draft remains research-only, non-exportable, and non-clinical.
 | [`V1-FR-002`](PRD.md#v1-fr-002--pubmed-vertical-slice) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§2 PubMed](DATA_SOURCES.md#2-pubmed) | [§2 PubMed source policy](SECURITY.md#pubmed) | [§2.1 Gold-10](EVALUATION_PLAN.md#21-gold-10-calibration-subset) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-009](decisions/ADR-009-m1a-pubmed-vertical-slice-contracts.md) | M1A | M1A is integrated at accepted code revision `531f867006f3d01ebbc14633ad6e5509e4e70a47`. Run 001 remains `M1A_LIVE_RUN_001_ACCEPTED_AS_FAILED_INTEROPERABILITY_EVIDENCE`: historical connector outcome `failed / unavailable / indeterminate`, received bytes preserved separately as `failed / partial / indeterminate`, fetch not executed, and no live PASS. Run 002 is `M1A_LIVE_RUN_002_ACCEPTED`: the redacted closed-contract record at external root label `OWNER_EXTERNAL_M1A_LIVE_RUN_002_ROOT` and relative label `acceptance/pubmed-live-b1ab911398624933ab8fc06de2e08596.json` is 3,223 bytes with SHA-256 `008770e8155eee608aa71fab08cdd2a223f1e9ec92824427cc7a3409c6f69f25`. One run used two contiguous acquisitions and two total requests. Search is `succeeded / partial / matches`, 100 valid results, one page, `truncated=true`, explicitly bounded and non-exhaustive; fetch is `succeeded / complete / matches`, one valid retained publication, one page, `truncated=false`. This establishes `M1A_LIVE_ACCEPTANCE_PASS`, `M1A_COMPLETE`, and `READY_FOR_M1B_OWNER_PLANNING`; M1B has not started, no rerun occurred, the authority is consumed, and `rerun_authorized=false`. | Draft contains PMID/version and exact available-abstract locator; no-match, partial, failed, and unavailable outcomes remain distinct; partial search supports no exhaustive, causal, incidence, comparative-risk, or clinical conclusion and the draft remains non-exportable |
 | [`V1-FR-003`](PRD.md#v1-fr-003--dailymed-labeling) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities), [§16 M1B-DM-001](ARCHITECTURE.md#16-m1b-dm-001-additive-dailymed-contract-architecture) | [§3 DailyMed](DATA_SOURCES.md#3-dailymed), [§11 M1B-DM-001](DATA_SOURCES.md#11-m1b-dm-001-exact-dailymed-source-contract) | [§2 DailyMed source policy](SECURITY.md#dailymed), [§18 M1B-DM-001](SECURITY.md#18-m1b-dm-001-dailymed-trust-and-parser-contract) | [§5 Question taxonomy](EVALUATION_PLAN.md#5-question-taxonomy), [§13 M1B-DM-001](EVALUATION_PLAN.md#13-m1b-dm-001-deterministic-contract-evaluation) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-011](decisions/ADR-011-m1b-dailymed-contracts.md), [Review 001](reviews/M1B-DM-001-INDEPENDENT-REVIEW-001.md), [Review 002](reviews/M1B-DM-001-INDEPENDENT-REVIEW-002.md), [Review 003](reviews/M1B-DM-001-INDEPENDENT-REVIEW-003.md), [Review 004](reviews/M1B-DM-001-INDEPENDENT-REVIEW-004.md), [Review 005](reviews/M1B-DM-001-INDEPENDENT-REVIEW-005.md), [Review 006](reviews/M1B-DM-001-INDEPENDENT-REVIEW-006.md), [Review 007](reviews/M1B-DM-001-INDEPENDENT-REVIEW-007.md), [Review 008](reviews/M1B-DM-001-INDEPENDENT-REVIEW-008.md) | M1B | Reviews 001-008 remain immutable failure history. Review 008 verified direct trust-path closure, then found existing-instance security-policy bypasses and standalone/mutated LOINC drift. Manifest `939e99998c63dfe3ae664aa5ef6e265bc28e0e2787ea7cb73a32002dfb29e93e`; verdict `FAIL — P0 0 / P1 2 / P2 0`. Post-Review 008 remediation revalidates all six security model instance types and nested connector drift, and enforces exact one-of-four LOINC rows plus row/oracle instance revalidation; frozen values are unchanged. Fresh evidence: focused `301/0.46s`; combined DailyMed/OpenAPI `335/0.74s`; Ruff/format/MyPy PASS; full `949`, two warnings, `80%/7.33s`; exact 26-path scope/diff PASS. Review 009/audit pending; no PASS, Git, network, integration, or DM-002 claim | Only `succeeded/complete/matches` may select after deterministic exact/equivalent-group resolution; partial matches always require review; the only `no_candidate` state is `succeeded/complete/no_match`; every retained section locator binds the selected label identity and a successful complete usable fetch |
 | [`V1-FR-004`](PRD.md#v1-fr-004--faers-descriptive-query) | [§8.1 Connector capabilities](ARCHITECTURE.md#81-connector-capabilities) | [§4 FAERS/openFDA](DATA_SOURCES.md#4-faersopenfda) | [§2 FAERS/openFDA source policy](SECURITY.md#faersopenfda) | [§8 Agent and safety evaluation](EVALUATION_PLAN.md#8-agent-and-safety-evaluation) | [ADR-002](decisions/ADR-002-source-semantics.md) | M1B | Query/limit units; timeout, 429, truncation, partial fixtures; Gold-10 FAERS case | Output exposes statistical unit, query/time/limits/role/version policy and mandatory limitations; zero unqualified incidence, causal, relative-risk, or ranking claims |
-| [`V1-FR-005`](PRD.md#v1-fr-005--cadec-auxiliary-corpus) | [§5.4 Chunking and indexing](ARCHITECTURE.md#54-chunking-and-indexing) | [§5 CADEC](DATA_SOURCES.md#5-cadec) | [§2 CADEC source policy](SECURITY.md#cadec) | [§4.2 Retrieval relevance](EVALUATION_PLAN.md#42-retrieval-relevance) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md) | M1B | License/manifest check, gold/predicted parse tests, prohibited-claim case | Corpus/version/split and gold/predicted origin remain visible; CADEC cannot support prohibited risk, incidence, causal, regulatory, or clinical claims |
+| [`V1-FR-005`](PRD.md#v1-fr-005--cadec-auxiliary-corpus) | [§19 M1B CADEC loader-only boundary](ARCHITECTURE.md#19-m1b-cadec-loader-only-architecture-and-m2-boundary) | [§14 exact CADEC asset contract](DATA_SOURCES.md#14-m1b-cadec-001-exact-asset-contract) | [§21 CADEC asset trust boundary](SECURITY.md#21-m1b-cadec-001-asset-trust-boundary) | [§16 deterministic CADEC contract evaluation](EVALUATION_PLAN.md#16-m1b-cadec-001-deterministic-asset-contract-evaluation) | [ADR-002](decisions/ADR-002-source-semantics.md), [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-013](decisions/ADR-013-m1b-cadec-asset-contract.md) | M1B loader-only complete; future M2 materialization/search after `ME-000C` | Integrated CADEC-001/002 exact asset, metadata-only document, provider-gold annotation, locator, split, Option-A lineage, immutable-byte loader/parser, and prohibited-claim evidence; exactly one visible CADEC plan entry is `skipped_by_policy` with `reason_code=source_execution_not_authorized`; no predicted parse, chunk, index, search, executable request, research-request connector invocation, `SourceOutcome`, report section, API/OpenAPI execution, persistence, or retrieval-evaluation evidence is claimed | Visibility is distinct from execution: M1B ends at the exact external loader/parser and metadata-only output, which is not directly retrieval-consumable; future M2 must reread and reverify the approved external archive before text-bearing materialization and `search_local_adr_corpus` |
 | [`V1-FR-006`](PRD.md#v1-fr-006--reproducible-ingestion) | [§5.2 Raw snapshot and manifest](ARCHITECTURE.md#52-raw-snapshot-and-manifest) | [§8 Snapshot and manifest policy](DATA_SOURCES.md#8-snapshot-and-manifest-policy) | [§10 Snapshot and data integrity](SECURITY.md#10-snapshot-and-data-integrity) | [§11 Reproducibility](EVALUATION_PLAN.md#11-reproducibility-and-artifact-policy) | [ADR-003](decisions/ADR-003-storage-and-snapshots.md), [ADR-010](decisions/ADR-010-m1a-remainder-freeze-amendment.md) | M1A/M1B | M1A-003A, M1A-003B, and M1A-004 are preserved ancestors of the current M1A-005-integrated baseline `47504a4016f968ed0a0dd10e4280b1a957c15461`; their final review, audit, hosted-CI, and historical evidence remain preserved. M1A-004 owns exact ADR-010 acquisition-intent validation and rejects malformed, reused, or cross-acquisition persistence results. | Every run emits required manifest fields; verified replay gives stable IDs; integrity failure blocks normalization/index publication |
 | [`V1-FR-007`](PRD.md#v1-fr-007--source-aware-normalization) | [§5.3 Normalization](ARCHITECTURE.md#53-normalization-and-deduplication), [§7.1](ARCHITECTURE.md#71-research-and-terminology) | [§7 Terminology normalization](DATA_SOURCES.md#7-terminology-normalization) | N/A — normalization safety is enforced through source/claim policies, not a separate security control | [§3 Evaluation item schema](EVALUATION_PLAN.md#3-evaluation-item-schema) | [ADR-007](decisions/ADR-007-domain-contracts-and-schema-versioning.md) | M1A/M1B | Exact/synonym/fuzzy/unresolved mapping and ambiguity tests | Original term, method, confidence, vocabulary/version, and warnings persist; uncertain mapping never silently becomes exact |
 | [`V1-FR-008`](PRD.md#v1-fr-008--retrieval-modes) | [§9 Retrieval architecture](ARCHITECTURE.md#9-retrieval-architecture), [§9.1 decision gate](ARCHITECTURE.md#91-retrieval-configuration-decision-gate) | N/A — retrieval configuration is index policy, not source-semantic policy | [§15 Dependency safety](SECURITY.md#15-dependency-and-container-safety) | [§6 Retrieval evaluation](EVALUATION_PLAN.md#6-retrieval-evaluation) | [ADR-004](decisions/ADR-004-qdrant-hybrid-retrieval.md) | M2 after `ME-000C` | Frozen-corpus BM25/dense/RRF runs, contract tests, raw rankings | Three modes use one corpus/filters/contract and retain component/final ranks; reranker remains optional |
@@ -408,9 +408,10 @@ recorded `FAIL - P0 0 / P1 0 / P2 1` because delivery still said staging was
 zero despite the disclosed stage-and-unstage sequence. That accounting is now
 corrected. Fresh read-only final-byte rebind remains pending. No commit, push,
 PR, merge, integrated verification, completion, or CADEC execution is claimed.
-Medical-source requests are zero. M1B-CADEC-001 is
-`PASS_INDEPENDENT_REVIEW_PENDING_TERMINAL_AUDIT`; no terminal audit, commit,
-push, PR, merge, integration, or CADEC-002 claim is made.
+Medical-source requests are zero. CADEC-001 and CADEC-002 are integrated at
+merge commits `af111b8efce0d2a47df4c3ba20f213a812ca12da` and
+`a2b97b5a3562fa68857d09fa9f4cd7562b98bd5a`, respectively. This FAERS record
+makes no CADEC-003 completion claim.
 
 ### M1B-DM-001 Review 011 status
 
@@ -422,34 +423,68 @@ caller-controlled intrinsic decision validation and invalid existing
 Remediation and Review 012 remain pending; no audit, PASS, Git, network,
 integration, or DM-002 claim is made.
 
-### M1B-CADEC-001 independent-review status
+### M1B-CADEC-001 integrated status
 
-The uncommitted CADEC-001 candidate is based on
-`46c799368e9cd1ed3f2a2c956931d921999044e1` and resolves six standalone gates:
-external freeze evidence; admitted/excluded and malformed policy; project
-split; encoding exception; reference-binding limitations; and
-REDIST/VOCAB/Option-A provenance plus auxiliary safety. ADR-013 records exact
-identities. No loader, request element, report section, API/OpenAPI, connector,
-persistence, search, index, training, M2, or CADEC-002 behavior is added.
+CADEC-001 feature commit
+`51bbe29a94aa3a16af5d55be01b06f6aa331ab44` was integrated by merge commit
+`af111b8efce0d2a47df4c3ba20f213a812ca12da` through PR #19. Its immutable
+failure history is preserved; independent closure is `PASS` with
+`P0 0 / P1 0 / P2 0`, terminal audit is `PASS` with `0/0/0`, and audited
+aggregate identity is
+`35a4d2349410c16209197c24e1900ca28067de993276d2c865be082c61548482`.
+PR quality run `31726952106` recorded `windows-quality` and `compose-config`
+as `SUCCESS`; merged-main quality run `31727139728` was `SUCCESS`.
 
-Independent Review 001 initially returned `FAIL` (`P0 0 / P1 5 / P2 0`).
-Remediation cycle 3 of 3 closed all five original findings and the later
-one-P1 residual. Terminal Review 001 closure is `PASS`
-(`P0 0 / P1 0 / P2 0`). Current state is
-`PASS_INDEPENDENT_REVIEW_PENDING_TERMINAL_AUDIT`; no terminal audit, Git,
-medical-source request, or CADEC-002 claim is made.
+### M1B-CADEC-002 integrated loader status
 
-### M1B-CADEC-002 loader candidate status
+CADEC-002 feature commit
+`03fffef7ad8f68a9ca36c4961a5264b2e0b295ff` was integrated by merge commit
+`a2b97b5a3562fa68857d09fa9f4cd7562b98bd5a` through PR #20. Immutable Review
+001 remains `FAIL` with `P0 0 / P1 2 / P2 0`; one remediation batch closed both
+findings, independent closure is `PASS` with `0/0/0`, and terminal audit is
+`PASS` with `0/0/0`. Audited aggregate identity is
+`d307456bcfb4b5cf20392d93e922fb75d0d5684d9e5064c8a811ac960f973d9a`.
+PR run `31748194823` and merged-main run `31748381436` both recorded
+`windows-quality` and `compose-config` as `SUCCESS`.
 
-The CADEC-002 candidate on baseline
-`af111b8efce0d2a47df4c3ba20f213a812ca12da` adds an offline-only exact
-archive/manifest loader and strict provider-gold parser. A narrow Owner
-correction permits zero-length `m1b.cadec.document.v1` text while retaining
-negative rejection and exact identity/release/split/provenance validation; a
-zero-length document fails closed unless all original, MedDRA, and SCT members
-contain zero rows. Synthetic focused and full offline validation are green,
-and two exact local archive checks produced identical safe summaries and
-ordered identity digests without emitting corpus or vocabulary payload.
-Status remains `PENDING_INDEPENDENT_REVIEW`;
-independent review, terminal audit, commit, completion, integration, network,
-persistence, tools, API/report execution, CADEC-003, and M2 are not claimed.
+The integrated loader/parser is the Owner-frozen Option E final executable M1B
+CADEC surface. It preserves 1,250/1,248 canonical/admitted documents; exact
+exclusions `DICLOFENAC-SODIUM.7` and `LIPITOR.221`; five malformed rows;
+2/44/45 visible limitations; two exact empty documents (`LIPITOR.40` and
+`VOLTAREN-XR.9`) with zero rows across original, MedDRA, and SCT; 24,478
+provider-gold annotations and locators partitioned 9,089/6,300/9,089; the sole
+exact CP1252 exception; split 992/119/137; and REDIST, VOCAB,
+provider-gold-only, and Option-A lineage. The output is metadata-only and is not
+directly retrieval-consumable.
+
+### M1B-CADEC-003 boundary-closeout candidate status
+
+The documentation-only CADEC-003 candidate is based on integrated merge
+`a2b97b5a3562fa68857d09fa9f4cd7562b98bd5a`. Immutable Review001 is `FAIL` at
+`P0 0 / P1 1 / P2 2`. Remediation batch 1/1 was followed by closure-review
+`FAIL` at `P0 0 / P1 1 / P2 1` for no-plan overreach and Review001
+transcription fidelity. The Owner-authorized additional mechanical correction
+is `ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`; no fresh-review
+PASS, terminal audit, commit, completion, or post-terminal marker is claimed.
+
+Exactly one CADEC M1B source plan entry is visible with
+`planning_status=skipped_by_policy`,
+`reason_code=source_execution_not_authorized`, and reason `CADEC remains
+visible in the M1B source plan, but source execution is not authorized under
+Option E.` Visibility is distinct from execution. The exact empty
+`cadec_query_requests` tuple and unchanged `M1BSourceSection` preserve no
+executable request, research-request connector invocation, `SourceOutcome`,
+report section, or API/OpenAPI execution. M1B also prohibits structured
+retrieval/search, persistence/migration/database ingestion, indexing,
+chunking, training, and retrieval evaluation.
+
+Future M2 owns `search_local_adr_corpus` and a text-bearing materializer that
+must reread the approved external archive, prove the same immutable identity,
+preserve document/annotation/locator/split/Option-A lineage, emit exact chunks
+with offsets and hashes, and keep raw text outside Git. This remains subject to
+`ME-000C`; it is not authorized or implemented here. Current CADEC-002 output
+is not directly retrieval-consumable, and
+`READY_FOR_M2-CADEC-RETRIEVAL-CONSUMPTION` is explicitly prohibited. The exact
+post-terminal targets `M1B-CADEC-003_COMPLETE`,
+`M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
+`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` remain unachieved targets only.

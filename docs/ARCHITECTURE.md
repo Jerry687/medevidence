@@ -632,21 +632,38 @@ PubMed and DailyMed route/component projections remain protected; enabling the
 FAERS application adds only the frozen FAERS route and report-reachable
 components.
 
-## 19. M1B-CADEC-001 asset-freeze architecture
+## 19. M1B CADEC loader-only architecture and M2 boundary
 
-CADEC-001 is metadata-only and standalone in `domain`:
+CADEC-001 freezes the standalone domain contracts. CADEC-002 is the exact final
+executable M1B surface:
 
 ```text
-external archive + manifest + freeze audit
-  -> exact release/split/encoding/reference-limitation contract
-  -> corpus document / provider-gold annotation contracts
-  -> auxiliary-only exact locator contract
+approved external archive + authoritative manifest
+  -> one bounded read of each explicit path into retained immutable bytes
+  -> exact archive/manifest identity + safe ZIP inventory + encoding policy
+  -> strict provider-gold brat loader/parser
+  -> approved metadata-only documents + provider-gold annotations
+  -> exact locators + content-free verification summary
+  -> STOP: final executable M1B CADEC boundary
 ```
 
-No arrow continues into ingestion, persistence, tools, orchestration, API,
-report composition, indexing, search, training, or M2.
-`M1BResearchRequestV1.cadec_query_requests` remains `tuple[()]`, CADEC is not
-added to `M1BSourceSection`, and generated API/OpenAPI behavior is unchanged.
+Hashing and use operate on the same retained immutable bytes. No filesystem
+extraction occurs. Finite input, entry-count, aggregate compressed,
+aggregate-uncompressed, expansion-ratio, member, row, and span bounds fail
+closed. The approved output remains metadata-only and is **not directly
+retrieval-consumable**.
+
+The exact `M1BResearchRequestV1.cadec_query_requests` value remains
+`tuple[()]` and `M1BSourceSection` is unchanged. Exactly one visible CADEC M1B
+source plan entry has `planning_status=skipped_by_policy`,
+`reason_code=source_execution_not_authorized`, and reason `CADEC remains
+visible in the M1B source plan, but source execution is not authorized under
+Option E.` Plan visibility is distinct from execution: there is no executable
+request, research-request connector invocation, `SourceOutcome`, report
+section, or API/OpenAPI execution. The M1B boundary also excludes a structured
+retrieval/search tool, persistence, migration, database ingestion, indexing,
+chunking, training, and retrieval evaluation. In particular, M1B does not
+define or expose `search_local_adr_corpus`.
 
 Every child uses Option A: `source + corpus_id + corpus_version + split +
 artifact identity`. The namespaced archive and manifest hashes supply the
@@ -660,3 +677,34 @@ ordered, non-overlapping, and document-bounded. Durable children have
 deterministic identities. NFC, strict frozen extra-forbid validation, exact
 split/hash metadata, and accepted-instance revalidation fail closed. Asset
 mismatch remains distinct from the five frozen malformed-row rejections.
+
+The integrated loader preserves the 1,250/1,248 canonical/admitted boundary,
+the exact two exclusions, five malformed rows, 2/44/45 visible limitations,
+sole CP1252 exception, 992/119/137 split, and provider-gold-only policy. It
+admits exactly two zero-byte documents (`LIPITOR.40` and `VOLTAREN-XR.9`) only
+when original, MedDRA, and SCT each contain zero rows. It produces 24,478 exact
+annotation/locator pairs partitioned 9,089/6,300/9,089 across those layers.
+REDIST, VOCAB, and Option-A provenance remain unchanged.
+
+The future M2 continuation is deliberately separated from the executable M1B
+flow:
+
+```text
+future M2 only, after ME-000C approval
+approved external archive + authoritative manifest
+  -> reread and verify the same immutable archive/manifest identity
+  -> text-bearing CADEC materializer
+  -> preserve document/annotation/locator/split/Option-A lineage
+  -> exact text-bearing chunks with bounded offsets and content hashes
+  -> search_local_adr_corpus through the approved retrieval boundary
+```
+
+Raw text remains outside Git. The materializer and
+`search_local_adr_corpus` are M2-owned, not implemented or authorized by this
+boundary record, and remain subject to `ME-000C`. The marker
+`READY_FOR_M2-CADEC-RETRIEVAL-CONSUMPTION` must not be emitted or claimed.
+The post-terminal targets `M1B-CADEC-003_COMPLETE`,
+`M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
+`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` remain targets only. CADEC-003 is
+`ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`; no fresh-review PASS,
+terminal audit, commit, or completion is claimed.
