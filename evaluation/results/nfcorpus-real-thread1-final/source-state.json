@@ -1,0 +1,74 @@
+{
+  "head": "ab15c55fbf9cee897a961905944ffee232a03372",
+  "reconstruction": "HEAD plus source.patch; untracked files are identity-bound by path, size, and SHA-256",
+  "source_state_sha256": "fb87bea9a8cd271a58b1d790a455cc241973d0c0178f5b924bbcadd3c97fa884",
+  "tracked_changed_paths": [
+    ".delivery/M2-001-RETRIEVAL-HARNESS.md",
+    ".github/workflows/quality.yml",
+    ".gitignore",
+    "evaluation/README.md",
+    "evaluation/datasets.py",
+    "evaluation/harness.py",
+    "evaluation/run_evaluation.py",
+    "pyproject.toml",
+    "scripts/bootstrap.ps1",
+    "scripts/dependency-audit.ps1",
+    "src/medevidence/retrieval/core.py",
+    "tests/contract/evaluation/test_harness.py",
+    "tests/unit/evaluation/test_datasets.py",
+    "tests/unit/retrieval/test_core.py",
+    "tests/unit/test_dependency_boundaries.py",
+    "uv.lock"
+  ],
+  "tracked_patch_bytes": 133064,
+  "tracked_patch_sha256": "2604ad49876d5662c23dd582243a87b60d12d41045e947ba3731675141d8f754",
+  "untracked_files": [
+    {
+      "bytes": 2187,
+      "path": "docs/reviews/M2-001-REAL-BENCHMARK-INDEPENDENT-REVIEW-001.md",
+      "sha256": "bd419a090a3b225e1feeee2e6228880ba5bed5cb61d99d4eacf425f189bac729"
+    },
+    {
+      "bytes": 9222,
+      "path": "evaluation/results/nfcorpus-real-final/manifest.json",
+      "sha256": "fe4cf4797647635168ed7053df26c58fd28e9f1daa67256ada294ae80d7ec8ff"
+    },
+    {
+      "bytes": 80,
+      "path": "evaluation/results/nfcorpus-real-final/manifest.sha256",
+      "sha256": "0e6a59b0ef3360e5d0b3b58b9767eaf478e0e701233099b4f3f90720b8c57eef"
+    },
+    {
+      "bytes": 2751655,
+      "path": "evaluation/results/nfcorpus-real-final/per-query-dense.jsonl",
+      "sha256": "c8c4387207be0799c9a7f5617c6a2be9673d62795cb9ce63828ed42f133a489b"
+    },
+    {
+      "bytes": 3852040,
+      "path": "evaluation/results/nfcorpus-real-final/per-query-hybrid_rrf.jsonl",
+      "sha256": "37086f05c666dab44f99a7653949a006f80361e7df13353dcb52e127cabba48d"
+    },
+    {
+      "bytes": 1898643,
+      "path": "evaluation/results/nfcorpus-real-final/per-query-sparse.jsonl",
+      "sha256": "bb05a32f1b3504752483bde5694a95efd9efadaf3d2a6817a811d65447a7e9fc"
+    },
+    {
+      "bytes": 1325,
+      "path": "evaluation/results/nfcorpus-real-final/source-state.json",
+      "sha256": "848078620fbf246325b9544cc8fd3e9f880c16e40c4f1af05f826ad7384d9139"
+    },
+    {
+      "bytes": 3164,
+      "path": "evaluation/results/nfcorpus-real-final/source-untracked-snapshot.json",
+      "sha256": "ad3f3c54953352e5f1d6f22c62216fe332107a6061f915b87a0431417ee5e114"
+    },
+    {
+      "bytes": 96831,
+      "path": "evaluation/results/nfcorpus-real-final/source.patch",
+      "sha256": "6078922af05d71e6ee3338bd742892a3a6eea87405b3839a854426a724d32770"
+    }
+  ],
+  "untracked_snapshot_bytes": 11488052,
+  "untracked_snapshot_sha256": "fdead70a75a990f9d1dfe76f8f0e24275df0e5b1479b55f5a9b5013fdedc7333"
+}

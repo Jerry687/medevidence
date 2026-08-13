@@ -37,6 +37,9 @@ $hasAcquisitionRecord = (
     -not [string]::IsNullOrWhiteSpace($AcquisitionRecordPath)
 )
 $candidatePaths = @(
+    ".delivery/M2-001-RETRIEVAL-HARNESS.md",
+    ".github/workflows/quality.yml",
+    ".gitignore",
     ".gitattributes",
     ".delivery/M1A-005-AUDIT.md",
     "alembic.ini",
@@ -50,6 +53,13 @@ $candidatePaths = @(
     "docs/INTERVIEW_NOTES.md",
     "docs/TRACEABILITY_MATRIX.md",
     "docs/reviews/M1A-005-INDEPENDENT-REVIEW-001.md",
+    "docs/reviews/M2-001-REAL-BENCHMARK-INDEPENDENT-REVIEW-001.md",
+    "evaluation/datasets.py",
+    "evaluation/harness.py",
+    "evaluation/README.md",
+    "evaluation/run_evaluation.py",
+    "scripts/bootstrap.ps1",
+    "src/medevidence/retrieval/core.py",
     "src/medevidence/api/__init__.py",
     "src/medevidence/api/app.py",
     "src/medevidence/api/contracts.py",
@@ -82,6 +92,9 @@ $candidatePaths = @(
     "tests/unit/connectors/test_pubmed_parsing.py",
     "tests/unit/connectors/test_pubmed_policy.py",
     "tests/unit/test_dependency_boundaries.py",
+    "tests/unit/evaluation/test_datasets.py",
+    "tests/unit/retrieval/test_core.py",
+    "tests/contract/evaluation/test_harness.py",
     "tests/unit/api/test_contracts.py",
     "tests/unit/api/test_errors.py",
     "tests/unit/api/test_routes.py",
@@ -839,15 +852,29 @@ def exact_pins(path: pathlib.Path) -> dict[str, list[str]]:
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
         fail(f"malformed pyproject.toml: {error}")
     production = data.get("project", {}).get("dependencies")
-    development = data.get("dependency-groups", {}).get("dev")
-    if not isinstance(production, list) or not isinstance(development, list):
+    groups = data.get("dependency-groups", {})
+    development = groups.get("dev") if isinstance(groups, dict) else None
+    retrieval = groups.get("retrieval") if isinstance(groups, dict) else None
+    if not all(
+        isinstance(group, list) for group in (production, development, retrieval)
+    ):
         fail("direct dependency groups are missing")
-    for pin in [*production, *development]:
+    if retrieval != ["numpy==2.5.1", "scikit-learn==1.9.0"]:
+        fail("retrieval direct pins differ from the exact Owner-approved pair")
+    production_names = {
+        PIN_PATTERN.fullmatch(pin).group(1).casefold()
+        for pin in production
+        if isinstance(pin, str) and PIN_PATTERN.fullmatch(pin) is not None
+    }
+    if production_names & {"numpy", "scikit-learn"}:
+        fail("retrieval-only dependencies leaked into the production default surface")
+    for pin in [*production, *development, *retrieval]:
         if not isinstance(pin, str) or PIN_PATTERN.fullmatch(pin) is None:
             fail(f"direct dependency is not an exact pin: {pin!r}")
     return {
         "production": sorted(production, key=str.casefold),
         "development": sorted(development, key=str.casefold),
+        "retrieval": sorted(retrieval, key=str.casefold),
     }
 
 

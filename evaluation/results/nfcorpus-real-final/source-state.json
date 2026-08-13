@@ -1,0 +1,34 @@
+{
+  "head": "ab15c55fbf9cee897a961905944ffee232a03372",
+  "reconstruction": "HEAD plus source.patch; untracked files are identity-bound by path, size, and SHA-256",
+  "source_state_sha256": "d6f6dc441af7ff0ed0d67d19cb21931f00573b69102dc913d53cc0968169f49f",
+  "tracked_changed_paths": [
+    ".delivery/M2-001-RETRIEVAL-HARNESS.md",
+    ".github/workflows/quality.yml",
+    ".gitignore",
+    "evaluation/README.md",
+    "evaluation/datasets.py",
+    "evaluation/harness.py",
+    "evaluation/run_evaluation.py",
+    "pyproject.toml",
+    "scripts/bootstrap.ps1",
+    "scripts/dependency-audit.ps1",
+    "src/medevidence/retrieval/core.py",
+    "tests/contract/evaluation/test_harness.py",
+    "tests/unit/evaluation/test_datasets.py",
+    "tests/unit/retrieval/test_core.py",
+    "tests/unit/test_dependency_boundaries.py",
+    "uv.lock"
+  ],
+  "tracked_patch_bytes": 96831,
+  "tracked_patch_sha256": "6078922af05d71e6ee3338bd742892a3a6eea87405b3839a854426a724d32770",
+  "untracked_files": [
+    {
+      "bytes": 2187,
+      "path": "docs/reviews/M2-001-REAL-BENCHMARK-INDEPENDENT-REVIEW-001.md",
+      "sha256": "bd419a090a3b225e1feeee2e6228880ba5bed5cb61d99d4eacf425f189bac729"
+    }
+  ],
+  "untracked_snapshot_bytes": 3164,
+  "untracked_snapshot_sha256": "ad3f3c54953352e5f1d6f22c62216fe332107a6061f915b87a0431417ee5e114"
+}

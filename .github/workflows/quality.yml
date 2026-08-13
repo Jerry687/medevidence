@@ -28,7 +28,7 @@ jobs:
           version: "0.11.32"
           python-version: "3.12.13"
           enable-cache: false
-      - name: Synchronize locked development environment
+      - name: Synchronize locked development and retrieval environment
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
       - name: Ruff lint

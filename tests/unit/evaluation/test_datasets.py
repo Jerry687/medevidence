@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -39,6 +40,7 @@ class TestBeirLoading:
             "documents": 3,
             "queries": 1,
             "judged_queries": 1,
+            "judgments": 1,
             "positive_judgments": 1,
         }
 
@@ -59,6 +61,11 @@ class TestBeirLoading:
         with pytest.raises(ValueError, match="absent from the corpus"):
             load_beir_directory(root)
 
+    def test_zero_grade_judgment_on_unknown_document_is_rejected(self, tmp_path: Path) -> None:
+        root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore", "q1\tmissing\t0"])
+        with pytest.raises(ValueError, match="absent from the corpus"):
+            load_beir_directory(root)
+
     def test_judgment_on_unknown_query_is_rejected(self, tmp_path: Path) -> None:
         root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore", "qX\td1\t2"])
         with pytest.raises(ValueError, match="unknown query ids"):
@@ -69,11 +76,85 @@ class TestBeirLoading:
         with pytest.raises(ValueError, match="non-integer grade"):
             load_beir_directory(root)
 
+    @pytest.mark.parametrize("grade", ["-1", "11"])
+    def test_out_of_range_grade_is_rejected(self, tmp_path: Path, grade: str) -> None:
+        root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore", f"q1\td1\t{grade}"])
+        with pytest.raises(ValueError, match="out of range"):
+            load_beir_directory(root)
+
+    @pytest.mark.parametrize(
+        ("row", "message"),
+        [
+            ("", "is blank"),
+            ("q1\td1", "exactly three"),
+            ("q1\td1\t2\textra", "exactly three"),
+            ("\td1\t2", "empty field"),
+            ("q1\t\t2", "empty field"),
+            ("q1\td1\t", "empty field"),
+        ],
+    )
+    def test_malformed_qrel_row_is_rejected(self, tmp_path: Path, row: str, message: str) -> None:
+        rows = ["query-id\tcorpus-id\tscore", row]
+        if not row:
+            rows.append("q1\td1\t2")
+        root = write_beir(tmp_path, qrels_rows=rows)
+        with pytest.raises(ValueError, match=message):
+            load_beir_directory(root)
+
+    def test_header_only_qrels_is_rejected(self, tmp_path: Path) -> None:
+        root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore"])
+        with pytest.raises(ValueError, match="contains no judgments"):
+            load_beir_directory(root)
+
+    @pytest.mark.parametrize("second_grade", ["2", "1"])
+    def test_duplicate_judgment_is_rejected(self, tmp_path: Path, second_grade: str) -> None:
+        root = write_beir(
+            tmp_path,
+            qrels_rows=[
+                "query-id\tcorpus-id\tscore",
+                "q1\td1\t2",
+                f"q1\td1\t{second_grade}",
+            ],
+        )
+        with pytest.raises(ValueError, match="duplicates judgment"):
+            load_beir_directory(root)
+
     def test_truncation_keeps_positives_and_warns(self, tmp_path: Path) -> None:
         root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore", "q1\td3\t2"])
         dataset = load_beir_directory(root, max_documents=1)
         assert "d3" in dataset.corpus  # judged document is never dropped
         assert dataset.warnings and "truncated" in dataset.warnings[0]
+
+    def test_truncation_keeps_zero_grade_judged_documents(self, tmp_path: Path) -> None:
+        root = write_beir(
+            tmp_path,
+            qrels_rows=["query-id\tcorpus-id\tscore", "q1\td1\t2", "q1\td3\t0"],
+        )
+        dataset = load_beir_directory(root, max_documents=1)
+        assert "d3" in dataset.corpus
+
+    def test_records_distribution_and_consumed_file_hashes(self, tmp_path: Path) -> None:
+        root = write_beir(tmp_path / "dataset")
+        archive = tmp_path / "nfcorpus.zip"
+        archive.write_bytes(b"frozen distribution")
+        dataset = load_beir_directory(
+            root,
+            dataset_id="NFCorpus",
+            dataset_source="https://example.invalid/nfcorpus.zip",
+            distribution_archive=archive,
+        )
+        assert dataset.distribution is not None
+        assert dataset.distribution.bytes == len(b"frozen distribution")
+        assert dataset.distribution.sha256 == hashlib.sha256(b"frozen distribution").hexdigest()
+        assert {identity.path for identity in dataset.consumed_files} == {
+            "corpus.jsonl",
+            "queries.jsonl",
+            "qrels/test.tsv",
+        }
+        for identity in dataset.consumed_files:
+            consumed = root / Path(identity.path)
+            assert identity.bytes == consumed.stat().st_size
+            assert identity.sha256 == hashlib.sha256(consumed.read_bytes()).hexdigest()
 
     def test_duplicate_corpus_id_is_rejected(self, tmp_path: Path) -> None:
         root = write_beir(tmp_path)
@@ -109,6 +190,66 @@ class TestJsonlDataset:
             any(grade > 0 for grade in dataset.qrels[query_id].values())
             for query_id in dataset.judged_queries
         )
+
+    def test_duplicate_json_qrel_key_is_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "duplicate.json"
+        path.write_text(
+            '{"corpus":[{"_id":"d1","text":"x"}],'
+            '"queries":[{"_id":"q1","text":"x"}],'
+            '"qrels":{"q1":{"d1":2,"d1":2}}}',
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="duplicate JSON key"):
+            load_jsonl_dataset(path)
+
+    def test_non_integer_json_grade_is_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad-grade.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "corpus": [{"_id": "d1", "text": "x"}],
+                    "queries": [{"_id": "q1", "text": "x"}],
+                    "qrels": {"q1": {"d1": 1.5}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="non-integer grade"):
+            load_jsonl_dataset(path)
+
+    @pytest.mark.parametrize("missing", ["qrels", "queries", "corpus"])
+    def test_missing_required_root_field_is_rejected(self, tmp_path: Path, missing: str) -> None:
+        payload = {
+            "corpus": [{"_id": "d1", "text": "x"}],
+            "queries": [{"_id": "q1", "text": "x"}],
+            "qrels": {"q1": {"d1": 1}},
+        }
+        del payload[missing]
+        path = tmp_path / "missing.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="missing required"):
+            load_jsonl_dataset(path)
+
+    @pytest.mark.parametrize(
+        ("qrels", "message"),
+        [({}, "no qrels"), ({"q1": {}}, "empty judgment maps"), ({"q1": {"d1": 0}}, "zero judged")],
+    )
+    def test_empty_or_unevaluable_qrels_are_rejected(
+        self, tmp_path: Path, qrels: dict[str, dict[str, int]], message: str
+    ) -> None:
+        path = tmp_path / "empty-qrels.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "corpus": [{"_id": "d1", "text": "x"}],
+                    "queries": [{"_id": "q1", "text": "x"}],
+                    "qrels": qrels,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=message):
+            load_jsonl_dataset(path)
 
 
 class TestHistogram:

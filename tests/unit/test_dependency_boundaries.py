@@ -234,6 +234,27 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
         "pytest-socket==0.8.0",
         "ruff==0.15.22",
     }
+    assert project["dependency-groups"]["retrieval"] == [
+        "numpy==2.5.1",
+        "scikit-learn==1.9.0",
+    ]
+    assert not any(
+        dependency.casefold().startswith(("numpy", "scikit-learn"))
+        for dependency in project["project"]["dependencies"]
+    )
     lock_text = Path("uv.lock").read_text(encoding="utf-8").casefold()
     assert 'name = "uvicorn"' not in lock_text
     assert not any(item.startswith("fastapi[") for item in project["project"]["dependencies"])
+
+
+def test_retrieval_group_is_explicit_in_bootstrap_ci_and_dependency_evidence() -> None:
+    bootstrap = Path("scripts/bootstrap.ps1").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/quality.yml").read_text(encoding="utf-8")
+    dependency_audit = Path("scripts/dependency-audit.ps1").read_text(encoding="utf-8")
+
+    assert "sync --locked --group dev --group retrieval" in bootstrap
+    assert "scripts\\bootstrap.ps1" in workflow
+    assert 'groups.get("retrieval")' in dependency_audit
+    assert '["numpy==2.5.1", "scikit-learn==1.9.0"]' in dependency_audit
+    assert '"retrieval": sorted(retrieval' in dependency_audit
+    assert '"export", "--locked", "--all-groups"' in dependency_audit

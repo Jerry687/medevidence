@@ -23,7 +23,11 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
 
 _TOKEN_PATTERN = re.compile(r"[0-9a-z]+")
 
@@ -71,7 +75,7 @@ class BM25Index:
         self.k1 = float(k1)
         self.b = float(b)
 
-        self._tokens: list[Counter] = [Counter(tokenize(text)) for text in documents]
+        self._tokens: list[Counter[str]] = [Counter(tokenize(text)) for text in documents]
         self._lengths: list[int] = [sum(counts.values()) for counts in self._tokens]
         total = sum(self._lengths)
         self._avg_length = total / len(self._lengths) if self._lengths else 0.0
@@ -133,9 +137,31 @@ class EmbeddingBackend(Protocol):
     no caller of `DenseIndex` needs to change.
     """
 
-    def fit_transform(self, documents: Sequence[str]) -> object: ...
+    def fit_transform(self, documents: Sequence[str]) -> npt.NDArray[np.float64]: ...
+
+    def transform(self, texts: Sequence[str]) -> npt.NDArray[np.float64]: ...
+
+
+class _FeatureMatrix(Protocol):
+    """Minimal fitted TF-IDF matrix surface used to size the latent space."""
+
+    shape: tuple[int, int]
+
+
+class _Vectorizer(Protocol):
+    """Internal structural type for the lazily imported vectorizer."""
+
+    def fit_transform(self, documents: Sequence[str]) -> _FeatureMatrix: ...
 
     def transform(self, texts: Sequence[str]) -> object: ...
+
+
+class _SvdTransformer(Protocol):
+    """Internal structural type for the fitted truncated-SVD transformer."""
+
+    def fit_transform(self, matrix: object) -> npt.NDArray[np.float64]: ...
+
+    def transform(self, matrix: object) -> npt.NDArray[np.float64]: ...
 
 
 class TfidfSvdBackend:
@@ -144,17 +170,22 @@ class TfidfSvdBackend:
     method = "tfidf_svd_v1"
 
     def __init__(self, *, dimensions: int = DEFAULT_DIMENSIONS, random_state: int = 0) -> None:
-        self.dimensions = int(dimensions)
-        self.random_state = int(random_state)
-        self._vectorizer = None
-        self._svd = None
+        if dimensions < 2:
+            raise ValueError("dimensions must be at least two")
+        self.dimensions = dimensions
+        self.random_state = random_state
+        self._vectorizer: _Vectorizer | None = None
+        self._svd: _SvdTransformer | None = None
 
-    def fit_transform(self, documents: Sequence[str]):  # type: ignore[no-untyped-def]
+    def fit_transform(self, documents: Sequence[str]) -> npt.NDArray[np.float64]:
         """Fit the vocabulary and latent space on the corpus, return embeddings."""
 
-        from sklearn.decomposition import TruncatedSVD
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.preprocessing import normalize
+        import numpy as np
+        from sklearn.decomposition import TruncatedSVD  # type: ignore[import-untyped]
+        from sklearn.feature_extraction.text import (  # type: ignore[import-untyped]
+            TfidfVectorizer,
+        )
+        from sklearn.preprocessing import normalize  # type: ignore[import-untyped]
 
         self._vectorizer = TfidfVectorizer(
             tokenizer=tokenize,
@@ -164,18 +195,27 @@ class TfidfSvdBackend:
         )
         matrix = self._vectorizer.fit_transform(documents)
         # SVD components cannot exceed min(n_samples, n_features) - 1.
-        usable = max(2, min(self.dimensions, min(matrix.shape) - 1))
+        maximum = min(matrix.shape) - 1
+        if maximum < 2:
+            raise ValueError("corpus must support at least two LSI dimensions")
+        usable = min(self.dimensions, maximum)
         self._svd = TruncatedSVD(n_components=usable, random_state=self.random_state)
-        return normalize(self._svd.fit_transform(matrix))
+        return np.asarray(normalize(self._svd.fit_transform(matrix)), dtype=np.float64)
 
-    def transform(self, texts: Sequence[str]):  # type: ignore[no-untyped-def]
+    def transform(self, texts: Sequence[str]) -> npt.NDArray[np.float64]:
         """Project new text into the fitted latent space."""
 
         if self._vectorizer is None or self._svd is None:
             raise RuntimeError("fit_transform must be called before transform")
+        import numpy as np
         from sklearn.preprocessing import normalize
 
-        return normalize(self._svd.transform(self._vectorizer.transform(texts)))
+        vectorizer = self._vectorizer
+        svd = self._svd
+        return np.asarray(
+            normalize(svd.transform(vectorizer.transform(texts))),
+            dtype=np.float64,
+        )
 
 
 class DenseIndex:
@@ -188,6 +228,7 @@ class DenseIndex:
         *,
         backend: EmbeddingBackend | None = None,
         dimensions: int = DEFAULT_DIMENSIONS,
+        random_state: int = 0,
     ) -> None:
         if len(doc_ids) != len(documents):
             raise ValueError("doc_ids and documents must be the same length")
@@ -196,7 +237,10 @@ class DenseIndex:
         if len(set(doc_ids)) != len(doc_ids):
             raise ValueError("doc_ids must be unique")
         self.doc_ids = list(doc_ids)
-        self.backend = backend or TfidfSvdBackend(dimensions=dimensions)
+        self.backend = backend or TfidfSvdBackend(
+            dimensions=dimensions,
+            random_state=random_state,
+        )
         self._matrix = self.backend.fit_transform(list(documents))
 
     @property

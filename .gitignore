@@ -48,10 +48,15 @@ pgdata/
 evaluation/runs/
 evaluation/generated/
 evaluation/results/
+!evaluation/results/
+evaluation/results/*
+!evaluation/results/nfcorpus-real-final/
+!evaluation/results/nfcorpus-real-final/**
+!evaluation/results/nfcorpus-real-thread1-final/
+!evaluation/results/nfcorpus-real-thread1-final/**
 
 # Local reports, exports, and logs
 exports/
 reports/generated/
 logs/
 *.log
-

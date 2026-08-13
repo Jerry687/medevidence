@@ -7,6 +7,7 @@ import pytest
 from medevidence.retrieval.core import (
     BM25Index,
     DenseIndex,
+    TfidfSvdBackend,
     component_ranks,
     reciprocal_rank_fusion,
     tokenize,
@@ -91,13 +92,25 @@ class TestDenseIndex:
         index = DenseIndex(IDS, TEXTS, dimensions=4096)
         assert 2 <= index.dimensions <= len(IDS)
 
+    def test_rejects_too_few_requested_dimensions(self) -> None:
+        with pytest.raises(ValueError, match="at least two"):
+            DenseIndex(IDS, TEXTS, dimensions=1)
+
+    def test_rejects_corpus_that_cannot_support_two_lsi_dimensions(self) -> None:
+        with pytest.raises(ValueError, match="corpus must support"):
+            DenseIndex(["d1", "d2"], ["same", "same"])
+
+    def test_passes_random_state_to_default_lsi_backend(self) -> None:
+        index = DenseIndex(IDS, TEXTS, dimensions=8, random_state=73)
+
+        assert isinstance(index.backend, TfidfSvdBackend)
+        assert index.backend.random_state == 73
+
     def test_is_deterministic_across_calls(self) -> None:
         index = DenseIndex(IDS, TEXTS, dimensions=8)
         assert index.search("nausea", 4) == index.search("nausea", 4)
 
     def test_transform_before_fit_is_rejected(self) -> None:
-        from medevidence.retrieval.core import TfidfSvdBackend
-
         with pytest.raises(RuntimeError, match="fit_transform"):
             TfidfSvdBackend().transform(["x"])
 

@@ -1,151 +1,174 @@
-# M2-001 retrieval baseline harness — delivery record
+# M2-001 retrieval baseline harness delivery record
 
 Updated: `2026-08-13`
 
-Status: **`IMPLEMENTED_AND_OFFLINE_VERIFIED`; `NO_ADJUDICATED_DATASET`;
-`NO_MEASURED_RETRIEVAL_CLAIM`; `ME-000C_STILL_OPEN`**
+Status: **`M2_001_REAL_BENCHMARK_COMPLETE`; `READY_FOR_M2_TRANSFORMER_BASELINE`**
 
-Branch: `feat/m2-retrieval-eval`
-Baseline: `main` at `46c7993`
+Terminal Audit002 passed on the exact pre-persistence 33-path candidate.
 
-## 1. What this delivers
+Branch: `feat/m2-retrieval-eval-codex`
 
-The machinery for `EVALUATION_PLAN` section 6: three retrieval baselines over
-one frozen corpus, the metric set of section 6.3, the controlled variables of
-section 6.2, and the raw-artifact retention that section 6.3 and `V1-NFR-008`
-require.
+Execution revision: `ab15c55fbf9cee897a961905944ffee232a03372`
 
-It does **not** deliver retrieval-quality numbers. See section 5.
+## Scope and semantic boundary
 
-## 2. Files
+This M2 pilot evaluated three in-memory retrieval modes over the exact NFCorpus
+test judgments:
 
-| Path | Purpose | Lines |
-|---|---|---:|
-| `src/medevidence/retrieval/core.py` | tokenizer, BM25, dense LSI, RRF — no project or vendor imports | 268 |
-| `src/medevidence/retrieval/contracts.py` | source-neutral Pydantic contracts binding retrieval to the domain | 197 |
-| `evaluation/metrics.py` | Recall@k, Precision@k, MRR@k, nDCG@k, percentiles | 176 |
-| `evaluation/datasets.py` | strict BEIR-layout and single-file loaders | 226 |
-| `evaluation/harness.py` | index construction, baseline execution, artifact writing | 258 |
-| `evaluation/run_evaluation.py` | CLI | 116 |
-| `evaluation/README.md` | usage, definitions, limitations | — |
-| `tests/fixtures/retrieval/harness_smoke.json` | 30-doc synthetic fixture, 8 queries, 31 positive grades | — |
-| `tests/unit/retrieval/test_core.py` | 24 tests | — |
-| `tests/unit/evaluation/test_metrics.py` | 23 tests | — |
-| `tests/unit/evaluation/test_datasets.py` | 15 tests | — |
-| `tests/contract/evaluation/test_harness.py` | 17 tests | — |
-| `tests/conftest.py` | makes `evaluation` importable; falls back to `src` only if needed | — |
+- BM25 sparse retrieval;
+- classical TF-IDF plus truncated-SVD LSI dense retrieval; and
+- RRF(BM25, LSI).
 
-## 3. Design decisions and why
+Classical LSI is not a transformer embedding, and none of these pilot backends
+is Qdrant. The experiment-only `ME-000C` exception applies only to this M2
+benchmark. `ME-000C` remains open for release indexes, Qdrant, transformer
+dense retrieval, rerankers, and later retrieval architecture.
 
-**Numerics separated from contracts.** All ranking arithmetic is in `core.py`,
-which imports nothing from the project. `contracts.py` holds the Pydantic
-layer. This keeps the arithmetic directly testable, and it is why the core
-could be executed and verified in an environment where the 3.12-only domain
-layer cannot even be imported (section 6).
+## Authoritative candidate identity
 
-**No vendor object crosses the boundary.** There is no Qdrant client. The
-indexes are in-memory behind the same interface a Qdrant backend would satisfy,
-which discharges the "results do not leak Qdrant-native objects" acceptance
-criterion by construction rather than by inspection, and avoids depending on
-`ME-000C`'s Qdrant version question.
+Final run directory: `evaluation/results/nfcorpus-real-thread1-final`
 
-**Dense retrieval is TF-IDF + truncated SVD (classical LSI).** The sandbox
-could reach PyPI only; no transformer weights were obtainable. LSI is a genuine
-dense vector method requiring no download, so the comparison is reproducible
-offline. It is labelled as LSI everywhere and must not be reported as a
-transformer baseline. `EmbeddingBackend` is a protocol, so a transformer
-backend substitutes without any caller change.
+Executed at: `2026-08-13T16:25:51.616043+00:00`
 
-**RRF fuses on rank, not score.** BM25 scores and cosine similarities have
-incomparable scales; rank fusion avoids inventing a normalization.
+| File | Bytes | SHA-256 |
+|---|---:|---|
+| `manifest.json` | 19,030 | `a9ef3cdeaf42c54921ae07c6b8fc9f872381132aad43926e33f8ba377d583356` |
+| `manifest.sha256` | 80 | `0747afb3007f5aa1ecf2f3f1bab558daa6c3f48760a342fc5359c08ae3059a80` |
+| `per-query-dense.jsonl` | 2,752,034 | `73fa318fac69123a0afdad6b1565ab77da4306830c29b9d1293f70303a261cc4` |
+| `per-query-hybrid_rrf.jsonl` | 3,852,273 | `2d867c9317f585418554000a72fc2b3b81a5f0b71410b7d94736c54e703973a5` |
+| `per-query-sparse.jsonl` | 1,899,202 | `fa7891b2c4f96cddbd6e3b9a9741fc8f69e63f03d952a28ad8dd6f36852a07d0` |
+| `source.patch` | 133,064 | `2604ad49876d5662c23dd582243a87b60d12d41045e947ba3731675141d8f754` |
+| `source-state.json` | 2,886 | `52a70e6aaf1fbc3eb1a6d3bea9f23cebabb84719bf0bc941ceda137349401b3d` |
+| `source-untracked-snapshot.json` | 11,488,052 | `fdead70a75a990f9d1dfe76f8f0e24275df0e5b1479b55f5a9b5013fdedc7333` |
 
-**Ties break on document id** in every ranking path, so repeated runs over the
-same corpus produce byte-identical orderings.
+The source-state identity is
+`fb87bea9a8cd271a58b1d790a455cc241973d0c0178f5b924bbcadd3c97fa884`.
+It binds the execution revision, tracked binary patch, changed-path inventory,
+and exact untracked-file snapshot. The corpus content identity is
+`sha256:511592c84193977f19027bcf1ab00d3ed1bb7857c744060327391e2fc9d3f66c`.
 
-**Loaders fail closed.** Duplicate ids, malformed JSON, non-integer grades, and
-judgments referencing absent documents all raise. A silently shrunk qrel set
-inflates every metric, so silence is the dangerous behaviour.
+No separate candidate path-manifest was supplied or claimed by Review002.
 
-**Corpus truncation is never silent.** `--max-documents` keeps all judged
-documents and records a warning that propagates into the run manifest.
+## Dataset and distribution provenance
 
-## 4. Verification performed
+- Dataset: `NFCorpus`
+- Distribution URL:
+  `https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip`
+- Archive: `nfcorpus.zip`
+- Archive bytes: `2,448,432`
+- Archive SHA-256:
+  `efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b`
+- Documents: `3,633`
+- Dataset queries: `3,237`
+- Judged/evaluated test queries: `323`
+- Judgments: `12,334` (`11,758` grade 1; `576` grade 2)
 
-| Check | Result |
-|---|---|
-| Unit and contract tests, sockets disabled | **79 passed** |
-| Metric correctness | nDCG, DCG, Recall, Precision, MRR and percentiles checked against hand-computed values in the test suite and independently at the console |
-| Determinism | repeated runs produce identical rankings; asserted by contract test |
-| Config sensitivity | `config_id` stable across equal configs, differs when `rrf_k` changes |
-| Raw-artifact completeness | manifest carries config, `config_id`, corpus content hash, dataset summary, grade histogram, environment, per-mode summaries, approval disclaimer |
-| Recomputability | a contract test recomputes `ndcg@10` from the saved per-query record and matches the reported value |
-| Ruff lint | passed |
-| Ruff format | passed, 13 files |
-| End-to-end CLI | runs three baselines over the fixture and writes artifacts |
+| Consumed file | Bytes | SHA-256 |
+|---|---:|---|
+| `corpus.jsonl` | 6,219,364 | `10cc83ef1826b1425e6a87090b5140b39b27755d5a27e48215a88611c899991f` |
+| `queries.jsonl` | 441,466 | `d024e6621b84925d485ae473d316a0c3af31c62c8068a59fb29d22f7613aef2a` |
+| `qrels/test.tsv` | 279,572 | `f8fba6ef3d4dd9c3a242a8ba4ae38276fc3622fce7dcbae764766d564542fd2a` |
 
-Fixture run output (harness validation only, **not** a quality claim):
+Dataset and archive bytes remain outside Git.
 
-```text
-mode          recall@5   recall@10      mrr@10     ndcg@10
-sparse          0.7458      0.8958      1.0000      0.9350
-dense           0.7708      0.9583      1.0000      0.9489
-hybrid_rrf      0.7458      0.9583      1.0000      0.9446
-```
+## Exact benchmark configuration
 
-These numbers are high because the fixture is 30 documents with grades assigned
-by construction. They demonstrate that the pipeline runs end to end and that
-the three modes produce differing, plausible orderings. They say nothing about
-retrieval quality.
+- BM25: `k1=0.9`, `b=0.4`
+- Tokenizer: `unicode_lower_alnum_v1`
+- Dense method: `tfidf_svd_v1`, requested and actual dimensions `256`
+- RRF: `k=60`
+- Candidate limit: `100`; final limit: `10`
+- Relevant grade minimum: `1`
+- Random seed: `0`
+- Query execution: serial, single process, concurrency `1`
+- BLAS threads requested inside guarded construction/search: `1`
+- Python: `3.12.13`
+- NumPy: `2.5.1`; scikit-learn: `1.9.0`; SciPy: `1.18.0`
+- Platform: `Windows-11-10.0.26200-SP0`
+- `uv.lock`: 108,274 bytes; SHA-256
+  `26603561a612b39cb900d2472fe7933d1e600fefd78a54f767472c3f467d26f4`
 
-## 5. What is deliberately absent
+`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`,
+`BLIS_NUM_THREADS`, and `NUMEXPR_NUM_THREADS` were each `1`. The native stack
+was discovered before limiting. Every captured BLAS/OpenMP pool reported
+`num_threads=1` at entry and exit for index build and all three query-latency
+contexts. The observed libraries were two `libscipy_openblas` backends and the
+`vcomp` OpenMP runtime. OS scheduling, filesystem cache, and unrelated host
+load remained uncontrolled, so latency is local wall-clock evidence, not a
+production SLO.
 
-- **No adjudicated dataset.** Gold-10, Development-40 and Holdout-20 do not
-  exist. `M2-ADJUDICATION` has not designated a medical or pharmacovigilance
-  adjudicator, and this work did not invent relevance judgments — the same
-  restraint the packet applied when it left `GI_PT_SET_M1B_V1` empty.
-- **No reranker baseline.** Mode 4 needs a model and therefore `ME-000C`.
-- **No release threshold.** Thresholds may only be proposed from
-  Development-40 and must be approved and versioned before any Holdout-20 run.
-- **No transformer embedding**, for the network reason in section 3.
-- **No project corpus.** M1 retrieved one publication live; chunking of stored
-  records into a corpus is not implemented, so the harness currently consumes
-  external datasets rather than the project's own store.
+## Exact final results
 
-## 6. Environment limitation affecting verification
+| Mode | Recall@10 | nDCG@10 | MRR@10 | Mean latency/query (ms) | P50 (ms) | P95 (ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| BM25 | 0.14641067054843881 | 0.3055754029503277 | 0.5068381738660377 | 0.7745055727721116 | 0.2237999997305451 | 2.6660600004106514 |
+| Classical LSI dense | 0.15286419137082669 | 0.2993301171081958 | 0.4660278146346258 | 16.409001857574022 | 16.566000000239 | 17.160360000343644 |
+| RRF(BM25, LSI) | 0.1662154048534712 | 0.31808525498497503 | 0.49357093714678857 | 17.64883498449744 | 17.206400001668953 | 20.56107999978849 |
 
-The build environment runs Python 3.10 and reaches PyPI only. The repository
-targets Python 3.12.13 and uses `StrEnum` and PEP 695 `type` aliases, and its
-checked-in `.venv` is a Windows virtual environment.
+Build/index timing:
 
-Consequences:
+- BM25: `0.23778780000066035` seconds, measured;
+- classical LSI dense: `2.148871199999121` seconds, measured; and
+- hybrid: `2.3866589999997814` seconds, derived as the sum of the measured
+  sparse and dense builds, not a separately measured build.
 
-- `core.py`, `metrics.py`, `datasets.py`, `harness.py`, `run_evaluation.py` and
-  all tests were executed and pass, because they avoid 3.12-only syntax;
-- `contracts.py` was **not executed**. It was parsed and linted by Ruff with
-  `target-version = py312`, so its syntax and style are verified, but it has no
-  runtime or `mypy` coverage yet;
-- `mypy --strict` was not run at all.
+These are benchmark measurements over NFCorpus relevance judgments. They are
+not incidence, clinical, causal, regulatory, comparative product-risk,
+production-readiness, or release-threshold claims.
 
-**Required before merge:** run the authoritative four-command gate on a 3.12
-environment. `contracts.py` is the file most likely to need correction.
+## Review and remediation evidence
 
-## 7. Getting real numbers
+Independent Review001 remains immutable historical evidence:
+**FAIL — P0 0 / P1 4 / P2 3**.
 
-One manual step, on a machine with normal network access:
+Terminal Audit001 remains immutable historical **FAIL — P0 0 / P1 1 / P2 0**.
+The earlier `evaluation/results/nfcorpus-real-final/` 24-thread run remains
+diagnostic evidence only.
 
-1. Download a BEIR dataset — NFCorpus is recommended first: biomedical, ~3.6k
-   documents, 323 test queries, published graded judgments, indexes in seconds.
-2. Unzip to `data/nfcorpus/` containing `corpus.jsonl`, `queries.jsonl`,
-   `qrels/test.tsv`.
-3. `python -m evaluation.run_evaluation --beir data/nfcorpus --split test`
+The one Owner-authorized remediation cycle is consumed: `1/1`. It closed all
+seven reviewed finding classes:
 
-Published NFCorpus results give an external reference for whether the harness
-behaves sensibly. That comparison is the first genuine evidence this project
-would hold about retrieval, and it does not require any open decision gate,
-because a public benchmark with published judgments needs no adjudicator.
+1. exact dirty execution-source binding;
+2. retrieval-group bootstrap and CI installation;
+3. a narrow tracked final-evidence path;
+4. fail-closed qrel and evaluated-query validation;
+5. exact retrieval dependency-boundary and audit evidence;
+6. explicit concurrency/thread and measured-versus-derived timing semantics;
+7. reconstructible full candidate/component rankings plus pre-save validation.
 
-## 8. Standing limitation
+Fresh validation for the thread-1 candidate:
 
-Implementation and verification were performed by one actor. Every check in
-section 4 is mechanically reproducible from the committed tests. No independent
-review has occurred.
+- focused retrieval/evaluation/dependency tests: `132 passed`;
+- full offline unit/contract suite: `1,650 passed`, 2 warnings, 80% coverage;
+- Ruff lint and formatting: PASS;
+- strict MyPy over `src`: PASS;
+- `uv lock --check`, PowerShell parsing, and `git diff --check`: PASS.
+
+No tests were rerun during this evidence-only finalization.
+
+Independent Review002 returned **PASS — P0 0 / P1 0 / P2 0** on the exact
+candidate identities above. Artifact recomputation matched the manifest,
+sidecar, all output artifacts, saved rankings, metrics, and timing semantics.
+
+## Network and Git boundaries
+
+The thread-1 rerun and this finalization reused the exact local NFCorpus archive;
+they made no network request. No PubMed, NCBI, DailyMed, FAERS, or other
+medical-source API was contacted. No transformer weights, model, Qdrant, or
+reranker were downloaded or started.
+
+No Git stage, commit, push, merge, rebase, reset, clean, or history rewrite was
+performed by this finalization. No commit authority was granted.
+
+## Terminal evidence decision
+
+Terminal Audit002 returned **PASS — P0 0 / P1 0 / P2 0** on the 33-path
+pre-persistence candidate. Its canonical path manifest was 3,854 bytes with
+SHA-256
+`8f5a8b355e0681c1782b26aa3d881d687f8f88db4753f7722bd13f448564bb6b`.
+This establishes `M2_001_REAL_BENCHMARK_COMPLETE` and
+`READY_FOR_M2_TRANSFORMER_BASELINE` for this experiment-only baseline.
+
+No commit was authorized or performed. `ME-000C` remains open for release
+indexes, Qdrant, transformer dense retrieval, rerankers, and later retrieval
+architecture. No M3 work was authorized or started.
