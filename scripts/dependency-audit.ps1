@@ -507,13 +507,16 @@ LICENSE_RECORD_FIELDS = {
     "version",
 }
 APPROVED_SPDX_LICENSE_IDS = {
+    "0BSD",
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "CC0-1.0",
     "LGPL-3.0-only",
     "MIT",
     "MPL-2.0",
     "PSF-2.0",
+    "Zlib",
 }
 # Conservative accepted grammar:
 # APPROVED_ID (("AND" | "OR") APPROVED_ID)*.

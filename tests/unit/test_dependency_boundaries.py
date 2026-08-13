@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -30,6 +32,24 @@ PROHIBITED_TOKENS = {
 }
 APPROVED_CONNECTOR_THIRD_PARTY_ROOTS = {"defusedxml", "httpx"}
 APPROVED_PERSISTENCE_THIRD_PARTY_ROOTS = {"sqlalchemy"}
+
+
+def _load_dependency_license_validator() -> Callable[[object], str | None]:
+    script_path = Path("scripts/dependency-audit.ps1")
+    dependency_audit = script_path.read_text(encoding="utf-8")
+    start_marker = "$helperScript = @'"
+    end_marker = "\n'@\n"
+    _, start_separator, helper_remainder = dependency_audit.partition(start_marker)
+    assert start_separator == start_marker
+    helper_source, end_separator, _ = helper_remainder.lstrip("\r\n").partition(end_marker)
+    assert end_separator == end_marker
+
+    namespace: dict[str, object] = {"__name__": "dependency_evidence_helper"}
+    exec(compile(helper_source, str(script_path), "exec"), namespace)
+    return cast(Callable[[object], str | None], namespace["validate_license_expression"])
+
+
+LICENSE_VALIDATOR = _load_dependency_license_validator()
 
 
 def _is_approved_connector_import(module: str) -> bool:
@@ -258,3 +278,60 @@ def test_retrieval_group_is_explicit_in_bootstrap_ci_and_dependency_evidence() -
     assert '["numpy==2.5.1", "scikit-learn==1.9.0"]' in dependency_audit
     assert '"retrieval": sorted(retrieval' in dependency_audit
     assert '"export", "--locked", "--all-groups"' in dependency_audit
+
+
+def test_numpy_2_5_1_spdx_expression_is_accepted_exactly() -> None:
+    expression = "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"
+
+    assert LICENSE_VALIDATOR(expression) == expression
+
+
+@pytest.mark.parametrize("expression", ["0BSD", "Zlib", "CC0-1.0"])
+def test_newly_approved_spdx_identifiers_are_accepted_exactly(expression: str) -> None:
+    assert LICENSE_VALIDATOR(expression) == expression
+
+
+def test_unapproved_spdx_identifier_fails_closed() -> None:
+    with pytest.raises(ValueError, match="outside the approved SPDX-expression grammar"):
+        LICENSE_VALIDATOR("GPL-3.0-only")
+
+
+def test_unapproved_spdx_identifier_in_and_expression_fails_closed() -> None:
+    with pytest.raises(ValueError, match="outside the approved SPDX-expression grammar"):
+        LICENSE_VALIDATOR("MIT AND GPL-3.0-only")
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "",
+        " MIT",
+        "MIT ",
+        "MIT AND",
+        "MIT BSD-3-Clause",
+        "MIT and BSD-3-Clause",
+        "MIT OR OR BSD-3-Clause",
+        "(MIT)",
+    ],
+)
+def test_malformed_spdx_expressions_fail_closed(expression: str) -> None:
+    with pytest.raises(ValueError):
+        LICENSE_VALIDATOR(expression)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "BSD-*",
+        "BSD",
+        "BSD-3-Clause-extra",
+        "MITLicense",
+        "numpy",
+        "OSI Approved",
+        "permissive",
+        "License :: OSI Approved :: BSD License",
+    ],
+)
+def test_spdx_allowlist_has_no_generic_or_partial_match_bypass(expression: str) -> None:
+    with pytest.raises(ValueError):
+        LICENSE_VALIDATOR(expression)
