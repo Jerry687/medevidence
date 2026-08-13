@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -31,7 +33,11 @@ def _dailymed_application(_: M1BResearchRequestV1) -> M1BResearchReportV1:
     raise AssertionError("OpenAPI generation must not execute the DailyMed application")
 
 
-def _schema(*, dailymed_enabled: bool = True) -> dict[str, object]:
+def _faers_application(_: M1BResearchRequestV1) -> M1BResearchReportV1:
+    raise AssertionError("OpenAPI generation must not execute the FAERS application")
+
+
+def _schema(*, dailymed_enabled: bool = True, faers_enabled: bool = True) -> dict[str, object]:
     app = create_app(
         ApiDependencies(
             application=_application,
@@ -40,6 +46,7 @@ def _schema(*, dailymed_enabled: bool = True) -> dict[str, object]:
             utc_now=lambda: datetime(2026, 8, 8, 12, tzinfo=UTC),
             code_revision="0" * 40,
             dailymed_application=_dailymed_application if dailymed_enabled else None,
+            faers_application=_faers_application if faers_enabled else None,
         )
     )
     return cast(dict[str, object], app.openapi())
@@ -58,6 +65,112 @@ def _normalized(schema: dict[str, object]) -> bytes:
     )
 
 
+def _schema_accepts(document: dict[str, object], root: dict[str, object], value: object) -> bool:
+    """Evaluate the structural JSON Schema keywords used by route parity tests."""
+
+    components = cast(dict[str, object], cast(dict[str, object], document["components"])["schemas"])
+
+    def accepts(schema: object, candidate: object) -> bool:
+        if not isinstance(schema, dict):
+            return True
+        reference = schema.get("$ref")
+        if isinstance(reference, str):
+            prefix = "#/components/schemas/"
+            if not reference.startswith(prefix) or not accepts(
+                components[reference.removeprefix(prefix)], candidate
+            ):
+                return False
+        if "const" in schema and candidate != schema["const"]:
+            return False
+        if "enum" in schema and candidate not in cast(list[object], schema["enum"]):
+            return False
+        choices = schema.get("allOf")
+        if isinstance(choices, list) and not all(accepts(choice, candidate) for choice in choices):
+            return False
+        choices = schema.get("anyOf")
+        if isinstance(choices, list) and not any(accepts(choice, candidate) for choice in choices):
+            return False
+        choices = schema.get("oneOf")
+        if isinstance(choices, list) and sum(accepts(choice, candidate) for choice in choices) != 1:
+            return False
+        expected_type = schema.get("type")
+        if expected_type == "object":
+            if not isinstance(candidate, dict):
+                return False
+            required = schema.get("required", ())
+            if any(name not in candidate for name in cast(list[str], required)):
+                return False
+            properties = schema.get("properties", {})
+            if isinstance(properties, dict):
+                if schema.get("additionalProperties") is False and set(candidate) - set(properties):
+                    return False
+                if any(
+                    name in candidate and not accepts(child, candidate[name])
+                    for name, child in properties.items()
+                ):
+                    return False
+        elif expected_type == "array":
+            if not isinstance(candidate, list):
+                return False
+            if len(candidate) < cast(int, schema.get("minItems", 0)):
+                return False
+            maximum = schema.get("maxItems")
+            if isinstance(maximum, int) and len(candidate) > maximum:
+                return False
+            items = schema.get("items")
+            if items is not None and any(not accepts(items, item) for item in candidate):
+                return False
+        elif expected_type == "string":
+            if not isinstance(candidate, str):
+                return False
+            if len(candidate) < cast(int, schema.get("minLength", 0)):
+                return False
+            maximum = schema.get("maxLength")
+            if isinstance(maximum, int) and len(candidate) > maximum:
+                return False
+            pattern = schema.get("pattern")
+            if isinstance(pattern, str) and re.search(pattern, candidate) is None:
+                return False
+        elif (
+            (expected_type == "integer" and type(candidate) is not int)
+            or (expected_type == "number" and type(candidate) not in {int, float})
+            or (expected_type == "boolean" and type(candidate) is not bool)
+            or (expected_type == "null" and candidate is not None)
+        ):
+            return False
+        if type(candidate) in {int, float}:
+            minimum = schema.get("minimum")
+            maximum = schema.get("maximum")
+            if isinstance(minimum, (int, float)) and candidate < minimum:
+                return False
+            if isinstance(maximum, (int, float)) and candidate > maximum:
+                return False
+        return True
+
+    return accepts(root, value)
+
+
+def _faers_route_schemas(
+    schema: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    paths = cast(dict[str, object], schema["paths"])
+    operation = cast(
+        dict[str, object], cast(dict[str, object], paths["/v1/research/faers"])["post"]
+    )
+    request_body = cast(dict[str, object], operation["requestBody"])
+    request_content = cast(dict[str, object], request_body["content"])
+    request_schema = cast(
+        dict[str, object], cast(dict[str, object], request_content["application/json"])["schema"]
+    )
+    responses = cast(dict[str, object], operation["responses"])
+    response = cast(dict[str, object], responses["200"])
+    response_content = cast(dict[str, object], response["content"])
+    response_schema = cast(
+        dict[str, object], cast(dict[str, object], response_content["application/json"])["schema"]
+    )
+    return request_schema, response_schema
+
+
 def test_openapi_exact_route_metadata_models_and_examples() -> None:
     schema = _schema()
     assert schema["openapi"] == "3.1.0"
@@ -66,7 +179,7 @@ def test_openapi_exact_route_metadata_models_and_examples() -> None:
         "title": "MedEvidence API",
         "summary": "Traceable drug-safety evidence research API",
         "description": (
-            "Versioned research-only transport for bounded PubMed and DailyMed evidence.\n"
+            "Versioned research-only transport for bounded PubMed, DailyMed, and FAERS evidence.\n"
             "Responses are draft, non-exportable, and source-attributed. The API does not\n"
             "provide diagnosis, treatment, dosage, individualized medical advice, or a\n"
             "product-safety ranking."
@@ -80,7 +193,11 @@ def test_openapi_exact_route_metadata_models_and_examples() -> None:
         }
     ]
     paths = cast(dict[str, object], schema["paths"])
-    assert set(paths) == {"/v1/research/pubmed", "/v1/research/dailymed"}
+    assert set(paths) == {
+        "/v1/research/pubmed",
+        "/v1/research/dailymed",
+        "/v1/research/faers",
+    }
     path = cast(dict[str, object], paths["/v1/research/pubmed"])
     assert set(path) == {"post"}
     operation = cast(dict[str, object], path["post"])
@@ -187,9 +304,30 @@ def test_openapi_exact_route_metadata_models_and_examples() -> None:
         cast(list[str], report_schema["required"])
     )
 
+    faers = cast(dict[str, object], paths["/v1/research/faers"])
+    faers_post = cast(dict[str, object], faers["post"])
+    assert faers_post["operationId"] == "research_faers_v1"
+    assert faers_post["summary"] == "Research FAERS aggregate evidence"
+    assert faers_post["description"] == (
+        "Build an additive M1B FAERS report from exact trusted aggregate evidence.\n"
+        "The response remains research-only, draft, and non-exportable."
+    )
+    faers_body = cast(dict[str, object], faers_post["requestBody"])
+    faers_content = cast(dict[str, object], faers_body["content"])
+    assert cast(dict[str, object], faers_content["application/json"])["schema"] == {
+        "$ref": "#/components/schemas/M1BResearchRequestV1FaersRoute"
+    }
+    faers_responses = cast(dict[str, object], faers_post["responses"])
+    faers_200 = cast(dict[str, object], faers_responses["200"])
+    assert faers_200["description"] == "Validated draft FAERS research report."
+    assert cast(
+        dict[str, object],
+        cast(dict[str, object], faers_200["content"])["application/json"],
+    )["schema"] == {"$ref": "#/components/schemas/M1BResearchReportV1FaersRoute"}
+
 
 def test_m1a_pubmed_route_and_transitive_components_are_byte_compatible() -> None:
-    disabled = _schema(dailymed_enabled=False)
+    disabled = _schema(dailymed_enabled=False, faers_enabled=False)
     enabled = _schema()
 
     def pubmed_contract(schema: dict[str, object]) -> tuple[object, dict[str, object]]:
@@ -236,7 +374,7 @@ def test_m1a_pubmed_route_and_transitive_components_are_byte_compatible() -> Non
 
 
 def test_default_m1a_openapi_is_byte_identical_and_has_no_m1b_advertisement() -> None:
-    raw = _normalized(_schema(dailymed_enabled=False))
+    raw = _normalized(_schema(dailymed_enabled=False, faers_enabled=False))
     assert hashlib.sha256(raw).hexdigest() == (
         "0d735acbbb1503dcc3235a37193b9d383cae08b8dc4fdb3b0e42616982ff028a"
     )
@@ -244,8 +382,20 @@ def test_default_m1a_openapi_is_byte_identical_and_has_no_m1b_advertisement() ->
     assert b"DailyMed" not in raw
 
 
+def test_dailymed_only_openapi_remains_byte_identical() -> None:
+    raw = _normalized(_schema(faers_enabled=False))
+    assert hashlib.sha256(raw).hexdigest() == (
+        "b2fb6da8c1bc14daf30dc3003da54f22fbb98fbb70efb61828accf8a44ca6b36"
+    )
+    assert b'"/v1/research/faers"' not in raw
+
+
 def test_all_local_schema_refs_resolve_in_default_and_enabled_configs() -> None:
-    for schema in (_schema(dailymed_enabled=False), _schema()):
+    for schema in (
+        _schema(dailymed_enabled=False, faers_enabled=False),
+        _schema(faers_enabled=False),
+        _schema(),
+    ):
         components = cast(
             dict[str, object], cast(dict[str, object], schema["components"])["schemas"]
         )
@@ -455,6 +605,63 @@ def test_enabled_faers_input_requiredness_matches_runtime_presence() -> None:
     )
     assert faers_items == {"$ref": "#/components/schemas/FaersAggregateRequestV1"}
     assert "faers_query_requests" not in set(cast(list[str], request_component["required"]))
+
+
+def test_faers_route_request_schema_accepts_only_exact_faers_shape() -> None:
+    from tests.unit.tools.test_dailymed_report import dailymed_request
+    from tests.unit.tools.test_faers_report import _report_request
+
+    schema = _schema()
+    request_schema, _ = _faers_route_schemas(schema)
+    valid = _report_request().model_dump(mode="json")
+    assert _schema_accepts(schema, request_schema, valid)
+    omitted_optional_empty_arrays = deepcopy(valid)
+    del omitted_optional_empty_arrays["dailymed_selection_requests"]
+    del omitted_optional_empty_arrays["cadec_query_requests"]
+    assert _schema_accepts(schema, request_schema, omitted_optional_empty_arrays)
+
+    dailymed_only = dailymed_request().model_dump(mode="json")
+    assert not _schema_accepts(schema, request_schema, dailymed_only)
+
+    mixed = deepcopy(valid)
+    mixed["requested_sources"] = ["dailymed", "faers"]
+    mixed["scope"]["selected_sources"] = ["dailymed", "faers"]
+    mixed["dailymed_selection_requests"] = dailymed_only["dailymed_selection_requests"]
+    assert not _schema_accepts(schema, request_schema, mixed)
+
+    missing_request = deepcopy(valid)
+    del missing_request["faers_query_requests"]
+    assert not _schema_accepts(schema, request_schema, missing_request)
+
+
+def test_faers_route_response_schema_rejects_foreign_plan_and_section() -> None:
+    from tests.unit.tools.test_dailymed_report import trusted_case
+    from tests.unit.tools.test_faers import RUN_ID as FAERS_RUN_ID
+    from tests.unit.tools.test_faers import _execution
+    from tests.unit.tools.test_faers_report import NOW, REPORT_ID, _report_request
+
+    from medevidence.tools import build_faers_report
+
+    schema = _schema()
+    _, response_schema = _faers_route_schemas(schema)
+    request = _report_request()
+    valid = build_faers_report(
+        request,
+        report_id=REPORT_ID,
+        run_id=FAERS_RUN_ID,
+        executions=(_execution(request.faers_query_requests[0]),),
+        retrieved_as_of=NOW,
+    ).model_dump(mode="json")
+    assert _schema_accepts(schema, response_schema, valid)
+
+    foreign_plan = deepcopy(valid)
+    foreign_plan["source_plan"][0]["source"] = "dailymed"
+    assert not _schema_accepts(schema, response_schema, foreign_plan)
+
+    _, dailymed_section, _, _ = trusted_case()
+    foreign_section = deepcopy(valid)
+    foreign_section["source_sections"] = [dailymed_section.model_dump(mode="json")]
+    assert not _schema_accepts(schema, response_schema, foreign_section)
 
 
 def test_normalized_openapi_fixture_is_byte_exact() -> None:

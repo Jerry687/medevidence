@@ -10,6 +10,7 @@ from medevidence.api.contracts import (
     MAX_REQUEST_BYTES,
     RequestContractFailure,
     validate_raw_dailymed_request,
+    validate_raw_faers_request,
     validate_raw_json_request,
 )
 from medevidence.api.errors import ApiErrorCode
@@ -284,3 +285,155 @@ def test_dailymed_boundary_rejects_wrong_discriminator_and_source_set() -> None:
         )
     assert captured.value.code is ApiErrorCode.INVALID_REQUEST
     assert captured.value.field_paths == ("/requested_sources",)
+
+
+def test_faers_boundary_uses_closed_domain_request_and_forbids_caller_state() -> None:
+    from tests.unit.tools.test_faers_report import _report_request
+
+    request = _report_request()
+    payload = request.model_dump(mode="json")
+    validated = validate_raw_faers_request(
+        json.dumps(payload, separators=(",", ":")).encode(),
+        content_type="application/json",
+        content_encoding=None,
+    )
+    assert validated == request
+
+    for field in ("source_plan", "patient", "narrative"):
+        forged = dict(payload)
+        forged[field] = [] if field == "source_plan" else "caller-controlled"
+        with pytest.raises(RequestContractFailure) as captured:
+            validate_raw_faers_request(
+                json.dumps(forged, separators=(",", ":")).encode(),
+                content_type="application/json",
+                content_encoding=None,
+            )
+        expected = (
+            ApiErrorCode.SUSPECTED_PATIENT_DATA
+            if field == "patient"
+            else ApiErrorCode.INVALID_REQUEST
+        )
+        assert captured.value.code is expected
+
+
+def test_faers_boundary_rejects_discriminator_presence_and_source_drift() -> None:
+    from tests.unit.tools.test_faers_report import _report_request
+
+    payload = _report_request().model_dump(mode="json")
+    cases = (
+        (("schema_version",), None, ApiErrorCode.INVALID_REQUEST),
+        (("schema_version",), "1.0", ApiErrorCode.UNSUPPORTED_SCHEMA_VERSION),
+        (
+            ("faers_query_requests", 0, "schema_version"),
+            None,
+            ApiErrorCode.INVALID_REQUEST,
+        ),
+        (("requested_sources",), ["dailymed"], ApiErrorCode.INVALID_REQUEST),
+    )
+    for path, replacement, expected_code in cases:
+        forged = json.loads(json.dumps(payload))
+        target = forged
+        for part in path[:-1]:
+            target = target[part]
+        if replacement is None:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = replacement
+        with pytest.raises(RequestContractFailure) as captured:
+            validate_raw_faers_request(
+                json.dumps(forged).encode(),
+                content_type="application/json",
+                content_encoding=None,
+            )
+        assert captured.value.code is expected_code
+
+
+_FAERS_INTEGER_PATHS = (
+    ("scope", "query_bounds", "max_query_characters"),
+    ("scope", "query_bounds", "max_pages"),
+    ("scope", "query_bounds", "max_total_seconds"),
+    ("scope", "result_bounds", "max_records"),
+    ("scope", "result_bounds", "max_payload_bytes"),
+    ("faers_query_requests", 0, "effective_total_deadline_ms"),
+    ("faers_query_requests", 0, "execution_bounds", "max_date_difference_days"),
+    ("faers_query_requests", 0, "execution_bounds", "max_inclusive_calendar_dates"),
+    ("faers_query_requests", 0, "execution_bounds", "max_query_characters"),
+    ("faers_query_requests", 0, "execution_bounds", "max_pages"),
+    ("faers_query_requests", 0, "execution_bounds", "page_size"),
+    ("faers_query_requests", 0, "execution_bounds", "max_returned_raw_records"),
+    ("faers_query_requests", 0, "execution_bounds", "max_response_bytes"),
+    ("faers_query_requests", 0, "execution_bounds", "max_cumulative_bytes"),
+    ("faers_query_requests", 0, "execution_bounds", "max_buckets"),
+    ("faers_query_requests", 0, "execution_bounds", "effective_total_deadline_ms"),
+    (
+        "faers_query_requests",
+        0,
+        "execution_bounds",
+        "generic_total_deadline_ceiling_ms",
+    ),
+)
+
+
+def _replace_path(payload: object, path: tuple[str | int, ...], value: object) -> None:
+    target = payload
+    for part in path[:-1]:
+        target = target[part]  # type: ignore[index]
+    target[path[-1]] = value  # type: ignore[index]
+
+
+@pytest.mark.parametrize("path", _FAERS_INTEGER_PATHS)
+@pytest.mark.parametrize(
+    "drift",
+    (
+        pytest.param("integral_float", id="integral-float"),
+        pytest.param("boolean", id="boolean"),
+        pytest.param("numeric_string", id="numeric-string"),
+        pytest.param("non_integral_float", id="non-integral-float"),
+        pytest.param("overflow", id="overflow"),
+    ),
+)
+def test_faers_boundary_rejects_type_or_range_drift_at_every_integer_path(
+    path: tuple[str | int, ...], drift: str
+) -> None:
+    from tests.unit.tools.test_faers_report import _report_request
+
+    payload = _report_request().model_dump(mode="json")
+    target = payload
+    for part in path:
+        target = target[part]
+    assert type(target) is int
+    replacement: object = {
+        "integral_float": float(target),
+        "boolean": True,
+        "numeric_string": str(target),
+        "non_integral_float": float(target) + 0.5,
+        "overflow": 10**100,
+    }[drift]
+    _replace_path(payload, path, replacement)
+
+    with pytest.raises(RequestContractFailure) as captured:
+        validate_raw_faers_request(
+            json.dumps(payload).encode(),
+            content_type="application/json",
+            content_encoding=None,
+        )
+    assert captured.value.code is ApiErrorCode.INVALID_REQUEST
+
+
+def test_faers_boundary_retains_all_valid_integer_values_and_types() -> None:
+    from tests.unit.tools.test_faers_report import _report_request
+
+    payload = _report_request().model_dump(mode="json")
+    validated = validate_raw_faers_request(
+        json.dumps(payload).encode(),
+        content_type="application/json",
+        content_encoding=None,
+    ).model_dump(mode="json")
+    for path in _FAERS_INTEGER_PATHS:
+        observed = validated
+        expected = payload
+        for part in path:
+            observed = observed[part]
+            expected = expected[part]
+        assert type(observed) is int
+        assert observed == expected

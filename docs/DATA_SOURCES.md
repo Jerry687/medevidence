@@ -382,3 +382,22 @@ be presented as authoritative label absence.
 
 This work item performs no medical-source request. Its live test module is a
 disabled governance harness, not live-source evidence.
+
+## 13. M1B-FAERS-003 report-use boundary
+
+The FAERS report operation consumes only aggregate results that have already
+crossed the FAERS-002 connector, immutable snapshot/replay, and persistence
+trust boundaries. It neither retrieves provider data nor interprets or repairs
+provider payloads. Only the exact query identity, source outcome, snapshot,
+canonical aggregate buckets, bucket locators, and mandatory limitations reach
+the report.
+
+The V1 set is exactly `DIARRHOEA`, `NAUSEA`, and `VOMITING` under the frozen
+MedDRA 29.0 English reference-only boundary. The unit remains provider count
+occurrence and provider roles remain unfiltered. This deliberately bounded set
+is not comprehensive GI coverage, and bucket absence is not absence of GI
+adverse events. No individual report, narrative, demographic, reporter,
+geography, outcome, or other provider record is admitted.
+
+This work item makes no FAERS/openFDA or other medical-source request. The live
+module is a disabled authorization harness and supplies no source evidence.

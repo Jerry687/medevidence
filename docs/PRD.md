@@ -488,3 +488,25 @@ its transitive OpenAPI component subtree remain byte-compatible.
 Ordinary and integration validation is offline with sockets blocked. The live
 DailyMed harness is disabled; executing it requires a separate exact one-run
 Owner authorization.
+
+## 14. M1B-FAERS-003 aggregate report and API integration
+
+M1B-FAERS-003 adds the frozen FAERS aggregate report/tool and typed API
+projection without changing the connector, parser, snapshot, persistence, or
+migration semantics merged in FAERS-002. The tools layer accepts only exact
+typed FAERS executions and constructs a draft, research-only, non-exportable
+`M1BResearchReportV1` with one complete locator per aggregate bucket.
+
+`POST /v1/research/faers` is installed only when an explicit FAERS report
+application is injected. It accepts the closed `m1b.request.v1` envelope for
+FAERS alone, rejects unknown and caller-planning fields, and returns the closed
+`m1b.report.v1` envelope. The default application, PubMed route, and DailyMed
+route retain their existing behavior and OpenAPI contracts.
+
+Every FAERS result retains `provider_count_occurrence`,
+`unfiltered_provider_roles`, `GI_PT_SET_M1B_V1=("DIARRHOEA", "NAUSEA",
+"VOMITING")`, exact query/date/bounds identity, and the full mandatory
+limitation tuple. Counts establish no incidence, causality, relative or
+comparative risk, comparative safety, or ranking. No individual FAERS report,
+narrative, or provider payload crosses the report boundary. Ordinary tests are
+offline; the live harness is disabled pending separate exact Owner authority.

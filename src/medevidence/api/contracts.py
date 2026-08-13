@@ -289,6 +289,123 @@ def validate_raw_dailymed_request(
     return request
 
 
+def validate_raw_faers_request(
+    raw: bytes,
+    *,
+    content_type: str | None,
+    content_encoding: str | None,
+) -> M1BResearchRequestV1:
+    """Validate the closed FAERS-only request without caller planning state."""
+
+    request = _validate_raw_m1b_request(
+        raw,
+        content_type=content_type,
+        content_encoding=content_encoding,
+        expected_source=SourceType.FAERS,
+        nested_collection="faers_query_requests",
+    )
+    if request.requested_sources != (SourceType.FAERS,):
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("/requested_sources",))
+    return request
+
+
+def _validate_raw_m1b_request(
+    raw: bytes,
+    *,
+    content_type: str | None,
+    content_encoding: str | None,
+    expected_source: SourceType,
+    nested_collection: str,
+) -> M1BResearchRequestV1:
+    """Apply the common strict M1B raw boundary for one source-only route."""
+
+    _validate_transport_headers_and_size(raw, content_type, content_encoding)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("",)) from error
+    if text.startswith("\ufeff"):
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("",))
+    try:
+        loaded = json.loads(
+            text,
+            object_pairs_hook=_JSONObject,
+            parse_constant=_reject_non_finite,
+        )
+    except (json.JSONDecodeError, ValueError) as error:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("",)) from error
+    if not isinstance(loaded, _JSONObject):
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("",))
+    materialized, duplicate_paths = _materialize_object(loaded, "")
+    if duplicate_paths:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, duplicate_paths)
+    data = cast(dict[str, object], materialized)
+
+    patient_paths = _patient_key_paths(data, "")
+    if patient_paths:
+        raise RequestContractFailure(ApiErrorCode.SUSPECTED_PATIENT_DATA, patient_paths)
+    if "schema_version" not in data:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("/schema_version",))
+    if data["schema_version"] != "m1b.request.v1":
+        raise RequestContractFailure(
+            ApiErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+            ("/schema_version",),
+        )
+    if data.get("requested_sources") != [expected_source.value]:
+        raise RequestContractFailure(ApiErrorCode.INVALID_REQUEST, ("/requested_sources",))
+    nested_requests = data.get(nested_collection)
+    if isinstance(nested_requests, list):
+        missing_discriminators = tuple(
+            f"/{nested_collection}/{index}/schema_version"
+            for index, item in enumerate(nested_requests)
+            if isinstance(item, dict) and "schema_version" not in item
+        )
+        if missing_discriminators:
+            raise RequestContractFailure(
+                ApiErrorCode.INVALID_REQUEST,
+                missing_discriminators,
+            )
+    try:
+        normalized = json.dumps(
+            data,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        request = M1BResearchRequestV1.model_validate_json(normalized, strict=False)
+        if not _json_values_match_exactly(
+            request.model_dump(mode="json", exclude_unset=True),
+            data,
+        ):
+            raise ValueError("FAERS request JSON changed during validation")
+        return request
+    except (ValidationError, ValueError) as error:
+        raise RequestContractFailure(
+            ApiErrorCode.INVALID_REQUEST,
+            _validation_paths(error),
+        ) from error
+
+
+def _json_values_match_exactly(validated: object, raw: object) -> bool:
+    """Compare JSON structures without Python's bool/int/float equality aliases."""
+
+    if type(validated) is not type(raw):
+        return False
+    if isinstance(validated, dict):
+        if not isinstance(raw, dict) or validated.keys() != raw.keys():
+            return False
+        return all(_json_values_match_exactly(value, raw[key]) for key, value in validated.items())
+    if isinstance(validated, list):
+        if not isinstance(raw, list) or len(validated) != len(raw):
+            return False
+        return all(
+            _json_values_match_exactly(validated_item, raw_item)
+            for validated_item, raw_item in zip(validated, raw, strict=True)
+        )
+    return validated == raw
+
+
 def _validate_transport_headers_and_size(
     raw: bytes,
     content_type: str | None,
@@ -395,5 +512,6 @@ __all__ = [
     "RequestContractFailure",
     "ResearchPubMedApiRequest",
     "validate_raw_dailymed_request",
+    "validate_raw_faers_request",
     "validate_raw_json_request",
 ]

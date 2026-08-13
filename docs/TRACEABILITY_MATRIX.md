@@ -388,6 +388,28 @@ source files; full offline `952 passed`, two expected warnings, `80%` coverage
 in `6.64s`; and diff check PASS. Review 011 and terminal audit remain pending;
 no PASS, Git, network, integration, or DM-002 claim is made.
 
+### M1B-FAERS-003 implementation candidate status
+
+The candidate adds a trusted-execution FAERS aggregate report builder, an
+optional injected `POST /v1/research/faers` adapter, truthful enabled OpenAPI,
+offline API integration coverage, and an unconditionally disabled live-smoke
+harness. It preserves the exact statistical unit, three-PT set, unfiltered role
+policy, query/date/bounds identity, aggregate-only privacy boundary, and full
+mandatory limitations. PubMed and DailyMed compatibility remain explicitly
+pinned.
+
+Review001 recorded `FAIL - P0 0 / P1 2 / P2 0`; remediation cycle 1/3 closed
+raw integer type coercion and FAERS-route OpenAPI over-admission. Review002 then
+recorded `PASS - P0 0 / P1 0 / P2 0`. Terminal Audit001 found no candidate
+defect but refreshed ignored coverage outputs; strict read-only Re-Audit002
+then recorded `FAIL - P0 0 / P1 0 / P2 1` for the stale pending-status
+paragraph removed by metadata correction. Strict read-only Re-Audit003 then
+recorded `FAIL - P0 0 / P1 0 / P2 1` because delivery still said staging was
+zero despite the disclosed stage-and-unstage sequence. That accounting is now
+corrected. Fresh read-only final-byte rebind remains pending. No commit, push,
+PR, merge, integrated verification, completion, or CADEC execution is claimed.
+Medical-source requests are zero, and M1B-CADEC-001 has not started.
+
 ### M1B-DM-001 Review 011 status
 
 [Review 011](reviews/M1B-DM-001-INDEPENDENT-REVIEW-011.md) binds exact 28-path

@@ -551,3 +551,28 @@ The focused gate covers:
 
 No quality, completeness, clinical, latency, or live-source claim is inferred
 from these deterministic tests.
+
+## 15. M1B-FAERS-003 deterministic report/API evaluation
+
+The offline gate covers:
+
+- exact trusted-execution construction of one or more FAERS aggregate report
+  sections and the complete canonical bucket-locator set;
+- rejection of request, query, acquisition, outcome, snapshot, bucket,
+  locator, limitation, run, and source ownership drift;
+- exact `provider_count_occurrence`, `unfiltered_provider_roles`, three-PT
+  tuple, inclusive-date, bound, and query-identity preservation;
+- propagation of every mandatory limitation and absence of individual report
+  or narrative payload fields;
+- raw-request discriminator, source-set, unknown-field, planning-field, and
+  patient-like-key closure;
+- strict required-field response reconstruction and exact request/scope/plan/
+  section parity;
+- offline in-process route integration with sockets disabled;
+- byte-exact enabled OpenAPI plus protected default M1A, PubMed, and DailyMed
+  route/component identities; and
+- collection and execution of the live FAERS harness as an authorization skip.
+
+These tests establish contract behavior only. They make no live-source,
+completeness, incidence, causality, risk, comparative-safety, ranking, latency,
+or clinical claim.

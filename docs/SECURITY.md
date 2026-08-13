@@ -430,3 +430,22 @@ No default DailyMed application, connector, transport, credential, host, or
 network fallback is installed. Ordinary validation remains socket-disabled,
 and the live harness is unconditionally skipped pending separate exact Owner
 authorization.
+
+## 20. M1B-FAERS-003 public-boundary controls
+
+The additive FAERS route accepts only a required `m1b.request.v1` envelope with
+FAERS as the sole requested and in-scope source. Duplicate JSON keys,
+patient-like fields, unknown fields, caller planning state, foreign source
+requests, and missing required nested fields reject before the application is
+invoked. The returned value is reconstructed as a closed
+`M1BResearchReportV1` and must echo the exact request, scope, selected FAERS
+plan, request elements, trusted outcomes, sections, buckets, and locators.
+
+The report boundary admits aggregates only: no individual FAERS report or
+narrative payload is represented by its public models. Exact mandatory
+limitations prevent counts from being presented as incidence, causality,
+relative or comparative risk, comparative safety, ranking, or general absence
+of GI adverse events. The FAERS application is optional and injected; no
+default connector, credential, host permission, persistence adapter, or network
+fallback is installed. The live harness is unconditionally skipped without a
+separate exact one-run Owner authorization.
