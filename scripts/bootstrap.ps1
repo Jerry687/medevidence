@@ -26,7 +26,7 @@ try {
         throw "uv could not install CPython $expectedPythonVersion."
     }
 
-    & $uvCommand.Source sync --locked --group dev
+    & $uvCommand.Source sync --locked --group dev --group retrieval
     if ($LASTEXITCODE -ne 0) {
         throw "uv sync failed."
     }
@@ -46,7 +46,10 @@ try {
         throw "CPython $expectedPythonVersion is required; found $actualPythonVersion."
     }
 
-    Write-Output "Bootstrap complete: uv $actualUvVersion, CPython $actualPythonVersion."
+    Write-Output (
+        "Bootstrap complete: uv $actualUvVersion, CPython $actualPythonVersion, " +
+        "development and retrieval/evaluation groups synchronized."
+    )
 }
 finally {
     Pop-Location

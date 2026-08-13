@@ -1,0 +1,2834 @@
+diff --git a/.delivery/M2-001-RETRIEVAL-HARNESS.md b/.delivery/M2-001-RETRIEVAL-HARNESS.md
+index 6c300247078799a5d2dc26022561bf46b76aea47..132366635485bb9cc763dbb2bcb23a52c2dfab44 100644
+--- a/.delivery/M2-001-RETRIEVAL-HARNESS.md
++++ b/.delivery/M2-001-RETRIEVAL-HARNESS.md
+@@ -1,151 +1,153 @@
+-# M2-001 retrieval baseline harness — delivery record
++# M2-001 retrieval baseline harness delivery record
+ 
+ Updated: `2026-08-13`
+ 
+-Status: **`IMPLEMENTED_AND_OFFLINE_VERIFIED`; `NO_ADJUDICATED_DATASET`;
+-`NO_MEASURED_RETRIEVAL_CLAIM`; `ME-000C_STILL_OPEN`**
+-
+-Branch: `feat/m2-retrieval-eval`
+-Baseline: `main` at `46c7993`
+-
+-## 1. What this delivers
+-
+-The machinery for `EVALUATION_PLAN` section 6: three retrieval baselines over
+-one frozen corpus, the metric set of section 6.3, the controlled variables of
+-section 6.2, and the raw-artifact retention that section 6.3 and `V1-NFR-008`
+-require.
+-
+-It does **not** deliver retrieval-quality numbers. See section 5.
+-
+-## 2. Files
+-
+-| Path | Purpose | Lines |
+-|---|---|---:|
+-| `src/medevidence/retrieval/core.py` | tokenizer, BM25, dense LSI, RRF — no project or vendor imports | 268 |
+-| `src/medevidence/retrieval/contracts.py` | source-neutral Pydantic contracts binding retrieval to the domain | 197 |
+-| `evaluation/metrics.py` | Recall@k, Precision@k, MRR@k, nDCG@k, percentiles | 176 |
+-| `evaluation/datasets.py` | strict BEIR-layout and single-file loaders | 226 |
+-| `evaluation/harness.py` | index construction, baseline execution, artifact writing | 258 |
+-| `evaluation/run_evaluation.py` | CLI | 116 |
+-| `evaluation/README.md` | usage, definitions, limitations | — |
+-| `tests/fixtures/retrieval/harness_smoke.json` | 30-doc synthetic fixture, 8 queries, 31 positive grades | — |
+-| `tests/unit/retrieval/test_core.py` | 24 tests | — |
+-| `tests/unit/evaluation/test_metrics.py` | 23 tests | — |
+-| `tests/unit/evaluation/test_datasets.py` | 15 tests | — |
+-| `tests/contract/evaluation/test_harness.py` | 17 tests | — |
+-| `tests/conftest.py` | makes `evaluation` importable; falls back to `src` only if needed | — |
+-
+-## 3. Design decisions and why
+-
+-**Numerics separated from contracts.** All ranking arithmetic is in `core.py`,
+-which imports nothing from the project. `contracts.py` holds the Pydantic
+-layer. This keeps the arithmetic directly testable, and it is why the core
+-could be executed and verified in an environment where the 3.12-only domain
+-layer cannot even be imported (section 6).
+-
+-**No vendor object crosses the boundary.** There is no Qdrant client. The
+-indexes are in-memory behind the same interface a Qdrant backend would satisfy,
+-which discharges the "results do not leak Qdrant-native objects" acceptance
+-criterion by construction rather than by inspection, and avoids depending on
+-`ME-000C`'s Qdrant version question.
+-
+-**Dense retrieval is TF-IDF + truncated SVD (classical LSI).** The sandbox
+-could reach PyPI only; no transformer weights were obtainable. LSI is a genuine
+-dense vector method requiring no download, so the comparison is reproducible
+-offline. It is labelled as LSI everywhere and must not be reported as a
+-transformer baseline. `EmbeddingBackend` is a protocol, so a transformer
+-backend substitutes without any caller change.
+-
+-**RRF fuses on rank, not score.** BM25 scores and cosine similarities have
+-incomparable scales; rank fusion avoids inventing a normalization.
+-
+-**Ties break on document id** in every ranking path, so repeated runs over the
+-same corpus produce byte-identical orderings.
+-
+-**Loaders fail closed.** Duplicate ids, malformed JSON, non-integer grades, and
+-judgments referencing absent documents all raise. A silently shrunk qrel set
+-inflates every metric, so silence is the dangerous behaviour.
+-
+-**Corpus truncation is never silent.** `--max-documents` keeps all judged
+-documents and records a warning that propagates into the run manifest.
+-
+-## 4. Verification performed
+-
+-| Check | Result |
+-|---|---|
+-| Unit and contract tests, sockets disabled | **79 passed** |
+-| Metric correctness | nDCG, DCG, Recall, Precision, MRR and percentiles checked against hand-computed values in the test suite and independently at the console |
+-| Determinism | repeated runs produce identical rankings; asserted by contract test |
+-| Config sensitivity | `config_id` stable across equal configs, differs when `rrf_k` changes |
+-| Raw-artifact completeness | manifest carries config, `config_id`, corpus content hash, dataset summary, grade histogram, environment, per-mode summaries, approval disclaimer |
+-| Recomputability | a contract test recomputes `ndcg@10` from the saved per-query record and matches the reported value |
+-| Ruff lint | passed |
+-| Ruff format | passed, 13 files |
+-| End-to-end CLI | runs three baselines over the fixture and writes artifacts |
+-
+-Fixture run output (harness validation only, **not** a quality claim):
+-
+-```text
+-mode          recall@5   recall@10      mrr@10     ndcg@10
+-sparse          0.7458      0.8958      1.0000      0.9350
+-dense           0.7708      0.9583      1.0000      0.9489
+-hybrid_rrf      0.7458      0.9583      1.0000      0.9446
+-```
+-
+-These numbers are high because the fixture is 30 documents with grades assigned
+-by construction. They demonstrate that the pipeline runs end to end and that
+-the three modes produce differing, plausible orderings. They say nothing about
+-retrieval quality.
+-
+-## 5. What is deliberately absent
+-
+-- **No adjudicated dataset.** Gold-10, Development-40 and Holdout-20 do not
+-  exist. `M2-ADJUDICATION` has not designated a medical or pharmacovigilance
+-  adjudicator, and this work did not invent relevance judgments — the same
+-  restraint the packet applied when it left `GI_PT_SET_M1B_V1` empty.
+-- **No reranker baseline.** Mode 4 needs a model and therefore `ME-000C`.
+-- **No release threshold.** Thresholds may only be proposed from
+-  Development-40 and must be approved and versioned before any Holdout-20 run.
+-- **No transformer embedding**, for the network reason in section 3.
+-- **No project corpus.** M1 retrieved one publication live; chunking of stored
+-  records into a corpus is not implemented, so the harness currently consumes
+-  external datasets rather than the project's own store.
+-
+-## 6. Environment limitation affecting verification
+-
+-The build environment runs Python 3.10 and reaches PyPI only. The repository
+-targets Python 3.12.13 and uses `StrEnum` and PEP 695 `type` aliases, and its
+-checked-in `.venv` is a Windows virtual environment.
+-
+-Consequences:
+-
+-- `core.py`, `metrics.py`, `datasets.py`, `harness.py`, `run_evaluation.py` and
+-  all tests were executed and pass, because they avoid 3.12-only syntax;
+-- `contracts.py` was **not executed**. It was parsed and linted by Ruff with
+-  `target-version = py312`, so its syntax and style are verified, but it has no
+-  runtime or `mypy` coverage yet;
+-- `mypy --strict` was not run at all.
+-
+-**Required before merge:** run the authoritative four-command gate on a 3.12
+-environment. `contracts.py` is the file most likely to need correction.
+-
+-## 7. Getting real numbers
+-
+-One manual step, on a machine with normal network access:
+-
+-1. Download a BEIR dataset — NFCorpus is recommended first: biomedical, ~3.6k
+-   documents, 323 test queries, published graded judgments, indexes in seconds.
+-2. Unzip to `data/nfcorpus/` containing `corpus.jsonl`, `queries.jsonl`,
+-   `qrels/test.tsv`.
+-3. `python -m evaluation.run_evaluation --beir data/nfcorpus --split test`
+-
+-Published NFCorpus results give an external reference for whether the harness
+-behaves sensibly. That comparison is the first genuine evidence this project
+-would hold about retrieval, and it does not require any open decision gate,
+-because a public benchmark with published judgments needs no adjudicator.
+-
+-## 8. Standing limitation
+-
+-Implementation and verification were performed by one actor. Every check in
+-section 4 is mechanically reproducible from the committed tests. No independent
+-review has occurred.
++Status: **`FINAL_REAL_BENCHMARK_COMPLETE_AWAITING_TERMINAL_AUDIT`**
++
++No completion or transformer-readiness marker is authorized yet.
++
++Branch: `feat/m2-retrieval-eval-codex`
++
++Execution revision: `ab15c55fbf9cee897a961905944ffee232a03372`
++
++## Scope and semantic boundary
++
++This M2 pilot evaluated three in-memory retrieval modes over the exact NFCorpus
++test judgments:
++
++- BM25 sparse retrieval;
++- classical TF-IDF plus truncated-SVD LSI dense retrieval; and
++- RRF(BM25, LSI).
++
++Classical LSI is not a transformer embedding, and none of these pilot backends
++is Qdrant. The experiment-only `ME-000C` exception applies only to this M2
++benchmark. `ME-000C` remains open for release indexes, Qdrant, transformer
++dense retrieval, rerankers, and later retrieval architecture.
++
++## Final evidence identity
++
++Final run directory: `evaluation/results/nfcorpus-real-final`
++
++Executed at: `2026-08-13T15:51:40.669686+00:00`
++
++| File | Bytes | SHA-256 |
++|---|---:|---|
++| `manifest.json` | 9,222 | `fe4cf4797647635168ed7053df26c58fd28e9f1daa67256ada294ae80d7ec8ff` |
++| `manifest.sha256` | 80 | `0e6a59b0ef3360e5d0b3b58b9767eaf478e0e701233099b4f3f90720b8c57eef` |
++| `per-query-dense.jsonl` | 2,751,655 | `c8c4387207be0799c9a7f5617c6a2be9673d62795cb9ce63828ed42f133a489b` |
++| `per-query-hybrid_rrf.jsonl` | 3,852,040 | `37086f05c666dab44f99a7653949a006f80361e7df13353dcb52e127cabba48d` |
++| `per-query-sparse.jsonl` | 1,898,643 | `bb05a32f1b3504752483bde5694a95efd9efadaf3d2a6817a811d65447a7e9fc` |
++| `source.patch` | 96,831 | `6078922af05d71e6ee3338bd742892a3a6eea87405b3839a854426a724d32770` |
++| `source-state.json` | 1,325 | `848078620fbf246325b9544cc8fd3e9f880c16e40c4f1af05f826ad7384d9139` |
++| `source-untracked-snapshot.json` | 3,164 | `ad3f3c54953352e5f1d6f22c62216fe332107a6061f915b87a0431417ee5e114` |
++
++The source-state identity is
++`d6f6dc441af7ff0ed0d67d19cb21931f00573b69102dc913d53cc0968169f49f`.
++It binds the execution revision, tracked binary patch, changed-path inventory,
++and exact untracked-file snapshot. The corpus content identity is
++`sha256:511592c84193977f19027bcf1ab00d3ed1bb7857c744060327391e2fc9d3f66c`.
++
++## Dataset and distribution provenance
++
++- Dataset: `NFCorpus`
++- Distribution URL:
++  `https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip`
++- Archive: `nfcorpus.zip`
++- Archive bytes: `2,448,432`
++- Archive SHA-256:
++  `efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b`
++- Documents: `3,633`
++- Dataset queries: `3,237`
++- Judged/evaluated test queries: `323`
++- Judgments: `12,334` (`11,758` grade 1; `576` grade 2)
++
++| Consumed file | Bytes | SHA-256 |
++|---|---:|---|
++| `corpus.jsonl` | 6,219,364 | `10cc83ef1826b1425e6a87090b5140b39b27755d5a27e48215a88611c899991f` |
++| `queries.jsonl` | 441,466 | `d024e6621b84925d485ae473d316a0c3af31c62c8068a59fb29d22f7613aef2a` |
++| `qrels/test.tsv` | 279,572 | `f8fba6ef3d4dd9c3a242a8ba4ae38276fc3622fce7dcbae764766d564542fd2a` |
++
++Dataset and archive bytes remain outside Git.
++
++## Exact benchmark configuration
++
++- BM25: `k1=0.9`, `b=0.4`
++- Tokenizer: `unicode_lower_alnum_v1`
++- Dense method: `tfidf_svd_v1`, requested and actual dimensions `256`
++- RRF: `k=60`
++- Candidate limit: `100`; final limit: `10`
++- Relevant grade minimum: `1`
++- Random seed: `0`
++- Query execution: serial, single process, concurrency `1`
++- BLAS threads requested inside guarded construction/search: `1`
++- Python: `3.12.13`
++- NumPy: `2.5.1`; scikit-learn: `1.9.0`; SciPy: `1.18.0`
++
++The manifest records `blas_threads_requested=1`, but the captured threadpool
++runtime reports 24 threads for the BLAS/OpenMP libraries and every related
++environment variable is null. Therefore the evidence does not establish that
++actual native execution was single-threaded. OS scheduling, filesystem cache,
++and unrelated host load were also uncontrolled, so latency is local wall-clock
++evidence and not a production SLO. This discrepancy remains for terminal-audit
++assessment.
++
++## Exact final results
++
++| Mode | Recall@10 | nDCG@10 | MRR@10 | Mean latency/query (ms) | P50 (ms) | P95 (ms) |
++|---|---:|---:|---:|---:|---:|---:|
++| BM25 | 0.14641067054843881 | 0.3055754029503277 | 0.5068381738660377 | 5.812231578979536 | 5.1901000006182585 | 7.954869999412039 |
++| Classical LSI dense | 0.15286419137082669 | 0.2993301171081958 | 0.4660278146346258 | 19.29270712075312 | 19.062199999098084 | 20.096389999525854 |
++| RRF(BM25, LSI) | 0.1662154048534712 | 0.31808525498497503 | 0.49357093714678857 | 20.363076160979134 | 19.901300000128685 | 23.115809999035264 |
++
++Build/index timing:
++
++- BM25: `0.25148450000051525` seconds, measured;
++- classical LSI dense: `3.926422900000034` seconds, measured; and
++- hybrid: `4.177907400000549` seconds, derived as the sum of the measured
++  sparse and dense builds, not a separately measured build.
++
++These are benchmark measurements over NFCorpus relevance judgments. They are
++not incidence, clinical, causal, regulatory, comparative product-risk,
++production-readiness, or release-threshold claims.
++
++## Review and remediation evidence
++
++Independent Review001 remains immutable historical evidence:
++**FAIL — P0 0 / P1 4 / P2 3**.
++
++The one Owner-authorized remediation cycle is consumed: `1/1`. It closed all
++seven reviewed finding classes:
++
++1. exact dirty execution-source binding;
++2. retrieval-group bootstrap and CI installation;
++3. a narrow tracked final-evidence path;
++4. fail-closed qrel and evaluated-query validation;
++5. exact retrieval dependency-boundary and audit evidence;
++6. explicit concurrency/thread and measured-versus-derived timing semantics;
++7. reconstructible full candidate/component rankings plus pre-save validation.
++
++Fresh validation before the final rerun:
++
++- focused retrieval/evaluation/dependency tests: `124 passed`;
++- full offline unit/contract suite: `1,642 passed`, 2 warnings, 80% coverage;
++- Ruff lint and formatting: PASS;
++- strict MyPy over `src`: PASS;
++- `uv lock --check`, PowerShell parsing, and `git diff --check`: PASS.
++
++No tests were rerun during this evidence-only finalization.
++
++## Network and Git boundaries
++
++The final rerun and this finalization reused the exact local NFCorpus archive;
++they made no network request. No PubMed, NCBI, DailyMed, FAERS, or other
++medical-source API was contacted. No transformer weights, model, Qdrant, or
++reranker were downloaded or started.
++
++No Git stage, commit, push, merge, rebase, reset, clean, or history rewrite was
++performed by this finalization.
++
++## Remaining gate
++
++Terminal evidence audit is pending. Until it passes, do not emit
++`M2_001_REAL_BENCHMARK_COMPLETE` or `READY_FOR_M2_TRANSFORMER_BASELINE`, and do
++not start transformer work.
+diff --git a/.github/workflows/quality.yml b/.github/workflows/quality.yml
+index a64774eec5d94404eb9b58d1c09a390a3ea864f9..f6359e710aab9445e902e9d8b6e87655799c4814 100644
+--- a/.github/workflows/quality.yml
++++ b/.github/workflows/quality.yml
+@@ -28,7 +28,7 @@ jobs:
+           version: "0.11.32"
+           python-version: "3.12.13"
+           enable-cache: false
+-      - name: Synchronize locked development environment
++      - name: Synchronize locked development and retrieval environment
+         shell: powershell
+         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
+       - name: Ruff lint
+diff --git a/.gitignore b/.gitignore
+index 2cf4628cdd55fc3c122de62ffb1f468b12ed8673..2d6f6581c910165c850e7324526991e729020a24 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -48,10 +48,15 @@ pgdata/
+ evaluation/runs/
+ evaluation/generated/
+ evaluation/results/
++!evaluation/results/
++evaluation/results/*
++!evaluation/results/nfcorpus-real-final/
++!evaluation/results/nfcorpus-real-final/**
++!evaluation/results/nfcorpus-real-thread1-final/
++!evaluation/results/nfcorpus-real-thread1-final/**
+ 
+ # Local reports, exports, and logs
+ exports/
+ reports/generated/
+ logs/
+ *.log
+-
+diff --git a/evaluation/README.md b/evaluation/README.md
+index 1878d7ca10a9119a905348c95e9b564daaa57d9e..b5b0fbbe6bccf9d9de7e6823775523fb2313c8f1 100644
+--- a/evaluation/README.md
++++ b/evaluation/README.md
+@@ -1,102 +1,129 @@
+ # M2 retrieval evaluation
+ 
+-Compares the four `EVALUATION_PLAN` section 6.1 baselines over one frozen
+-corpus and writes every raw artifact section 6.3 requires.
++This harness compares BM25, classical latent-semantic dense retrieval, and
++RRF(BM25, LSI) over a frozen corpus while retaining recomputable per-query
++evidence.
+ 
+-**Nothing here is an approved configuration.** Decision gate `ME-000C`
+-(tokenizer, sparse encoding, BM25 `k1`/`b`, embedding, reranker, limits) is
+-open. Every value is an experiment parameter, recorded with each run so a
+-figure can never be reported without the configuration that produced it.
++The M2 pilot exception is experiment-only. Classical LSI is not a transformer
++embedding, and no backend here is Qdrant. `ME-000C` remains open for release
++indexes, Qdrant, transformer dense retrieval, rerankers, and later retrieval
++architecture.
+ 
+-## Running
++## Environment and execution
+ 
+-Single-file fixture (harness smoke, no external data required):
++Bootstrap installs both the development and dedicated retrieval/evaluation
++dependency groups. NumPy and scikit-learn remain outside the production
++default dependency surface.
+ 
+-```bash
+-python -m evaluation.run_evaluation \
++Fixture smoke run:
++
++```powershell
++uv run --locked --no-sync python -m evaluation.run_evaluation `
+   --jsonl tests/fixtures/retrieval/harness_smoke.json
+ ```
+ 
+-BEIR-layout dataset:
+-
+-```bash
+-python -m evaluation.run_evaluation --beir data/nfcorpus --split test
++Final NFCorpus evidence uses a deterministic tracked run directory while the
++archive and extracted dataset remain outside Git:
++
++```powershell
++uv run --locked --no-sync python -m evaluation.run_evaluation `
++  --beir "<local-extracted-nfcorpus>" `
++  --split test `
++  --dataset-name NFCorpus `
++  --dataset-source "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip" `
++  --distribution-archive "<local-nfcorpus.zip>" `
++  --output evaluation/results `
++  --run-id nfcorpus-real-final `
++  --dimensions 256 `
++  --rrf-k 60 `
++  --bm25-k1 0.9 `
++  --bm25-b 0.4 `
++  --candidate-limit 100 `
++  --final-limit 10 `
++  --grade-min 1 `
++  --random-seed 0 `
++  --query-concurrency 1 `
++  --blas-threads 1 `
++  --modes sparse,dense,hybrid_rrf
+ ```
+ 
+-Useful flags: `--max-documents` (fast smoke; records a truncation warning),
+-`--dimensions`, `--rrf-k`, `--bm25-k1`, `--bm25-b`, `--candidate-limit`,
+-`--final-limit`, `--grade-min`, `--modes`.
++## Artifact contract
+ 
+-## Getting a real dataset
++Ordinary generated runs remain ignored. The exact final evidence is trackable
++only at `evaluation/results/nfcorpus-real-final/`.
+ 
+-The sandbox this was built in reaches PyPI only, so no benchmark could be
+-downloaded here. On a machine with normal network access:
++Each final run contains:
+ 
+-1. Download a BEIR dataset, for example NFCorpus (~3.6k biomedical documents,
+-   323 test queries, published graded judgments) from the BEIR distribution.
+-2. Unzip so that `data/nfcorpus/` contains `corpus.jsonl`, `queries.jsonl`,
+-   and `qrels/test.tsv`.
+-3. Run the BEIR command above.
++- `manifest.json` and its external `manifest.sha256` sidecar;
++- `source.patch`, `source-state.json`, and the byte-exact untracked-source
++  snapshot;
++- one `per-query-<mode>.jsonl` file for each executed mode.
+ 
+-NFCorpus is a reasonable first choice because it is biomedical, small enough
+-to index in seconds, and its published numbers give an external reference for
+-whether this harness is behaving sensibly.
++Every per-query record contains the full returned candidate pool (up to 100),
++final top ten, component scores and ranks, latency, and metrics. Before writing,
++the harness rejects missing or duplicate query records, incomplete candidate
++evidence, non-recomputable metrics or summaries, and non-reconstructible RRF.
+ 
+-## Layout
++## Final NFCorpus run
+ 
+-```text
+-evaluation/
+-  datasets.py        strict loaders; BEIR layout and single-file fixtures
+-  metrics.py         Recall@k, Precision@k, MRR@k, nDCG@k, percentiles
+-  harness.py         builds indexes, runs baselines, writes raw artifacts
+-  run_evaluation.py  CLI
+-  results/           run-<timestamp>/ output (git-ignored)
+-```
++Status: **`FINAL_REAL_BENCHMARK_COMPLETE_AWAITING_TERMINAL_AUDIT`**
++
++Run directory: `evaluation/results/nfcorpus-real-final`
+ 
+-Ranking arithmetic lives in `src/medevidence/retrieval/core.py` and is free of
+-project and vendor imports. `src/medevidence/retrieval/contracts.py` holds the
+-source-neutral Pydantic contracts that bind retrieval to the domain layer.
++- `manifest.json`: 9,222 bytes; SHA-256
++  `fe4cf4797647635168ed7053df26c58fd28e9f1daa67256ada294ae80d7ec8ff`
++- `manifest.sha256`: 80 bytes; SHA-256
++  `0e6a59b0ef3360e5d0b3b58b9767eaf478e0e701233099b4f3f90720b8c57eef`
++- NFCorpus archive: 2,448,432 bytes; SHA-256
++  `efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b`
++- Corpus identity:
++  `sha256:511592c84193977f19027bcf1ab00d3ed1bb7857c744060327391e2fc9d3f66c`
++- Dataset counts: 3,633 documents, 3,237 queries, 323 judged/evaluated
++  test queries, and 12,334 judgments.
+ 
+-## Output
++| Mode | Recall@10 | nDCG@10 | MRR@10 | Mean latency/query (ms) | Build/index seconds |
++|---|---:|---:|---:|---:|---:|
++| BM25 | 0.14641067054843881 | 0.3055754029503277 | 0.5068381738660377 | 5.812231578979536 | 0.25148450000051525 measured |
++| Classical LSI dense | 0.15286419137082669 | 0.2993301171081958 | 0.4660278146346258 | 19.29270712075312 | 3.926422900000034 measured |
++| RRF(BM25, LSI) | 0.1662154048534712 | 0.31808525498497503 | 0.49357093714678857 | 20.363076160979134 | 4.177907400000549 derived sum |
+ 
+-Each run writes `results/run-<UTC timestamp>/`:
++The hybrid build value is derived from measured sparse and dense builds. Query
++execution was serial with concurrency one. The manifest records one requested
++BLAS thread, but its captured BLAS/OpenMP runtime reports 24 threads and all
++related environment variables are null; it therefore does not prove actual
++single-threaded native execution. OS scheduling, filesystem cache, and
++unrelated host load were uncontrolled, so latency remains local wall-clock
++evidence, not a production SLO. Terminal audit must assess this discrepancy.
+ 
+-- `manifest.json` — dataset summary, grade histogram, corpus content hash,
+-  full config plus its `config_id`, environment, index build times, per-mode
+-  summaries, and an explicit approval-status disclaimer;
+-- `per-query-<mode>.jsonl` — one record per query with the ranked ids, final
+-  scores, per-component scores and ranks, latency, and computed metrics.
++Review001 remains historical **FAIL — P0 0 / P1 4 / P2 3**. The one authorized
++remediation cycle is consumed (`1/1`) and closed all seven findings. Fresh
++pre-rerun validation passed: 124 focused tests and 1,642 full offline tests,
++plus Ruff, formatting, strict MyPy, lock, PowerShell parsing, and diff checks.
+ 
+-Per-query records are sufficient to recompute every summary figure, which is
+-asserted by a contract test.
++Terminal audit remains pending. No M2 completion or transformer-readiness
++marker may be emitted yet.
+ 
+ ## Metric definitions
+ 
+-TREC/BEIR conventions, so numbers are comparable to published results:
+-
+-- `DCG@k = Σ (2^rel_i − 1) / log2(i + 1)`, 1-based positions;
+-- `nDCG@k = DCG@k / IDCG@k`, `0.0` when no positive grade exists;
+-- `Recall@k` divides by *all* judged-relevant documents;
+-- `MRR@k` is `0.0` when nothing relevant appears in the top `k`.
+-
+-Grade semantics (`0/1/2`) belong to the adjudication guide. `--grade-min`
+-controls what counts as relevant for the binary metrics; the plan's "directly
+-relevant" wording may map to grade `2` once `M2-ADJUDICATION` designates an
+-adjudicator.
+-
+-## Current limitations
+-
+-- **Dense retrieval is TF-IDF + truncated SVD (classical LSI), not a
+-  transformer embedding.** It requires no model download, so the comparison is
+-  reproducible offline. It must not be reported as a transformer baseline.
+-  `EmbeddingBackend` exists so a transformer backend can be substituted without
+-  changing any caller.
+-- **The reranker baseline (mode 4) is not implemented.** It needs a model and
+-  therefore an `ME-000C` decision.
+-- **No adjudicated dataset exists.** `harness_smoke.json` is synthetic, its
+-  grades were assigned by construction rather than by medical adjudication, and
+-  metrics over it validate the harness only. Gold-10 / Development-40 /
+-  Holdout-20 remain unbuilt and gated on `M2-ADJUDICATION`.
+-- **No release threshold is proposed.** Thresholds may only come from
+-  Development-40 and must be approved and versioned before the first Holdout-20
+-  run.
++The harness uses standard TREC/BEIR conventions:
++
++- `DCG@k = sum((2^rel_i - 1) / log2(i + 1))` for 1-based rank `i`;
++- `nDCG@k = DCG@k / IDCG@k`, or `0.0` with no positive judgment;
++- `Recall@k` divides retrieved relevant documents by all judged-relevant
++  documents;
++- `MRR@k` is the reciprocal rank of the first relevant result, or `0.0` when
++  no relevant result appears by `k`.
++
++`--grade-min` controls the binary relevance threshold. The final NFCorpus run
++used `1`.
++
++## Limitations
++
++- Dense retrieval is TF-IDF plus truncated SVD (classical LSI), not a
++  transformer embedding.
++- No reranker baseline is implemented.
++- NFCorpus is an external retrieval benchmark, not the MedEvidence
++  Development-40 or Holdout-20 evaluation set.
++- No production threshold or release configuration is established.
++- Benchmark metrics do not support clinical, causal, incidence, regulatory,
++  comparative product-risk, ranking, or advice conclusions.
+diff --git a/evaluation/datasets.py b/evaluation/datasets.py
+index 2d390c294b71b32cc84ade037527247473ec15d6..b71f7ed4fbd9785e46cbc15cb6d1554857ab3916 100644
+--- a/evaluation/datasets.py
++++ b/evaluation/datasets.py
+@@ -21,14 +21,39 @@ silently dropped, because a silently shrunk qrel set inflates every metric.
+ 
+ from __future__ import annotations
+ 
++import hashlib
+ import json
+ from collections.abc import Mapping
+ from dataclasses import dataclass, field
+ from pathlib import Path
++from typing import Any
+ 
+ MAX_GRADE = 10
+ 
+ 
++@dataclass(frozen=True)
++class FileIdentity:
++    """Exact local identity of a distribution or consumed dataset file."""
++
++    path: str
++    bytes: int
++    sha256: str
++
++
++def _file_identity(path: Path, *, recorded_path: str | None = None) -> FileIdentity:
++    digest = hashlib.sha256()
++    size = 0
++    with path.open("rb") as handle:
++        while chunk := handle.read(1024 * 1024):
++            digest.update(chunk)
++            size += len(chunk)
++    return FileIdentity(
++        path=recorded_path or str(path.resolve()),
++        bytes=size,
++        sha256=digest.hexdigest(),
++    )
++
++
+ @dataclass(frozen=True)
+ class EvaluationDataset:
+     """A corpus, its queries, and adjudicated relevance judgments."""
+@@ -39,6 +64,9 @@ class EvaluationDataset:
+     queries: dict[str, str]
+     qrels: dict[str, dict[str, int]]
+     source_path: str = ""
++    dataset_source: str = ""
++    distribution: FileIdentity | None = None
++    consumed_files: tuple[FileIdentity, ...] = ()
+     notes: str = ""
+     warnings: list[str] = field(default_factory=list)
+ 
+@@ -69,12 +97,34 @@ class EvaluationDataset:
+             "documents": len(self.corpus),
+             "queries": len(self.queries),
+             "judged_queries": len(self.judged_queries),
++            "judgments": sum(len(judgments) for judgments in self.qrels.values()),
+             "positive_judgments": positives,
+         }
+ 
+ 
+-def _read_jsonl(path: Path) -> list[dict]:
+-    rows: list[dict] = []
++def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++    result: dict[str, Any] = {}
++    for key, value in pairs:
++        if key in result:
++            raise ValueError(f"duplicate JSON key {key!r}")
++        result[key] = value
++    return result
++
++
++def _load_json_object_strict(path: Path) -> dict[str, Any]:
++    try:
++        payload = json.loads(
++            path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_json_keys
++        )
++    except json.JSONDecodeError as error:
++        raise ValueError(f"{path.name} is not valid JSON") from error
++    if not isinstance(payload, dict):
++        raise ValueError(f"{path.name} root is not a JSON object")
++    return payload
++
++
++def _read_jsonl(path: Path) -> list[dict[str, Any]]:
++    rows: list[dict[str, Any]] = []
+     with path.open("r", encoding="utf-8") as handle:
+         for number, line in enumerate(handle, start=1):
+             stripped = line.strip()
+@@ -95,6 +145,8 @@ def load_beir_directory(
+     *,
+     split: str = "test",
+     dataset_id: str | None = None,
++    dataset_source: str = "",
++    distribution_archive: str | Path | None = None,
+     max_documents: int | None = None,
+ ) -> EvaluationDataset:
+     """Load a BEIR-layout dataset directory.
+@@ -111,6 +163,16 @@ def load_beir_directory(
+     for path in (corpus_path, queries_path, qrels_path):
+         if not path.exists():
+             raise FileNotFoundError(f"expected {path}")
++    distribution = None
++    if distribution_archive is not None:
++        archive_path = Path(distribution_archive)
++        if not archive_path.is_file():
++            raise FileNotFoundError(f"expected distribution archive {archive_path}")
++        distribution = _file_identity(archive_path)
++    consumed_files = tuple(
++        _file_identity(path, recorded_path=path.relative_to(root).as_posix())
++        for path in (corpus_path, queries_path, qrels_path)
++    )
+ 
+     warnings: list[str] = []
+     corpus: dict[str, str] = {}
+@@ -134,14 +196,23 @@ def load_beir_directory(
+         queries[query_id] = str(row.get("text", ""))
+ 
+     qrels: dict[str, dict[str, int]] = {}
++    seen_judgments: set[tuple[str, str]] = set()
+     with qrels_path.open("r", encoding="utf-8") as handle:
+         for number, line in enumerate(handle, start=1):
+-            parts = line.rstrip("\n").split("\t")
+-            if len(parts) < 3:
++            raw_line = line.rstrip("\r\n")
++            if not raw_line:
++                raise ValueError(f"{qrels_path.name} line {number} is blank")
++            parts = raw_line.split("\t")
++            if number == 1:
++                if parts != ["query-id", "corpus-id", "score"]:
++                    raise ValueError(f"{qrels_path.name} line 1 is not the expected header")
+                 continue
++            if len(parts) != 3:
++                message = "must contain exactly three tab-separated fields"
++                raise ValueError(f"{qrels_path.name} line {number} {message}")
+             query_id, doc_id, raw_grade = parts[0].strip(), parts[1].strip(), parts[2].strip()
+-            if number == 1 and not raw_grade.lstrip("-").isdigit():
+-                continue  # header row
++            if not query_id or not doc_id or not raw_grade:
++                raise ValueError(f"{qrels_path.name} line {number} contains an empty field")
+             try:
+                 grade = int(raw_grade)
+             except ValueError as error:
+@@ -150,12 +221,29 @@ def load_beir_directory(
+                 ) from error
+             if not 0 <= grade <= MAX_GRADE:
+                 raise ValueError(f"{qrels_path.name} line {number} grade {grade} out of range")
++            pair = (query_id, doc_id)
++            if pair in seen_judgments:
++                raise ValueError(
++                    f"{qrels_path.name} line {number} duplicates judgment {query_id!r}->{doc_id!r}"
++                )
++            seen_judgments.add(pair)
+             qrels.setdefault(query_id, {})[doc_id] = grade
++    if not seen_judgments:
++        raise ValueError(f"{qrels_path.name} contains no judgments")
++
++    pre_truncation = EvaluationDataset(
++        dataset_id=dataset_id or root.name,
++        corpus=corpus,
++        corpus_titles=titles,
++        queries=queries,
++        qrels=qrels,
++    )
++    _validate(pre_truncation)
+ 
+     if max_documents is not None and len(corpus) > max_documents:
+         keep = set(sorted(corpus)[:max_documents])
+         for judgments in qrels.values():
+-            keep.update(doc_id for doc_id, grade in judgments.items() if grade > 0)
++            keep.update(judgments)
+         removed = len(corpus) - len(keep)
+         corpus = {doc_id: text for doc_id, text in corpus.items() if doc_id in keep}
+         titles = {doc_id: text for doc_id, text in titles.items() if doc_id in keep}
+@@ -171,6 +259,9 @@ def load_beir_directory(
+         queries=queries,
+         qrels=qrels,
+         source_path=str(root),
++        dataset_source=dataset_source,
++        distribution=distribution,
++        consumed_files=consumed_files,
+         warnings=warnings,
+     )
+     _validate(dataset)
+@@ -181,17 +272,57 @@ def load_jsonl_dataset(path: str | Path, *, dataset_id: str | None = None) -> Ev
+     """Load a single-file dataset: `{"corpus": [...], "queries": [...], "qrels": {...}}`."""
+ 
+     path = Path(path)
+-    payload = json.loads(path.read_text(encoding="utf-8"))
++    payload = _load_json_object_strict(path)
++    for required_key in ("corpus", "queries", "qrels"):
++        if required_key not in payload:
++            raise ValueError(f"dataset is missing required {required_key!r}")
++    if not isinstance(payload["corpus"], list):
++        raise ValueError("corpus is not a JSON array")
++    if not isinstance(payload["queries"], list):
++        raise ValueError("queries is not a JSON array")
+     corpus: dict[str, str] = {}
+     titles: dict[str, str] = {}
+     for row in payload.get("corpus", []):
+-        corpus[str(row["_id"])] = str(row.get("text", ""))
+-        titles[str(row["_id"])] = str(row.get("title", ""))
+-    queries = {str(row["_id"]): str(row["text"]) for row in payload.get("queries", [])}
+-    qrels = {
+-        str(query_id): {str(doc_id): int(grade) for doc_id, grade in judgments.items()}
+-        for query_id, judgments in payload.get("qrels", {}).items()
+-    }
++        if not isinstance(row, dict):
++            raise ValueError("corpus row is not a JSON object")
++        doc_id = str(row.get("_id", "")).strip()
++        if not doc_id:
++            raise ValueError("corpus row is missing _id")
++        if doc_id in corpus:
++            raise ValueError(f"duplicate corpus id {doc_id!r}")
++        corpus[doc_id] = str(row.get("text", ""))
++        titles[doc_id] = str(row.get("title", ""))
++    queries: dict[str, str] = {}
++    for row in payload.get("queries", []):
++        if not isinstance(row, dict):
++            raise ValueError("query row is not a JSON object")
++        query_id = str(row.get("_id", "")).strip()
++        if not query_id:
++            raise ValueError("query row is missing _id")
++        if query_id in queries:
++            raise ValueError(f"duplicate query id {query_id!r}")
++        queries[query_id] = str(row.get("text", ""))
++    raw_qrels = payload.get("qrels", {})
++    if not isinstance(raw_qrels, dict):
++        raise ValueError("qrels is not a JSON object")
++    qrels: dict[str, dict[str, int]] = {}
++    for raw_query_id, raw_judgments in raw_qrels.items():
++        query_id = str(raw_query_id).strip()
++        if not query_id or not isinstance(raw_judgments, dict):
++            raise ValueError("qrels contains an invalid query entry")
++        qrels[query_id] = {}
++        for raw_doc_id, grade in raw_judgments.items():
++            doc_id = str(raw_doc_id).strip()
++            if not doc_id:
++                raise ValueError(f"qrels for {query_id!r} contains an empty document id")
++            if isinstance(grade, bool) or not isinstance(grade, int):
++                raise ValueError(f"qrels judgment {query_id!r}->{doc_id!r} has a non-integer grade")
++            if not 0 <= grade <= MAX_GRADE:
++                raise ValueError(
++                    f"qrels judgment {query_id!r}->{doc_id!r} grade {grade} out of range"
++                )
++            qrels[query_id][doc_id] = grade
++    identity = _file_identity(path)
+     dataset = EvaluationDataset(
+         dataset_id=dataset_id or payload.get("dataset_id", path.stem),
+         corpus=corpus,
+@@ -199,6 +330,9 @@ def load_jsonl_dataset(path: str | Path, *, dataset_id: str | None = None) -> Ev
+         queries=queries,
+         qrels=qrels,
+         source_path=str(path),
++        dataset_source=str(payload.get("dataset_source", "local_jsonl_fixture")),
++        distribution=identity,
++        consumed_files=(identity,),
+         notes=str(payload.get("notes", "")),
+     )
+     _validate(dataset)
+@@ -212,19 +346,28 @@ def _validate(dataset: EvaluationDataset) -> None:
+         raise ValueError("dataset corpus is empty")
+     if not dataset.queries:
+         raise ValueError("dataset has no queries")
++    if not dataset.qrels:
++        raise ValueError("dataset has no qrels")
++    empty_judgment_maps = sorted(
++        query_id for query_id, judgments in dataset.qrels.items() if not judgments
++    )
++    if empty_judgment_maps:
++        raise ValueError(f"qrels contain empty judgment maps: {empty_judgment_maps[:5]}")
+     unknown_queries = sorted(set(dataset.qrels) - set(dataset.queries))
+     if unknown_queries:
+         raise ValueError(f"qrels reference unknown query ids: {unknown_queries[:5]}")
+     missing: list[str] = []
+     for query_id, judgments in dataset.qrels.items():
+-        for doc_id, grade in judgments.items():
+-            if grade > 0 and doc_id not in dataset.corpus:
++        for doc_id in judgments:
++            if doc_id not in dataset.corpus:
+                 missing.append(f"{query_id}->{doc_id}")
+     if missing:
+         raise ValueError(
+-            f"{len(missing)} positive judgments reference documents absent from the corpus; "
++            f"{len(missing)} judgments reference documents absent from the corpus; "
+             f"first: {missing[:5]}"
+         )
++    if not dataset.judged_queries:
++        raise ValueError("dataset has zero judged queries with a positive judgment")
+ 
+ 
+ def relevance_grade_histogram(qrels: Mapping[str, Mapping[str, int]]) -> dict[int, int]:
+diff --git a/evaluation/harness.py b/evaluation/harness.py
+index 14dd6ca5c35edad9151e3cb524cae21c1e194cec..d8779548a594125f041bc367c47e5558e947e44e 100644
+--- a/evaluation/harness.py
++++ b/evaluation/harness.py
+@@ -12,29 +12,230 @@ so any reported figure can be recomputed from saved artifacts alone.
+ 
+ from __future__ import annotations
+ 
++import base64
+ import hashlib
++import importlib.metadata
+ import json
++import math
++import os
+ import platform
++import subprocess
+ import sys
+ import time
+-from collections.abc import Sequence
++from collections.abc import Iterator, Sequence
++from contextlib import contextmanager
+ from dataclasses import asdict, dataclass, field
+ from datetime import UTC, datetime
+ from pathlib import Path
++from typing import Any
++
++NATIVE_THREAD_ENVIRONMENT_VARIABLES = (
++    "OMP_NUM_THREADS",
++    "OPENBLAS_NUM_THREADS",
++    "MKL_NUM_THREADS",
++    "BLIS_NUM_THREADS",
++    "NUMEXPR_NUM_THREADS",
++)
++
++
++def _set_native_thread_environment() -> None:
++    """Set native thread controls before importing the numerical stack."""
++
++    for name in NATIVE_THREAD_ENVIRONMENT_VARIABLES:
++        os.environ[name] = "1"
++
++
++_set_native_thread_environment()
++
++for _native_module in (
++    "numpy",
++    "scipy",
++    "sklearn.decomposition",
++    "sklearn.feature_extraction.text",
++):
++    importlib.import_module(_native_module)
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+ 
+-from medevidence.retrieval.core import (
++from medevidence.retrieval.core import (  # noqa: E402
+     BM25Index,
+     DenseIndex,
+     component_ranks,
+     reciprocal_rank_fusion,
+ )
+ 
+-from .datasets import EvaluationDataset, relevance_grade_histogram
+-from .metrics import aggregate, evaluate_query
++from .datasets import EvaluationDataset, relevance_grade_histogram  # noqa: E402
++from .metrics import aggregate, evaluate_query  # noqa: E402
+ 
+ HARNESS_VERSION = "m2.harness.v1"
++NATIVE_THREAD_USER_APIS = frozenset({"blas", "openmp"})
++MODE_DISPLAY_NAMES = {
++    "sparse": "BM25",
++    "dense": "classical_lsi_dense",
++    "hybrid_rrf": "rrf_bm25_lsi",
++}
++
++
++def _sha256_file(path: Path) -> str:
++    digest = hashlib.sha256()
++    with path.open("rb") as handle:
++        while chunk := handle.read(1024 * 1024):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def _repository_git_revision() -> str:
++    """Return the exact repository revision, failing rather than guessing."""
++
++    repository_root = Path(__file__).resolve().parents[1]
++    try:
++        completed = subprocess.run(
++            ["git", "rev-parse", "HEAD"],
++            cwd=repository_root,
++            check=True,
++            capture_output=True,
++            text=True,
++            timeout=10,
++        )
++    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
++        raise RuntimeError("unable to determine repository Git revision") from error
++    revision = completed.stdout.strip().lower()
++    if len(revision) != 40 or any(character not in "0123456789abcdef" for character in revision):
++        raise RuntimeError("repository Git revision is not a full SHA-1 commit identity")
++    return revision
++
++
++def _git_bytes(*arguments: str) -> bytes:
++    repository_root = Path(__file__).resolve().parents[1]
++    try:
++        completed = subprocess.run(
++            ["git", *arguments],
++            cwd=repository_root,
++            check=True,
++            capture_output=True,
++            timeout=30,
++        )
++    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
++        raise RuntimeError(f"unable to capture repository source state: git {arguments}") from error
++    return completed.stdout
++
++
++def _source_state() -> tuple[bytes, bytes, dict[str, Any]]:
++    """Capture the exact dirty execution source relative to immutable HEAD."""
++
++    revision = _repository_git_revision()
++    patch = _git_bytes("diff", "--binary", "--full-index", "HEAD", "--", ".")
++    changed_paths = sorted(
++        path.decode("utf-8")
++        for path in _git_bytes(
++            "diff", "--name-only", "--diff-filter=ACDMRTUXB", "-z", "HEAD", "--", "."
++        ).split(b"\0")
++        if path
++    )
++    repository_root = Path(__file__).resolve().parents[1]
++    untracked_paths = sorted(
++        path.decode("utf-8")
++        for path in _git_bytes("ls-files", "-z", "--others", "--exclude-standard").split(b"\0")
++        if path
++    )
++    untracked = []
++    untracked_snapshot_files = []
++    for relative in untracked_paths:
++        path = repository_root / relative
++        if not path.is_file():
++            raise RuntimeError(f"untracked source inventory entry is not a file: {relative}")
++        untracked.append(
++            {
++                "path": relative.replace("\\", "/"),
++                "bytes": path.stat().st_size,
++                "sha256": _sha256_file(path),
++            }
++        )
++        untracked_snapshot_files.append(
++            {
++                "path": relative.replace("\\", "/"),
++                "content_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
++            }
++        )
++    patch_sha256 = hashlib.sha256(patch).hexdigest()
++    identity_payload = {
++        "head": revision,
++        "tracked_patch_sha256": patch_sha256,
++        "tracked_changed_paths": changed_paths,
++        "untracked_files": untracked,
++    }
++    state_bytes = json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode()
++    untracked_snapshot = (
++        json.dumps(
++            {
++                "format": "medevidence_untracked_source_snapshot_v1",
++                "head": revision,
++                "files": untracked_snapshot_files,
++            },
++            indent=2,
++            sort_keys=True,
++        )
++        + "\n"
++    ).encode("utf-8")
++    return (
++        patch,
++        untracked_snapshot,
++        {
++            **identity_payload,
++            "tracked_patch_bytes": len(patch),
++            "untracked_snapshot_sha256": hashlib.sha256(untracked_snapshot).hexdigest(),
++            "untracked_snapshot_bytes": len(untracked_snapshot),
++            "source_state_sha256": hashlib.sha256(state_bytes).hexdigest(),
++            "reconstruction": (
++                "HEAD plus source.patch; untracked files are identity-bound by "
++                "path, size, and SHA-256"
++            ),
++        },
++    )
++
++
++def _distribution_version(name: str) -> str:
++    try:
++        return importlib.metadata.version(name)
++    except importlib.metadata.PackageNotFoundError as error:
++        raise RuntimeError(f"required benchmark dependency {name!r} is not installed") from error
++
++
++def _native_thread_environment() -> dict[str, str | None]:
++    return {name: os.environ.get(name) for name in NATIVE_THREAD_ENVIRONMENT_VARIABLES}
++
++
++def _native_pool_identity(pool: dict[str, Any]) -> dict[str, str | int | None]:
++    filepath = pool.get("filepath")
++    return {
++        "user_api": str(pool.get("user_api", "unknown")),
++        "internal_api": str(pool.get("internal_api", "unknown")),
++        "library_id": str(pool.get("prefix") or "unknown"),
++        "library_file": Path(str(filepath)).name if filepath else None,
++        "version": str(pool["version"]) if pool.get("version") is not None else None,
++        "num_threads": (
++            pool.get("num_threads") if isinstance(pool.get("num_threads"), int) else None
++        ),
++    }
++
++
++def _relevant_native_pools(pools: list[dict[str, Any]]) -> list[dict[str, str | int | None]]:
++    return [
++        _native_pool_identity(pool)
++        for pool in pools
++        if pool.get("user_api") in NATIVE_THREAD_USER_APIS
++    ]
++
++
++def _require_single_thread_pools(pools: list[dict[str, str | int | None]], *, context: str) -> None:
++    if not pools:
++        raise RuntimeError(f"no BLAS/OpenMP native thread pools discovered in {context}")
++    mismatches = [pool for pool in pools if pool["num_threads"] != 1]
++    if mismatches:
++        identities = ", ".join(
++            f"{pool['user_api']}:{pool['library_id']}={pool['num_threads']}" for pool in mismatches
++        )
++        raise RuntimeError(f"native thread limit mismatch in {context}: {identities}")
+ 
+ 
+ @dataclass(frozen=True)
+@@ -58,6 +259,18 @@ class RunConfig:
+     ndcg_k: int = 10
+     relevant_grade_min: int = 1
+     random_state: int = 0
++    query_concurrency: int = 1
++    blas_threads: int = 1
++
++    def __post_init__(self) -> None:
++        if self.candidate_limit < self.final_limit or self.final_limit < 1:
++            raise ValueError(
++                "candidate_limit must be at least final_limit and both must be positive"
++            )
++        if self.query_concurrency != 1:
++            raise ValueError("this pilot requires serial query execution")
++        if self.blas_threads != 1:
++            raise ValueError("this pilot requires one BLAS thread")
+ 
+     def config_id(self) -> str:
+         """Deterministic identity of this configuration."""
+@@ -74,6 +287,8 @@ class QueryRecord:
+     mode: str
+     ranked_ids: list[str]
+     scores: list[float]
++    candidate_ranked_ids: list[str] = field(default_factory=list)
++    candidate_scores: list[float] = field(default_factory=list)
+     component_scores: dict[str, dict[str, float]] = field(default_factory=dict)
+     component_ranks: dict[str, dict[str, int]] = field(default_factory=dict)
+     latency_ms: float = 0.0
+@@ -87,6 +302,7 @@ class ModeResult:
+     mode: str
+     summary: dict[str, float]
+     records: list[QueryRecord]
++    build_timing: dict[str, float | str]
+ 
+ 
+ class RetrievalHarness:
+@@ -98,28 +314,57 @@ class RetrievalHarness:
+     """
+ 
+     def __init__(self, dataset: EvaluationDataset, config: RunConfig | None = None) -> None:
++        if not dataset.judged_queries:
++            raise ValueError("evaluation requires at least one judged query")
+         self.dataset = dataset
+         self.config = config or RunConfig()
+         self.doc_ids: list[str] = sorted(dataset.corpus)
+         self.documents: list[str] = [dataset.document_text(doc_id) for doc_id in self.doc_ids]
+         self._build_seconds: dict[str, float] = {}
++        self._native_thread_build_observations: list[dict[str, Any]] = []
++        self._native_thread_mode_observations: dict[str, list[dict[str, Any]]] = {}
+ 
+-        started = time.perf_counter()
+-        self.bm25 = BM25Index(
+-            self.doc_ids,
+-            self.documents,
+-            k1=self.config.bm25_k1,
+-            b=self.config.bm25_b,
+-        )
+-        self._build_seconds["sparse"] = time.perf_counter() - started
++        from threadpoolctl import threadpool_info  # type: ignore[import-untyped]
+ 
+-        started = time.perf_counter()
+-        self.dense = DenseIndex(
+-            self.doc_ids,
+-            self.documents,
+-            dimensions=self.config.embedding_dimensions,
+-        )
+-        self._build_seconds["dense"] = time.perf_counter() - started
++        self._native_pools_discovered_before_limits = _relevant_native_pools(threadpool_info())
++        if not self._native_pools_discovered_before_limits:
++            raise RuntimeError("native BLAS/OpenMP stack is not discoverable before limiting")
++
++        with self._native_thread_context("index_build") as build_observations:
++            started = time.perf_counter()
++            self.bm25 = BM25Index(
++                self.doc_ids,
++                self.documents,
++                k1=self.config.bm25_k1,
++                b=self.config.bm25_b,
++            )
++            self._build_seconds["sparse"] = time.perf_counter() - started
++
++            started = time.perf_counter()
++            self.dense = DenseIndex(
++                self.doc_ids,
++                self.documents,
++                dimensions=self.config.embedding_dimensions,
++                random_state=self.config.random_state,
++            )
++            self._build_seconds["dense"] = time.perf_counter() - started
++        self._native_thread_build_observations = build_observations
++
++    def _capture_native_thread_observation(self, context: str, boundary: str) -> dict[str, Any]:
++        from threadpoolctl import threadpool_info  # type: ignore[import-untyped]
++
++        pools = _relevant_native_pools(threadpool_info())
++        _require_single_thread_pools(pools, context=f"{context}:{boundary}")
++        return {"context": context, "boundary": boundary, "pools": pools}
++
++    @contextmanager
++    def _native_thread_context(self, context: str) -> Iterator[list[dict[str, Any]]]:
++        from threadpoolctl import threadpool_limits  # type: ignore[import-untyped]
++
++        with threadpool_limits(limits=self.config.blas_threads):
++            staged = [self._capture_native_thread_observation(context, "entry")]
++            yield staged
++            staged.append(self._capture_native_thread_observation(context, "exit"))
+ 
+     @property
+     def corpus_id(self) -> str:
+@@ -133,8 +378,23 @@ class RetrievalHarness:
+             digest.update(b"\x00")
+         return "sha256:" + digest.hexdigest()
+ 
+-    def _search(self, mode: str, query: str) -> tuple[list[tuple[str, float]], dict, dict]:
++    def _search(
++        self, mode: str, query: str
++    ) -> tuple[
++        list[tuple[str, float]],
++        dict[str, dict[str, float]],
++        dict[str, dict[str, int]],
++    ]:
+         limit = self.config.candidate_limit
++        return self._search_with_thread_limit(mode, query, limit)
++
++    def _search_with_thread_limit(
++        self, mode: str, query: str, limit: int
++    ) -> tuple[
++        list[tuple[str, float]],
++        dict[str, dict[str, float]],
++        dict[str, dict[str, int]],
++    ]:
+         if mode == "sparse":
+             ranking = self.bm25.search(query, limit)
+             return ranking, {"sparse": dict(ranking)}, {"sparse": component_ranks(ranking)}
+@@ -155,54 +415,65 @@ class RetrievalHarness:
+     def run_mode(self, mode: str) -> ModeResult:
+         """Evaluate every judged query under one baseline."""
+ 
++        if mode not in MODE_DISPLAY_NAMES:
++            raise ValueError(f"unsupported mode {mode!r}")
+         records: list[QueryRecord] = []
+         latencies: list[float] = []
+         per_query: dict[str, dict[str, float]] = {}
+ 
+-        for query_id in self.dataset.judged_queries:
+-            text = self.dataset.queries[query_id]
+-            started = time.perf_counter()
+-            ranking, comp_scores, comp_ranks = self._search(mode, text)
+-            latency_ms = (time.perf_counter() - started) * 1000.0
+-
+-            final = ranking[: self.config.final_limit]
+-            ranked_ids = [doc_id for doc_id, _score in final]
+-            judgments = self.dataset.qrels.get(query_id, {})
+-            scores = evaluate_query(
+-                ranked_ids,
+-                judgments,
+-                cutoffs=self.config.cutoffs,
+-                mrr_k=self.config.mrr_k,
+-                ndcg_k=self.config.ndcg_k,
+-                grade_min=self.config.relevant_grade_min,
+-            )
+-            kept = set(ranked_ids)
+-            records.append(
+-                QueryRecord(
+-                    query_id=query_id,
+-                    mode=mode,
+-                    ranked_ids=ranked_ids,
+-                    scores=[float(score) for _doc, score in final],
+-                    component_scores={
+-                        name: {d: float(s) for d, s in values.items() if d in kept}
+-                        for name, values in comp_scores.items()
+-                    },
+-                    component_ranks={
+-                        name: {d: r for d, r in values.items() if d in kept}
+-                        for name, values in comp_ranks.items()
+-                    },
+-                    latency_ms=latency_ms,
+-                    metrics=scores,
++        with self._native_thread_context(f"query_latency:{mode}") as mode_observations:
++            for query_id in self.dataset.judged_queries:
++                text = self.dataset.queries[query_id]
++                started = time.perf_counter()
++                ranking, comp_scores, comp_ranks = self._search(mode, text)
++                latency_ms = (time.perf_counter() - started) * 1000.0
++
++                final = ranking[: self.config.final_limit]
++                ranked_ids = [doc_id for doc_id, _score in final]
++                judgments = self.dataset.qrels.get(query_id, {})
++                scores = evaluate_query(
++                    ranked_ids,
++                    judgments,
++                    cutoffs=self.config.cutoffs,
++                    mrr_k=self.config.mrr_k,
++                    ndcg_k=self.config.ndcg_k,
++                    grade_min=self.config.relevant_grade_min,
+                 )
+-            )
+-            latencies.append(latency_ms)
+-            per_query[query_id] = scores
++                records.append(
++                    QueryRecord(
++                        query_id=query_id,
++                        mode=mode,
++                        ranked_ids=ranked_ids,
++                        scores=[float(score) for _doc, score in final],
++                        candidate_ranked_ids=[doc_id for doc_id, _score in ranking],
++                        candidate_scores=[float(score) for _doc, score in ranking],
++                        component_scores={
++                            name: {d: float(s) for d, s in values.items()}
++                            for name, values in comp_scores.items()
++                        },
++                        component_ranks={name: dict(values) for name, values in comp_ranks.items()},
++                        latency_ms=latency_ms,
++                        metrics=scores,
++                    )
++                )
++                latencies.append(latency_ms)
++                per_query[query_id] = scores
+ 
+         summary = aggregate(per_query, latencies)
+-        summary["index_build_seconds"] = self._build_seconds.get(
+-            mode, self._build_seconds.get("sparse", 0.0) + self._build_seconds.get("dense", 0.0)
+-        )
+-        return ModeResult(mode=mode, summary=summary, records=records)
++        if mode == "hybrid_rrf":
++            build_timing: dict[str, float | str] = {
++                "seconds": self._build_seconds["sparse"] + self._build_seconds["dense"],
++                "kind": "derived_sum_of_measured_sparse_and_dense_builds",
++            }
++        else:
++            build_timing = {
++                "seconds": self._build_seconds[mode],
++                "kind": "measured_index_build",
++            }
++        result = ModeResult(mode=mode, summary=summary, records=records, build_timing=build_timing)
++        self._validate_result(mode, result)
++        self._native_thread_mode_observations[mode] = mode_observations
++        return result
+ 
+     def run_all(
+         self, modes: Sequence[str] = ("sparse", "dense", "hybrid_rrf")
+@@ -214,26 +485,243 @@ class RetrievalHarness:
+     def environment(self) -> dict[str, str]:
+         """Recorded hardware and software context (section 6.2)."""
+ 
+-        return {
++        environment = {
+             "python": sys.version.split()[0],
+             "platform": platform.platform(),
+             "processor": platform.processor() or "unknown",
+             "harness_version": HARNESS_VERSION,
+         }
++        for distribution in (
++            "medevidence",
++            "numpy",
++            "scikit-learn",
++            "scipy",
++            "joblib",
++            "narwhals",
++            "threadpoolctl",
++        ):
++            environment[f"dependency:{distribution}"] = _distribution_version(distribution)
++        return environment
++
++    def _validate_result(self, mode: str, result: ModeResult) -> None:
++        """Fail closed unless saved evidence exactly matches the executed dataset."""
++
++        if mode not in MODE_DISPLAY_NAMES or result.mode != mode:
++            raise ValueError(f"result mode {mode!r} is inconsistent or unsupported")
++        expected_queries = self.dataset.judged_queries
++        actual_queries = [record.query_id for record in result.records]
++        if len(actual_queries) != len(set(actual_queries)):
++            raise ValueError(f"result mode {mode!r} contains duplicate query records")
++        if sorted(actual_queries) != expected_queries:
++            raise ValueError(f"result mode {mode!r} does not exactly cover judged queries")
++
++        recomputed_metrics: dict[str, dict[str, float]] = {}
++        latencies: list[float] = []
++        for record in result.records:
++            if record.mode != mode:
++                raise ValueError(f"query {record.query_id!r} has inconsistent mode")
++            if len(record.ranked_ids) != len(record.scores):
++                raise ValueError(f"query {record.query_id!r} final ids/scores differ in length")
++            if len(record.candidate_ranked_ids) != len(record.candidate_scores):
++                raise ValueError(f"query {record.query_id!r} candidate ids/scores differ in length")
++            if len(record.candidate_ranked_ids) > self.config.candidate_limit:
++                raise ValueError(f"query {record.query_id!r} exceeds candidate_limit")
++            if len(set(record.candidate_ranked_ids)) != len(record.candidate_ranked_ids):
++                raise ValueError(f"query {record.query_id!r} has duplicate candidates")
++            if record.ranked_ids != record.candidate_ranked_ids[: self.config.final_limit]:
++                raise ValueError(
++                    f"query {record.query_id!r} final ranking is not the candidate prefix"
++                )
++            if record.scores != record.candidate_scores[: self.config.final_limit]:
++                raise ValueError(
++                    f"query {record.query_id!r} final scores are not the candidate prefix"
++                )
++            for component, ranks in record.component_ranks.items():
++                scores = record.component_scores.get(component)
++                if scores is None or set(scores) != set(ranks):
++                    raise ValueError(
++                        f"query {record.query_id!r} component {component!r} is not reconstructible"
++                    )
++                if sorted(ranks.values()) != list(range(1, len(ranks) + 1)):
++                    raise ValueError(
++                        f"query {record.query_id!r} component {component!r} "
++                        "ranks are not contiguous"
++                    )
++            if mode == "hybrid_rrf":
++                component_rankings = []
++                for component in ("sparse", "dense"):
++                    ranks = record.component_ranks.get(component, {})
++                    scores = record.component_scores.get(component, {})
++                    component_rankings.append(
++                        [
++                            (doc_id, scores[doc_id])
++                            for doc_id in sorted(ranks, key=lambda item: ranks[item])
++                        ]
++                    )
++                rebuilt = reciprocal_rank_fusion(
++                    component_rankings,
++                    k=self.config.rrf_k,
++                    limit=self.config.candidate_limit,
++                )
++                if [doc_id for doc_id, _score in rebuilt] != record.candidate_ranked_ids:
++                    raise ValueError(
++                        f"query {record.query_id!r} RRF ranking cannot be reconstructed"
++                    )
++                if any(
++                    not math.isclose(score, expected, rel_tol=0.0, abs_tol=1e-15)
++                    for score, (_doc_id, expected) in zip(
++                        record.candidate_scores, rebuilt, strict=True
++                    )
++                ):
++                    raise ValueError(
++                        f"query {record.query_id!r} RRF scores cannot be reconstructed"
++                    )
++
++            metrics = evaluate_query(
++                record.ranked_ids,
++                self.dataset.qrels[record.query_id],
++                cutoffs=self.config.cutoffs,
++                mrr_k=self.config.mrr_k,
++                ndcg_k=self.config.ndcg_k,
++                grade_min=self.config.relevant_grade_min,
++            )
++            if metrics != record.metrics:
++                raise ValueError(f"query {record.query_id!r} metrics do not recompute")
++            recomputed_metrics[record.query_id] = metrics
++            latencies.append(record.latency_ms)
++
++        summary = aggregate(recomputed_metrics, latencies)
++        if summary != result.summary:
++            raise ValueError(f"result mode {mode!r} aggregate summary does not recompute")
+ 
+-    def save(self, results: dict[str, ModeResult], output_dir: str | Path) -> Path:
++    @staticmethod
++    def _artifact_identity(path: Path) -> dict[str, str | int]:
++        return {
++            "filename": path.name,
++            "bytes": path.stat().st_size,
++            "sha256": _sha256_file(path),
++        }
++
++    def _validate_native_thread_evidence(self, result_modes: set[str]) -> list[dict[str, Any]]:
++        expected_environment = {name: "1" for name in NATIVE_THREAD_ENVIRONMENT_VARIABLES}
++        if _native_thread_environment() != expected_environment:
++            raise RuntimeError("native thread environment changed before artifact persistence")
++
++        selected_observations = list(self._native_thread_build_observations)
++        for mode in sorted(result_modes):
++            selected_observations.extend(self._native_thread_mode_observations.get(mode, ()))
++
++        expected_contexts = [
++            "index_build",
++            *(f"query_latency:{mode}" for mode in sorted(result_modes)),
++        ]
++        actual_contexts = [
++            (str(observation["context"]), str(observation["boundary"]))
++            for observation in selected_observations
++        ]
++        expected_context_boundaries = [
++            (context, boundary) for context in expected_contexts for boundary in ("entry", "exit")
++        ]
++        if actual_contexts != expected_context_boundaries:
++            raise RuntimeError("native thread observations do not exactly cover selected execution")
++        for observation in selected_observations:
++            pools = observation.get("pools")
++            if not isinstance(pools, list):
++                raise RuntimeError("native thread observation pools are malformed")
++            _require_single_thread_pools(
++                pools,
++                context=f"{observation.get('context')}:{observation.get('boundary')}",
++            )
++        return selected_observations
++
++    @staticmethod
++    def _runtime_provenance(git_revision: str) -> dict[str, Any]:
++        repository_root = Path(__file__).resolve().parents[1]
++        lock_path = repository_root / "uv.lock"
++        if not lock_path.is_file():
++            raise RuntimeError("uv.lock is required for benchmark provenance")
++        return {
++            "python": sys.version.split()[0],
++            "numpy": _distribution_version("numpy"),
++            "scikit_learn": _distribution_version("scikit-learn"),
++            "uv_lock": {
++                "path": "uv.lock",
++                "bytes": lock_path.stat().st_size,
++                "sha256": _sha256_file(lock_path),
++            },
++            "git_revision": git_revision,
++            "platform": platform.platform(),
++        }
++
++    def save(
++        self,
++        results: dict[str, ModeResult],
++        output_dir: str | Path,
++        *,
++        run_id: str | None = None,
++    ) -> Path:
+         """Write summary and per-query raw artifacts; return the run directory."""
+ 
++        if not self.dataset.dataset_source:
++            raise ValueError("dataset source identity is required before saving benchmark results")
++        if self.dataset.distribution is None:
++            raise ValueError(
++                "downloaded distribution identity is required before saving benchmark results"
++            )
++        if not self.dataset.consumed_files:
++            raise ValueError("consumed dataset file identities are required")
++        if not results:
++            raise ValueError("at least one mode result is required")
++        for mode, result in sorted(results.items()):
++            self._validate_result(mode, result)
++        selected_native_thread_observations = self._validate_native_thread_evidence(set(results))
++        source_patch, untracked_snapshot, source_state = _source_state()
++        git_revision = source_state["head"]
++        environment = self.environment()
++        runtime_provenance = self._runtime_provenance(str(git_revision))
+         output_dir = Path(output_dir)
+-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+-        run_dir = output_dir / f"run-{stamp}"
+-        run_dir.mkdir(parents=True, exist_ok=True)
++        if run_id is None:
++            run_id = "run-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
++        if not run_id or run_id in {".", ".."} or Path(run_id).name != run_id:
++            raise ValueError("run_id must be one non-empty path segment")
++        run_dir = output_dir / run_id
++        run_dir.mkdir(parents=True, exist_ok=False)
++
++        output_artifacts: list[dict[str, str | int]] = []
++        patch_path = run_dir / "source.patch"
++        patch_path.write_bytes(source_patch)
++        source_state_path = run_dir / "source-state.json"
++        source_state_path.write_text(
++            json.dumps(source_state, indent=2, sort_keys=True) + "\n",
++            encoding="utf-8",
++            newline="\n",
++        )
++        untracked_snapshot_path = run_dir / "source-untracked-snapshot.json"
++        untracked_snapshot_path.write_bytes(untracked_snapshot)
++        output_artifacts.extend(
++            [
++                self._artifact_identity(patch_path),
++                self._artifact_identity(untracked_snapshot_path),
++                self._artifact_identity(source_state_path),
++            ]
++        )
++        for mode, result in sorted(results.items()):
++            path = run_dir / f"per-query-{mode}.jsonl"
++            with path.open("w", encoding="utf-8", newline="\n") as handle:
++                for record in result.records:
++                    handle.write(json.dumps(asdict(record), sort_keys=True) + "\n")
++            output_artifacts.append(self._artifact_identity(path))
+ 
++        distribution = asdict(self.dataset.distribution) if self.dataset.distribution else None
+         manifest = {
+             "harness_version": HARNESS_VERSION,
+             "executed_at_utc": datetime.now(UTC).isoformat(),
+             "dataset_id": self.dataset.dataset_id,
+-            "dataset_source": self.dataset.source_path,
++            "dataset_name": self.dataset.dataset_id,
++            "dataset_source": self.dataset.dataset_source,
++            "dataset_path": self.dataset.source_path,
++            "distribution_identity": distribution,
++            "consumed_files": [asdict(identity) for identity in self.dataset.consumed_files],
+             "dataset_summary": self.dataset.summary(),
+             "grade_histogram": {
+                 str(g): c for g, c in relevance_grade_histogram(self.dataset.qrels).items()
+@@ -241,24 +729,55 @@ class RetrievalHarness:
+             "dataset_warnings": list(self.dataset.warnings),
+             "corpus_id": self.corpus_id,
+             "config": asdict(self.config),
++            "retrieval_configuration": asdict(self.config),
+             "config_id": self.config.config_id(),
+-            "environment": self.environment(),
+-            "index_build_seconds": self._build_seconds,
++            "environment": environment,
++            "repository_git_revision": git_revision,
++            "repository_source_state": source_state,
++            "runtime_provenance": runtime_provenance,
++            "random_seed_actual": self.config.random_state,
++            "build_index_timing": {
++                mode: result.build_timing for mode, result in sorted(results.items())
++            },
++            "execution_policy": {
++                "query_execution": "serial_single_process",
++                "query_concurrency": self.config.query_concurrency,
++                "native_threading": {
++                    "requested_limit": self.config.blas_threads,
++                    "environment": _native_thread_environment(),
++                    "discovered_pools_before_limits": self._native_pools_discovered_before_limits,
++                    "observed_in_context_pools": selected_native_thread_observations,
++                },
++                "limitation": (
++                    "OS scheduling, filesystem cache, and unrelated host load are uncontrolled; "
++                    "latency is local wall-clock evidence, not a production SLO."
++                ),
++            },
+             "dense_dimensions_actual": self.dense.dimensions,
+             "modes": sorted(results),
++            "mode_display_names": {mode: MODE_DISPLAY_NAMES[mode] for mode in sorted(results)},
+             "summary": {mode: result.summary for mode, result in results.items()},
++            "output_artifacts": output_artifacts,
++            "manifest_integrity": {
++                "strategy": "external_sha256_sidecar",
++                "sidecar": "manifest.sha256",
++            },
+             "approval_status": (
+-                "EXPERIMENT ONLY. ME-000C is open; no value here is an approved "
+-                "configuration. No release threshold is proposed or implied."
++                "EXPERIMENT ONLY. The BM25, classical LSI, and RRF(BM25, LSI) pilot "
++                "exception applies only to this M2 benchmark. ME-000C remains open for "
++                "production/release indexes, Qdrant, transformer dense retrieval, "
++                "rerankers, and later retrieval architecture."
+             ),
+         }
+-        (run_dir / "manifest.json").write_text(
+-            json.dumps(manifest, indent=2, sort_keys=True, default=str), encoding="utf-8"
++        manifest_path = run_dir / "manifest.json"
++        manifest_path.write_text(
++            json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n",
++            encoding="utf-8",
++            newline="\n",
++        )
++        (run_dir / "manifest.sha256").write_text(
++            f"{_sha256_file(manifest_path)}  {manifest_path.name}\n",
++            encoding="ascii",
++            newline="\n",
+         )
+-
+-        for mode, result in results.items():
+-            path = run_dir / f"per-query-{mode}.jsonl"
+-            with path.open("w", encoding="utf-8") as handle:
+-                for record in result.records:
+-                    handle.write(json.dumps(asdict(record), sort_keys=True) + "\n")
+         return run_dir
+diff --git a/evaluation/run_evaluation.py b/evaluation/run_evaluation.py
+index be83241f50a62071592532845472a6cc7eda70f0..07daac62cca6cfbf2ebc7086a797f80f0ba0a0df 100644
+--- a/evaluation/run_evaluation.py
++++ b/evaluation/run_evaluation.py
+@@ -20,15 +20,27 @@ from __future__ import annotations
+ 
+ import argparse
+ import json
++import os
+ import sys
+ from pathlib import Path
+ 
++NATIVE_THREAD_ENVIRONMENT_VARIABLES = (
++    "OMP_NUM_THREADS",
++    "OPENBLAS_NUM_THREADS",
++    "MKL_NUM_THREADS",
++    "BLIS_NUM_THREADS",
++    "NUMEXPR_NUM_THREADS",
++)
++
++for _name in NATIVE_THREAD_ENVIRONMENT_VARIABLES:
++    os.environ[_name] = "1"
++
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ 
+-from evaluation.datasets import load_beir_directory, load_jsonl_dataset
+-from evaluation.harness import RetrievalHarness, RunConfig
++from evaluation.datasets import load_beir_directory, load_jsonl_dataset  # noqa: E402
++from evaluation.harness import MODE_DISPLAY_NAMES, RetrievalHarness, RunConfig  # noqa: E402
+ 
+-REPORTED = ("recall@5", "recall@10", "mrr@10", "ndcg@10")
++REPORTED = ("recall@10", "ndcg@10", "mrr@10")
+ 
+ 
+ def build_parser() -> argparse.ArgumentParser:
+@@ -38,9 +50,22 @@ def build_parser() -> argparse.ArgumentParser:
+     source = parser.add_mutually_exclusive_group(required=True)
+     source.add_argument("--beir", help="BEIR-layout dataset directory")
+     source.add_argument("--jsonl", help="single-file dataset")
++    parser.add_argument("--dataset-name", help="declared benchmark dataset name")
++    parser.add_argument("--dataset-source", help="authoritative distribution source URL")
++    parser.add_argument(
++        "--distribution-archive",
++        help="local downloaded distribution archive whose bytes are authoritative",
++    )
+     parser.add_argument("--split", default="test", help="qrels split (default: test)")
+     parser.add_argument("--max-documents", type=int, default=None)
+     parser.add_argument("--output", default="evaluation/results")
++    parser.add_argument(
++        "--run-id",
++        help=(
++            "single deterministic output-directory name; use "
++            "nfcorpus-real-final for the tracked final run"
++        ),
++    )
+     parser.add_argument("--dimensions", type=int, default=256)
+     parser.add_argument("--rrf-k", type=int, default=60)
+     parser.add_argument("--bm25-k1", type=float, default=0.9)
+@@ -48,6 +73,9 @@ def build_parser() -> argparse.ArgumentParser:
+     parser.add_argument("--candidate-limit", type=int, default=100)
+     parser.add_argument("--final-limit", type=int, default=10)
+     parser.add_argument("--grade-min", type=int, default=1)
++    parser.add_argument("--random-seed", type=int, default=0)
++    parser.add_argument("--query-concurrency", type=int, default=1)
++    parser.add_argument("--blas-threads", type=int, default=1)
+     parser.add_argument(
+         "--modes",
+         default="sparse,dense,hybrid_rrf",
+@@ -59,9 +87,28 @@ def build_parser() -> argparse.ArgumentParser:
+ def main(argv: list[str] | None = None) -> int:
+     """Load the dataset, run every baseline, save artifacts, print a table."""
+ 
+-    args = build_parser().parse_args(argv)
++    parser = build_parser()
++    args = parser.parse_args(argv)
+     if args.beir:
+-        dataset = load_beir_directory(args.beir, split=args.split, max_documents=args.max_documents)
++        missing = [
++            option
++            for option, value in (
++                ("--dataset-name", args.dataset_name),
++                ("--dataset-source", args.dataset_source),
++                ("--distribution-archive", args.distribution_archive),
++            )
++            if not value
++        ]
++        if missing:
++            parser.error(f"--beir real benchmark requires {', '.join(missing)}")
++        dataset = load_beir_directory(
++            args.beir,
++            split=args.split,
++            dataset_id=args.dataset_name,
++            dataset_source=args.dataset_source,
++            distribution_archive=args.distribution_archive,
++            max_documents=args.max_documents,
++        )
+     else:
+         dataset = load_jsonl_dataset(args.jsonl)
+ 
+@@ -78,19 +125,23 @@ def main(argv: list[str] | None = None) -> int:
+         candidate_limit=args.candidate_limit,
+         final_limit=args.final_limit,
+         relevant_grade_min=args.grade_min,
++        random_state=args.random_seed,
++        query_concurrency=args.query_concurrency,
++        blas_threads=args.blas_threads,
+     )
+     harness = RetrievalHarness(dataset, config)
+     modes = tuple(mode.strip() for mode in args.modes.split(",") if mode.strip())
+     results = harness.run_all(modes)
+-    run_dir = harness.save(results, args.output)
++    run_dir = harness.save(results, args.output, run_id=args.run_id)
+ 
+-    width = max(len(mode) for mode in results)
++    display_names = {mode: MODE_DISPLAY_NAMES[mode] for mode in results}
++    width = max(len(name) for name in display_names.values())
+     header = f"{'mode'.ljust(width)}  " + "  ".join(name.rjust(10) for name in REPORTED)
+     print("\n" + header)
+     print("-" * len(header))
+     for mode in modes:
+         summary = results[mode].summary
+-        row = f"{mode.ljust(width)}  " + "  ".join(
++        row = f"{display_names[mode].ljust(width)}  " + "  ".join(
+             f"{summary.get(name, float('nan')):10.4f}" for name in REPORTED
+         )
+         print(row)
+@@ -98,13 +149,18 @@ def main(argv: list[str] | None = None) -> int:
+     for mode in modes:
+         summary = results[mode].summary
+         print(
+-            f"{mode.ljust(width)}  latency p50 {summary.get('latency_p50_ms', 0):8.2f} ms"
++            f"{display_names[mode].ljust(width)}  latency/query mean "
++            f"{summary.get('latency_mean_ms', 0):8.2f} ms"
++            f"   p50 {summary.get('latency_p50_ms', 0):8.2f} ms"
+             f"   p95 {summary.get('latency_p95_ms', 0):8.2f} ms"
++            f"   build/index {float(results[mode].build_timing['seconds']):8.4f} s"
++            f" ({results[mode].build_timing['kind']})"
+         )
+     print(f"\nartifacts {run_dir}")
+     print(
+-        "NOTE      experiment only; ME-000C is open and no value above is an "
+-        "approved configuration or a release threshold."
++        "NOTE      experiment-only M2 pilot. classical_lsi_dense is classical "
++        "latent-semantic dense retrieval, not a transformer embedding or Qdrant. "
++        "ME-000C remains open outside this pilot."
+     )
+     return 0
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index 4006077f2d758aae67f6358aae3dfe59fb5c5846..da617ea960774ea4317dde8ae20e7d8becbbc5ef 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -28,6 +28,10 @@ dev = [
+     "pytest-socket==0.8.0",
+     "ruff==0.15.22",
+ ]
++retrieval = [
++    "numpy==2.5.1",
++    "scikit-learn==1.9.0",
++]
+ 
+ [tool.uv]
+ required-version = "==0.11.32"
+diff --git a/scripts/bootstrap.ps1 b/scripts/bootstrap.ps1
+index 8871d6eabd2141520fddc984dce50fdbf41d0f41..0bf962ce37938d872f6cd123c4adb22da89d118f 100644
+--- a/scripts/bootstrap.ps1
++++ b/scripts/bootstrap.ps1
+@@ -26,7 +26,7 @@ try {
+         throw "uv could not install CPython $expectedPythonVersion."
+     }
+ 
+-    & $uvCommand.Source sync --locked --group dev
++    & $uvCommand.Source sync --locked --group dev --group retrieval
+     if ($LASTEXITCODE -ne 0) {
+         throw "uv sync failed."
+     }
+@@ -46,7 +46,10 @@ try {
+         throw "CPython $expectedPythonVersion is required; found $actualPythonVersion."
+     }
+ 
+-    Write-Output "Bootstrap complete: uv $actualUvVersion, CPython $actualPythonVersion."
++    Write-Output (
++        "Bootstrap complete: uv $actualUvVersion, CPython $actualPythonVersion, " +
++        "development and retrieval/evaluation groups synchronized."
++    )
+ }
+ finally {
+     Pop-Location
+diff --git a/scripts/dependency-audit.ps1 b/scripts/dependency-audit.ps1
+index 2b6162df51b214f3095c7c1e8ff207f6cc15243e..cbb72450a3cf70f0ce1309445a7d6d2bb78bcc71 100644
+--- a/scripts/dependency-audit.ps1
++++ b/scripts/dependency-audit.ps1
+@@ -37,6 +37,9 @@ $hasAcquisitionRecord = (
+     -not [string]::IsNullOrWhiteSpace($AcquisitionRecordPath)
+ )
+ $candidatePaths = @(
++    ".delivery/M2-001-RETRIEVAL-HARNESS.md",
++    ".github/workflows/quality.yml",
++    ".gitignore",
+     ".gitattributes",
+     ".delivery/M1A-005-AUDIT.md",
+     "alembic.ini",
+@@ -50,6 +53,13 @@ $candidatePaths = @(
+     "docs/INTERVIEW_NOTES.md",
+     "docs/TRACEABILITY_MATRIX.md",
+     "docs/reviews/M1A-005-INDEPENDENT-REVIEW-001.md",
++    "docs/reviews/M2-001-REAL-BENCHMARK-INDEPENDENT-REVIEW-001.md",
++    "evaluation/datasets.py",
++    "evaluation/harness.py",
++    "evaluation/README.md",
++    "evaluation/run_evaluation.py",
++    "scripts/bootstrap.ps1",
++    "src/medevidence/retrieval/core.py",
+     "src/medevidence/api/__init__.py",
+     "src/medevidence/api/app.py",
+     "src/medevidence/api/contracts.py",
+@@ -82,6 +92,9 @@ $candidatePaths = @(
+     "tests/unit/connectors/test_pubmed_parsing.py",
+     "tests/unit/connectors/test_pubmed_policy.py",
+     "tests/unit/test_dependency_boundaries.py",
++    "tests/unit/evaluation/test_datasets.py",
++    "tests/unit/retrieval/test_core.py",
++    "tests/contract/evaluation/test_harness.py",
+     "tests/unit/api/test_contracts.py",
+     "tests/unit/api/test_errors.py",
+     "tests/unit/api/test_routes.py",
+@@ -839,15 +852,29 @@ def exact_pins(path: pathlib.Path) -> dict[str, list[str]]:
+     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+         fail(f"malformed pyproject.toml: {error}")
+     production = data.get("project", {}).get("dependencies")
+-    development = data.get("dependency-groups", {}).get("dev")
+-    if not isinstance(production, list) or not isinstance(development, list):
++    groups = data.get("dependency-groups", {})
++    development = groups.get("dev") if isinstance(groups, dict) else None
++    retrieval = groups.get("retrieval") if isinstance(groups, dict) else None
++    if not all(
++        isinstance(group, list) for group in (production, development, retrieval)
++    ):
+         fail("direct dependency groups are missing")
+-    for pin in [*production, *development]:
++    if retrieval != ["numpy==2.5.1", "scikit-learn==1.9.0"]:
++        fail("retrieval direct pins differ from the exact Owner-approved pair")
++    production_names = {
++        PIN_PATTERN.fullmatch(pin).group(1).casefold()
++        for pin in production
++        if isinstance(pin, str) and PIN_PATTERN.fullmatch(pin) is not None
++    }
++    if production_names & {"numpy", "scikit-learn"}:
++        fail("retrieval-only dependencies leaked into the production default surface")
++    for pin in [*production, *development, *retrieval]:
+         if not isinstance(pin, str) or PIN_PATTERN.fullmatch(pin) is None:
+             fail(f"direct dependency is not an exact pin: {pin!r}")
+     return {
+         "production": sorted(production, key=str.casefold),
+         "development": sorted(development, key=str.casefold),
++        "retrieval": sorted(retrieval, key=str.casefold),
+     }
+ 
+ 
+diff --git a/src/medevidence/retrieval/core.py b/src/medevidence/retrieval/core.py
+index b7ba322d6d4db3655df72b259f4ca07ae936ab54..32441a134409438742966ea35f6d6214697430a2 100644
+--- a/src/medevidence/retrieval/core.py
++++ b/src/medevidence/retrieval/core.py
+@@ -23,7 +23,11 @@ import re
+ import unicodedata
+ from collections import Counter
+ from collections.abc import Iterable, Sequence
+-from typing import Protocol
++from typing import TYPE_CHECKING, Protocol
++
++if TYPE_CHECKING:
++    import numpy as np
++    import numpy.typing as npt
+ 
+ _TOKEN_PATTERN = re.compile(r"[0-9a-z]+")
+ 
+@@ -71,7 +75,7 @@ class BM25Index:
+         self.k1 = float(k1)
+         self.b = float(b)
+ 
+-        self._tokens: list[Counter] = [Counter(tokenize(text)) for text in documents]
++        self._tokens: list[Counter[str]] = [Counter(tokenize(text)) for text in documents]
+         self._lengths: list[int] = [sum(counts.values()) for counts in self._tokens]
+         total = sum(self._lengths)
+         self._avg_length = total / len(self._lengths) if self._lengths else 0.0
+@@ -133,28 +137,55 @@ class EmbeddingBackend(Protocol):
+     no caller of `DenseIndex` needs to change.
+     """
+ 
+-    def fit_transform(self, documents: Sequence[str]) -> object: ...
++    def fit_transform(self, documents: Sequence[str]) -> npt.NDArray[np.float64]: ...
++
++    def transform(self, texts: Sequence[str]) -> npt.NDArray[np.float64]: ...
++
++
++class _FeatureMatrix(Protocol):
++    """Minimal fitted TF-IDF matrix surface used to size the latent space."""
++
++    shape: tuple[int, int]
++
++
++class _Vectorizer(Protocol):
++    """Internal structural type for the lazily imported vectorizer."""
++
++    def fit_transform(self, documents: Sequence[str]) -> _FeatureMatrix: ...
+ 
+     def transform(self, texts: Sequence[str]) -> object: ...
+ 
+ 
++class _SvdTransformer(Protocol):
++    """Internal structural type for the fitted truncated-SVD transformer."""
++
++    def fit_transform(self, matrix: object) -> npt.NDArray[np.float64]: ...
++
++    def transform(self, matrix: object) -> npt.NDArray[np.float64]: ...
++
++
+ class TfidfSvdBackend:
+     """TF-IDF followed by truncated SVD, L2-normalized (classical LSI)."""
+ 
+     method = "tfidf_svd_v1"
+ 
+     def __init__(self, *, dimensions: int = DEFAULT_DIMENSIONS, random_state: int = 0) -> None:
+-        self.dimensions = int(dimensions)
+-        self.random_state = int(random_state)
+-        self._vectorizer = None
+-        self._svd = None
+-
+-    def fit_transform(self, documents: Sequence[str]):  # type: ignore[no-untyped-def]
++        if dimensions < 2:
++            raise ValueError("dimensions must be at least two")
++        self.dimensions = dimensions
++        self.random_state = random_state
++        self._vectorizer: _Vectorizer | None = None
++        self._svd: _SvdTransformer | None = None
++
++    def fit_transform(self, documents: Sequence[str]) -> npt.NDArray[np.float64]:
+         """Fit the vocabulary and latent space on the corpus, return embeddings."""
+ 
+-        from sklearn.decomposition import TruncatedSVD
+-        from sklearn.feature_extraction.text import TfidfVectorizer
+-        from sklearn.preprocessing import normalize
++        import numpy as np
++        from sklearn.decomposition import TruncatedSVD  # type: ignore[import-untyped]
++        from sklearn.feature_extraction.text import (  # type: ignore[import-untyped]
++            TfidfVectorizer,
++        )
++        from sklearn.preprocessing import normalize  # type: ignore[import-untyped]
+ 
+         self._vectorizer = TfidfVectorizer(
+             tokenizer=tokenize,
+@@ -164,18 +195,27 @@ class TfidfSvdBackend:
+         )
+         matrix = self._vectorizer.fit_transform(documents)
+         # SVD components cannot exceed min(n_samples, n_features) - 1.
+-        usable = max(2, min(self.dimensions, min(matrix.shape) - 1))
++        maximum = min(matrix.shape) - 1
++        if maximum < 2:
++            raise ValueError("corpus must support at least two LSI dimensions")
++        usable = min(self.dimensions, maximum)
+         self._svd = TruncatedSVD(n_components=usable, random_state=self.random_state)
+-        return normalize(self._svd.fit_transform(matrix))
++        return np.asarray(normalize(self._svd.fit_transform(matrix)), dtype=np.float64)
+ 
+-    def transform(self, texts: Sequence[str]):  # type: ignore[no-untyped-def]
++    def transform(self, texts: Sequence[str]) -> npt.NDArray[np.float64]:
+         """Project new text into the fitted latent space."""
+ 
+         if self._vectorizer is None or self._svd is None:
+             raise RuntimeError("fit_transform must be called before transform")
++        import numpy as np
+         from sklearn.preprocessing import normalize
+ 
+-        return normalize(self._svd.transform(self._vectorizer.transform(texts)))
++        vectorizer = self._vectorizer
++        svd = self._svd
++        return np.asarray(
++            normalize(svd.transform(vectorizer.transform(texts))),
++            dtype=np.float64,
++        )
+ 
+ 
+ class DenseIndex:
+@@ -188,6 +228,7 @@ class DenseIndex:
+         *,
+         backend: EmbeddingBackend | None = None,
+         dimensions: int = DEFAULT_DIMENSIONS,
++        random_state: int = 0,
+     ) -> None:
+         if len(doc_ids) != len(documents):
+             raise ValueError("doc_ids and documents must be the same length")
+@@ -196,7 +237,10 @@ class DenseIndex:
+         if len(set(doc_ids)) != len(doc_ids):
+             raise ValueError("doc_ids must be unique")
+         self.doc_ids = list(doc_ids)
+-        self.backend = backend or TfidfSvdBackend(dimensions=dimensions)
++        self.backend = backend or TfidfSvdBackend(
++            dimensions=dimensions,
++            random_state=random_state,
++        )
+         self._matrix = self.backend.fit_transform(list(documents))
+ 
+     @property
+diff --git a/tests/contract/evaluation/test_harness.py b/tests/contract/evaluation/test_harness.py
+index 41f4961c5f73c0ebfd60b1f2023c538357f834c0..076eb9d12c1e2559020b0046298b183143e378ee 100644
+--- a/tests/contract/evaluation/test_harness.py
++++ b/tests/contract/evaluation/test_harness.py
+@@ -7,13 +7,19 @@ raw artifacts, and no summary emitted without its configuration.
+ 
+ from __future__ import annotations
+ 
++import hashlib
+ import json
++import os
++import subprocess
++import sys
+ from pathlib import Path
+ 
+ import pytest
+-from evaluation.datasets import load_jsonl_dataset
++from evaluation.datasets import EvaluationDataset, load_jsonl_dataset
+ from evaluation.harness import RetrievalHarness, RunConfig
+ 
++from medevidence.retrieval.core import reciprocal_rank_fusion
++
+ FIXTURE = Path(__file__).resolve().parents[3] / "tests/fixtures/retrieval/harness_smoke.json"
+ MODES = ("sparse", "dense", "hybrid_rrf")
+ 
+@@ -37,6 +43,76 @@ class TestControlledVariables:
+         }
+         assert len({tuple(ids) for ids in query_sets.values()}) == 1
+ 
++    def test_runner_sets_native_environment_before_numerical_imports(self) -> None:
++        script = """
++import builtins
++import os
++import sys
++
++variables = (
++    "OMP_NUM_THREADS",
++    "OPENBLAS_NUM_THREADS",
++    "MKL_NUM_THREADS",
++    "BLIS_NUM_THREADS",
++    "NUMEXPR_NUM_THREADS",
++)
++native_roots = {"numpy", "scipy", "sklearn"}
++if native_roots.intersection(sys.modules):
++    raise AssertionError("numerical stack loaded before import guard")
++original_import = builtins.__import__
++
++def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
++    if name.split(".", 1)[0] in native_roots:
++        assert all(os.environ.get(variable) == "1" for variable in variables)
++    return original_import(name, globals, locals, fromlist, level)
++
++builtins.__import__ = guarded_import
++import evaluation.run_evaluation
++assert all(os.environ.get(variable) == "1" for variable in variables)
++assert native_roots <= set(sys.modules)
++"""
++        environment = os.environ.copy()
++        for name in (
++            "OMP_NUM_THREADS",
++            "OPENBLAS_NUM_THREADS",
++            "MKL_NUM_THREADS",
++            "BLIS_NUM_THREADS",
++            "NUMEXPR_NUM_THREADS",
++        ):
++            environment[name] = "7"
++        completed = subprocess.run(
++            [sys.executable, "-c", script],
++            cwd=Path(__file__).resolve().parents[3],
++            env=environment,
++            capture_output=True,
++            text=True,
++            timeout=30,
++            check=False,
++        )
++        assert completed.returncode == 0, completed.stderr
++
++    def test_native_stack_is_discovered_before_limit_context(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        import threadpoolctl
++
++        events: list[str] = []
++        original_info = threadpoolctl.threadpool_info
++        original_limits = threadpoolctl.threadpool_limits
++
++        def tracked_info() -> list[dict[str, object]]:
++            events.append("info")
++            return original_info()
++
++        def tracked_limits(*args: object, **kwargs: object) -> object:
++            events.append("limits")
++            return original_limits(*args, **kwargs)
++
++        monkeypatch.setattr(threadpoolctl, "threadpool_info", tracked_info)
++        monkeypatch.setattr(threadpoolctl, "threadpool_limits", tracked_limits)
++        RetrievalHarness(load_jsonl_dataset(FIXTURE), RunConfig(embedding_dimensions=16))
++        assert events[:2] == ["info", "limits"]
++
+ 
+ class TestDeterminism:
+     def test_repeated_runs_agree(self, harness: RetrievalHarness) -> None:
+@@ -49,6 +125,78 @@ class TestDeterminism:
+         assert RunConfig().config_id() != RunConfig(rrf_k=10).config_id()
+ 
+ 
++class TestTransactionalThreadObservations:
++    def test_success_persists_exact_entry_and_exit(self) -> None:
++        local_harness = RetrievalHarness(
++            load_jsonl_dataset(FIXTURE), RunConfig(embedding_dimensions=16)
++        )
++        local_harness.run_mode("sparse")
++
++        observations = local_harness._native_thread_mode_observations["sparse"]
++        assert [observation["boundary"] for observation in observations] == ["entry", "exit"]
++        assert {observation["context"] for observation in observations} == {"query_latency:sparse"}
++
++    def test_unsupported_mode_persists_no_observation(self) -> None:
++        local_harness = RetrievalHarness(
++            load_jsonl_dataset(FIXTURE), RunConfig(embedding_dimensions=16)
++        )
++        before = dict(local_harness._native_thread_mode_observations)
++
++        with pytest.raises(ValueError, match="unsupported mode"):
++            local_harness.run_mode("magic")
++
++        assert local_harness._native_thread_mode_observations == before
++
++    def test_post_observation_pre_acceptance_exception_persists_none(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        local_harness = RetrievalHarness(
++            load_jsonl_dataset(FIXTURE), RunConfig(embedding_dimensions=16)
++        )
++
++        def reject_result(_mode: str, _result: object) -> None:
++            raise RuntimeError("post-observation validation failure")
++
++        monkeypatch.setattr(local_harness, "_validate_result", reject_result)
++        with pytest.raises(RuntimeError, match="post-observation validation failure"):
++            local_harness.run_mode("sparse")
++
++        assert "sparse" not in local_harness._native_thread_mode_observations
++
++    def test_failed_mode_cannot_contaminate_later_success(
++        self, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        local_harness = RetrievalHarness(
++            load_jsonl_dataset(FIXTURE), RunConfig(embedding_dimensions=16)
++        )
++        original_search = local_harness._search
++
++        def fail_search(_mode: str, _query: str) -> object:
++            raise RuntimeError("query failure")
++
++        monkeypatch.setattr(local_harness, "_search", fail_search)
++        with pytest.raises(RuntimeError, match="query failure"):
++            local_harness.run_mode("dense")
++        assert "dense" not in local_harness._native_thread_mode_observations
++
++        monkeypatch.setattr(local_harness, "_search", original_search)
++        local_harness.run_mode("dense")
++        observations = local_harness._native_thread_mode_observations["dense"]
++        assert [observation["boundary"] for observation in observations] == ["entry", "exit"]
++
++    def test_repeated_success_replaces_observations(self) -> None:
++        local_harness = RetrievalHarness(
++            load_jsonl_dataset(FIXTURE), RunConfig(embedding_dimensions=16)
++        )
++        local_harness.run_mode("sparse")
++        first = local_harness._native_thread_mode_observations["sparse"]
++        local_harness.run_mode("sparse")
++        second = local_harness._native_thread_mode_observations["sparse"]
++
++        assert second is not first
++        assert len(second) == 2
++
++
+ class TestResultShape:
+     def test_hits_respect_the_final_limit(self) -> None:
+         dataset = load_jsonl_dataset(FIXTURE)
+@@ -64,6 +212,15 @@ class TestResultShape:
+         record = harness.run_mode("hybrid_rrf").records[0]
+         assert set(record.component_scores) == {"sparse", "dense"}
+         assert set(record.component_ranks) == {"sparse", "dense"}
++        assert len(record.candidate_ranked_ids) == 30
++        assert all(
++            0 < len(scores) <= harness.config.candidate_limit
++            for scores in record.component_scores.values()
++        )
++        assert all(
++            set(record.component_scores[name]) == set(record.component_ranks[name])
++            for name in record.component_scores
++        )
+ 
+     def test_single_mode_records_only_its_own_component(self, harness: RetrievalHarness) -> None:
+         assert set(harness.run_mode("sparse").records[0].component_scores) == {"sparse"}
+@@ -91,9 +248,99 @@ class TestRawArtifacts:
+             "environment",
+             "summary",
+             "approval_status",
++            "repository_git_revision",
++            "retrieval_configuration",
++            "random_seed_actual",
++            "output_artifacts",
++            "repository_source_state",
++            "execution_policy",
++            "build_index_timing",
++            "runtime_provenance",
+         ):
+             assert key in manifest, f"manifest missing {key}"
+-        assert "ME-000C is open" in manifest["approval_status"]
++        assert "ME-000C remains open" in manifest["approval_status"]
++        assert manifest["mode_display_names"] == {
++            "dense": "classical_lsi_dense",
++            "hybrid_rrf": "rrf_bm25_lsi",
++            "sparse": "BM25",
++        }
++        assert len(manifest["repository_git_revision"]) == 40
++        assert manifest["random_seed_actual"] == harness.config.random_state
++        assert manifest["dataset_name"] == harness.dataset.dataset_id
++        assert manifest["dataset_source"] == "local_jsonl_fixture"
++        assert (
++            manifest["distribution_identity"]["sha256"]
++            == hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
++        )
++        assert manifest["consumed_files"] == [manifest["distribution_identity"]]
++        source_state = manifest["repository_source_state"]
++        assert source_state["head"] == manifest["repository_git_revision"]
++        assert (
++            source_state["tracked_patch_sha256"]
++            == hashlib.sha256((run_dir / "source.patch").read_bytes()).hexdigest()
++        )
++        assert source_state["source_state_sha256"]
++        assert (
++            source_state["untracked_snapshot_sha256"]
++            == hashlib.sha256((run_dir / "source-untracked-snapshot.json").read_bytes()).hexdigest()
++        )
++        assert manifest["execution_policy"]["query_execution"] == "serial_single_process"
++        assert manifest["execution_policy"]["query_concurrency"] == 1
++        native_threading = manifest["execution_policy"]["native_threading"]
++        assert native_threading["requested_limit"] == 1
++        assert set(native_threading["environment"].values()) == {"1"}
++        assert native_threading["discovered_pools_before_limits"]
++        observations = native_threading["observed_in_context_pools"]
++        assert {observation["context"] for observation in observations} == {
++            "index_build",
++            "query_latency:dense",
++            "query_latency:hybrid_rrf",
++            "query_latency:sparse",
++        }
++        assert all(
++            pool["num_threads"] == 1
++            for observation in observations
++            for pool in observation["pools"]
++        )
++        provenance = manifest["runtime_provenance"]
++        assert provenance["python"] == sys.version.split()[0]
++        assert provenance["numpy"] == manifest["environment"]["dependency:numpy"]
++        assert provenance["scikit_learn"] == manifest["environment"]["dependency:scikit-learn"]
++        assert provenance["git_revision"] == manifest["repository_git_revision"]
++        assert provenance["platform"] == manifest["environment"]["platform"]
++        lock_path = Path(__file__).resolve().parents[3] / "uv.lock"
++        assert provenance["uv_lock"] == {
++            "path": "uv.lock",
++            "bytes": lock_path.stat().st_size,
++            "sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
++        }
++        assert manifest["build_index_timing"]["sparse"]["kind"] == "measured_index_build"
++        assert manifest["build_index_timing"]["hybrid_rrf"]["kind"].startswith("derived_sum")
++
++    def test_save_rejects_missing_dataset_provenance(self, tmp_path: Path) -> None:
++        dataset = EvaluationDataset(
++            dataset_id="unbound",
++            corpus={"d1": "alpha text", "d2": "beta text", "d3": "gamma text"},
++            corpus_titles={"d1": "", "d2": "", "d3": ""},
++            queries={"q1": "text"},
++            qrels={"q1": {"d1": 1}},
++        )
++        local_harness = RetrievalHarness(dataset, RunConfig(embedding_dimensions=2))
++        results = local_harness.run_all(("sparse",))
++        with pytest.raises(ValueError, match="dataset source identity"):
++            local_harness.save(results, tmp_path)
++        assert not list(tmp_path.iterdir())
++
++    def test_native_thread_mismatch_fails_before_artifacts(self, tmp_path: Path) -> None:
++        local_harness = RetrievalHarness(
++            load_jsonl_dataset(FIXTURE), RunConfig(embedding_dimensions=16)
++        )
++        results = local_harness.run_all(("sparse",))
++        local_harness._native_thread_build_observations[0]["pools"][0]["num_threads"] = 2
++
++        with pytest.raises(RuntimeError, match="native thread limit mismatch"):
++            local_harness.save(results, tmp_path)
++        assert not list(tmp_path.iterdir())
+ 
+     def test_every_query_has_a_raw_record(self, harness: RetrievalHarness, tmp_path: Path) -> None:
+         results = harness.run_all(MODES)
+@@ -115,6 +362,89 @@ class TestRawArtifacts:
+         recomputed = ndcg_at_k(record["ranked_ids"], harness.dataset.qrels[record["query_id"]], 10)
+         assert recomputed == pytest.approx(record["metrics"]["ndcg@10"])
+ 
++    def test_output_hashes_recompute_and_manifest_has_external_sidecar(
++        self, harness: RetrievalHarness, tmp_path: Path
++    ) -> None:
++        run_dir = harness.save(harness.run_all(MODES), tmp_path)
++        manifest_path = run_dir / "manifest.json"
++        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
++        assert manifest["manifest_integrity"] == {
++            "sidecar": "manifest.sha256",
++            "strategy": "external_sha256_sidecar",
++        }
++        for artifact in manifest["output_artifacts"]:
++            path = run_dir / artifact["filename"]
++            assert artifact["bytes"] == path.stat().st_size
++            assert artifact["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
++
++        expected_manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
++        assert (run_dir / "manifest.sha256").read_text(encoding="ascii") == (
++            f"{expected_manifest_hash}  manifest.json\n"
++        )
++
++    def test_manifest_records_software_versions_and_complete_query_records(
++        self, harness: RetrievalHarness, tmp_path: Path
++    ) -> None:
++        run_dir = harness.save(harness.run_all(("dense",)), tmp_path)
++        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
++        assert manifest["environment"]["dependency:numpy"] == "2.5.1"
++        assert manifest["environment"]["dependency:scikit-learn"] == "1.9.0"
++        assert manifest["environment"]["dependency:scipy"]
++        assert manifest["dataset_summary"]["judgments"] > 0
++        assert manifest["build_index_timing"]["dense"]["seconds"] >= 0.0
++
++        lines = (run_dir / "per-query-dense.jsonl").read_text(encoding="utf-8").splitlines()
++        records = [json.loads(line) for line in lines]
++        assert all(record["ranked_ids"] for record in records)
++        assert all("latency_ms" in record and "metrics" in record for record in records)
++        assert all(len(record["candidate_ranked_ids"]) == 30 for record in records)
++
++    def test_rrf_top10_reconstructs_from_full_component_artifacts(
++        self, harness: RetrievalHarness, tmp_path: Path
++    ) -> None:
++        run_dir = harness.save(harness.run_all(("hybrid_rrf",)), tmp_path)
++        path = run_dir / "per-query-hybrid_rrf.jsonl"
++        for line in path.read_text(encoding="utf-8").splitlines():
++            record = json.loads(line)
++            components = []
++            for component in ("sparse", "dense"):
++                ranks = record["component_ranks"][component]
++                scores = record["component_scores"][component]
++                components.append(
++                    [
++                        (doc_id, scores[doc_id])
++                        for doc_id in sorted(ranks, key=lambda item: ranks[item])
++                    ]
++                )
++            rebuilt = reciprocal_rank_fusion(
++                components,
++                k=harness.config.rrf_k,
++                limit=harness.config.candidate_limit,
++            )
++            assert [doc_id for doc_id, _score in rebuilt[:10]] == record["ranked_ids"]
++            assert [score for _doc_id, score in rebuilt[:10]] == pytest.approx(record["scores"])
++
++    @pytest.mark.parametrize("defect", ["missing_query", "duplicate_query", "bad_summary"])
++    def test_save_rejects_incomplete_or_nonrecomputable_results(
++        self, harness: RetrievalHarness, tmp_path: Path, defect: str
++    ) -> None:
++        result = harness.run_mode("sparse")
++        if defect == "missing_query":
++            result.records.pop()
++        elif defect == "duplicate_query":
++            result.records.append(result.records[0])
++        else:
++            result.summary["recall@10"] = -1.0
++        with pytest.raises(ValueError):
++            harness.save({"sparse": result}, tmp_path)
++        assert not list(tmp_path.iterdir())
++
++    def test_deterministic_run_id_selects_exact_tracked_path(
++        self, harness: RetrievalHarness, tmp_path: Path
++    ) -> None:
++        run_dir = harness.save(harness.run_all(("sparse",)), tmp_path, run_id="nfcorpus-real-final")
++        assert run_dir == tmp_path / "nfcorpus-real-final"
++
+     def test_dataset_warnings_propagate_into_the_manifest(self, tmp_path: Path) -> None:
+         dataset = load_jsonl_dataset(FIXTURE)
+         dataset.warnings.append("synthetic warning")
+diff --git a/tests/unit/evaluation/test_datasets.py b/tests/unit/evaluation/test_datasets.py
+index b47dbb3a7ea7694f5e74f5f92266231102e60d3a..5212ce5686d4e89c85d0fca5f12a82eb365792e2 100644
+--- a/tests/unit/evaluation/test_datasets.py
++++ b/tests/unit/evaluation/test_datasets.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import hashlib
+ import json
+ from pathlib import Path
+ 
+@@ -39,6 +40,7 @@ class TestBeirLoading:
+             "documents": 3,
+             "queries": 1,
+             "judged_queries": 1,
++            "judgments": 1,
+             "positive_judgments": 1,
+         }
+ 
+@@ -59,6 +61,11 @@ class TestBeirLoading:
+         with pytest.raises(ValueError, match="absent from the corpus"):
+             load_beir_directory(root)
+ 
++    def test_zero_grade_judgment_on_unknown_document_is_rejected(self, tmp_path: Path) -> None:
++        root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore", "q1\tmissing\t0"])
++        with pytest.raises(ValueError, match="absent from the corpus"):
++            load_beir_directory(root)
++
+     def test_judgment_on_unknown_query_is_rejected(self, tmp_path: Path) -> None:
+         root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore", "qX\td1\t2"])
+         with pytest.raises(ValueError, match="unknown query ids"):
+@@ -69,12 +76,86 @@ class TestBeirLoading:
+         with pytest.raises(ValueError, match="non-integer grade"):
+             load_beir_directory(root)
+ 
++    @pytest.mark.parametrize("grade", ["-1", "11"])
++    def test_out_of_range_grade_is_rejected(self, tmp_path: Path, grade: str) -> None:
++        root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore", f"q1\td1\t{grade}"])
++        with pytest.raises(ValueError, match="out of range"):
++            load_beir_directory(root)
++
++    @pytest.mark.parametrize(
++        ("row", "message"),
++        [
++            ("", "is blank"),
++            ("q1\td1", "exactly three"),
++            ("q1\td1\t2\textra", "exactly three"),
++            ("\td1\t2", "empty field"),
++            ("q1\t\t2", "empty field"),
++            ("q1\td1\t", "empty field"),
++        ],
++    )
++    def test_malformed_qrel_row_is_rejected(self, tmp_path: Path, row: str, message: str) -> None:
++        rows = ["query-id\tcorpus-id\tscore", row]
++        if not row:
++            rows.append("q1\td1\t2")
++        root = write_beir(tmp_path, qrels_rows=rows)
++        with pytest.raises(ValueError, match=message):
++            load_beir_directory(root)
++
++    def test_header_only_qrels_is_rejected(self, tmp_path: Path) -> None:
++        root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore"])
++        with pytest.raises(ValueError, match="contains no judgments"):
++            load_beir_directory(root)
++
++    @pytest.mark.parametrize("second_grade", ["2", "1"])
++    def test_duplicate_judgment_is_rejected(self, tmp_path: Path, second_grade: str) -> None:
++        root = write_beir(
++            tmp_path,
++            qrels_rows=[
++                "query-id\tcorpus-id\tscore",
++                "q1\td1\t2",
++                f"q1\td1\t{second_grade}",
++            ],
++        )
++        with pytest.raises(ValueError, match="duplicates judgment"):
++            load_beir_directory(root)
++
+     def test_truncation_keeps_positives_and_warns(self, tmp_path: Path) -> None:
+         root = write_beir(tmp_path, qrels_rows=["query-id\tcorpus-id\tscore", "q1\td3\t2"])
+         dataset = load_beir_directory(root, max_documents=1)
+         assert "d3" in dataset.corpus  # judged document is never dropped
+         assert dataset.warnings and "truncated" in dataset.warnings[0]
+ 
++    def test_truncation_keeps_zero_grade_judged_documents(self, tmp_path: Path) -> None:
++        root = write_beir(
++            tmp_path,
++            qrels_rows=["query-id\tcorpus-id\tscore", "q1\td1\t2", "q1\td3\t0"],
++        )
++        dataset = load_beir_directory(root, max_documents=1)
++        assert "d3" in dataset.corpus
++
++    def test_records_distribution_and_consumed_file_hashes(self, tmp_path: Path) -> None:
++        root = write_beir(tmp_path / "dataset")
++        archive = tmp_path / "nfcorpus.zip"
++        archive.write_bytes(b"frozen distribution")
++        dataset = load_beir_directory(
++            root,
++            dataset_id="NFCorpus",
++            dataset_source="https://example.invalid/nfcorpus.zip",
++            distribution_archive=archive,
++        )
++        assert dataset.distribution is not None
++        assert dataset.distribution.bytes == len(b"frozen distribution")
++        assert dataset.distribution.sha256 == hashlib.sha256(b"frozen distribution").hexdigest()
++        assert {identity.path for identity in dataset.consumed_files} == {
++            "corpus.jsonl",
++            "queries.jsonl",
++            "qrels/test.tsv",
++        }
++        for identity in dataset.consumed_files:
++            consumed = root / Path(identity.path)
++            assert identity.bytes == consumed.stat().st_size
++            assert identity.sha256 == hashlib.sha256(consumed.read_bytes()).hexdigest()
++
+     def test_duplicate_corpus_id_is_rejected(self, tmp_path: Path) -> None:
+         root = write_beir(tmp_path)
+         (root / "corpus.jsonl").write_text(
+@@ -110,6 +191,66 @@ class TestJsonlDataset:
+             for query_id in dataset.judged_queries
+         )
+ 
++    def test_duplicate_json_qrel_key_is_rejected(self, tmp_path: Path) -> None:
++        path = tmp_path / "duplicate.json"
++        path.write_text(
++            '{"corpus":[{"_id":"d1","text":"x"}],'
++            '"queries":[{"_id":"q1","text":"x"}],'
++            '"qrels":{"q1":{"d1":2,"d1":2}}}',
++            encoding="utf-8",
++        )
++        with pytest.raises(ValueError, match="duplicate JSON key"):
++            load_jsonl_dataset(path)
++
++    def test_non_integer_json_grade_is_rejected(self, tmp_path: Path) -> None:
++        path = tmp_path / "bad-grade.json"
++        path.write_text(
++            json.dumps(
++                {
++                    "corpus": [{"_id": "d1", "text": "x"}],
++                    "queries": [{"_id": "q1", "text": "x"}],
++                    "qrels": {"q1": {"d1": 1.5}},
++                }
++            ),
++            encoding="utf-8",
++        )
++        with pytest.raises(ValueError, match="non-integer grade"):
++            load_jsonl_dataset(path)
++
++    @pytest.mark.parametrize("missing", ["qrels", "queries", "corpus"])
++    def test_missing_required_root_field_is_rejected(self, tmp_path: Path, missing: str) -> None:
++        payload = {
++            "corpus": [{"_id": "d1", "text": "x"}],
++            "queries": [{"_id": "q1", "text": "x"}],
++            "qrels": {"q1": {"d1": 1}},
++        }
++        del payload[missing]
++        path = tmp_path / "missing.json"
++        path.write_text(json.dumps(payload), encoding="utf-8")
++        with pytest.raises(ValueError, match="missing required"):
++            load_jsonl_dataset(path)
++
++    @pytest.mark.parametrize(
++        ("qrels", "message"),
++        [({}, "no qrels"), ({"q1": {}}, "empty judgment maps"), ({"q1": {"d1": 0}}, "zero judged")],
++    )
++    def test_empty_or_unevaluable_qrels_are_rejected(
++        self, tmp_path: Path, qrels: dict[str, dict[str, int]], message: str
++    ) -> None:
++        path = tmp_path / "empty-qrels.json"
++        path.write_text(
++            json.dumps(
++                {
++                    "corpus": [{"_id": "d1", "text": "x"}],
++                    "queries": [{"_id": "q1", "text": "x"}],
++                    "qrels": qrels,
++                }
++            ),
++            encoding="utf-8",
++        )
++        with pytest.raises(ValueError, match=message):
++            load_jsonl_dataset(path)
++
+ 
+ class TestHistogram:
+     def test_counts_by_grade(self) -> None:
+diff --git a/tests/unit/retrieval/test_core.py b/tests/unit/retrieval/test_core.py
+index 028b939d486fc8f6307ecae6ce525e8f7726f6ef..1eb4ff2745f7c6a94dff7310fdd80784c065a297 100644
+--- a/tests/unit/retrieval/test_core.py
++++ b/tests/unit/retrieval/test_core.py
+@@ -7,6 +7,7 @@ import pytest
+ from medevidence.retrieval.core import (
+     BM25Index,
+     DenseIndex,
++    TfidfSvdBackend,
+     component_ranks,
+     reciprocal_rank_fusion,
+     tokenize,
+@@ -91,13 +92,25 @@ class TestDenseIndex:
+         index = DenseIndex(IDS, TEXTS, dimensions=4096)
+         assert 2 <= index.dimensions <= len(IDS)
+ 
++    def test_rejects_too_few_requested_dimensions(self) -> None:
++        with pytest.raises(ValueError, match="at least two"):
++            DenseIndex(IDS, TEXTS, dimensions=1)
++
++    def test_rejects_corpus_that_cannot_support_two_lsi_dimensions(self) -> None:
++        with pytest.raises(ValueError, match="corpus must support"):
++            DenseIndex(["d1", "d2"], ["same", "same"])
++
++    def test_passes_random_state_to_default_lsi_backend(self) -> None:
++        index = DenseIndex(IDS, TEXTS, dimensions=8, random_state=73)
++
++        assert isinstance(index.backend, TfidfSvdBackend)
++        assert index.backend.random_state == 73
++
+     def test_is_deterministic_across_calls(self) -> None:
+         index = DenseIndex(IDS, TEXTS, dimensions=8)
+         assert index.search("nausea", 4) == index.search("nausea", 4)
+ 
+     def test_transform_before_fit_is_rejected(self) -> None:
+-        from medevidence.retrieval.core import TfidfSvdBackend
+-
+         with pytest.raises(RuntimeError, match="fit_transform"):
+             TfidfSvdBackend().transform(["x"])
+ 
+diff --git a/tests/unit/test_dependency_boundaries.py b/tests/unit/test_dependency_boundaries.py
+index 57d8409bceeedbb4ada808150a414247daed7cb6..4c97ec52356a433617dc476919333ff1ee8b20c7 100644
+--- a/tests/unit/test_dependency_boundaries.py
++++ b/tests/unit/test_dependency_boundaries.py
+@@ -234,6 +234,27 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
+         "pytest-socket==0.8.0",
+         "ruff==0.15.22",
+     }
++    assert project["dependency-groups"]["retrieval"] == [
++        "numpy==2.5.1",
++        "scikit-learn==1.9.0",
++    ]
++    assert not any(
++        dependency.casefold().startswith(("numpy", "scikit-learn"))
++        for dependency in project["project"]["dependencies"]
++    )
+     lock_text = Path("uv.lock").read_text(encoding="utf-8").casefold()
+     assert 'name = "uvicorn"' not in lock_text
+     assert not any(item.startswith("fastapi[") for item in project["project"]["dependencies"])
++
++
++def test_retrieval_group_is_explicit_in_bootstrap_ci_and_dependency_evidence() -> None:
++    bootstrap = Path("scripts/bootstrap.ps1").read_text(encoding="utf-8")
++    workflow = Path(".github/workflows/quality.yml").read_text(encoding="utf-8")
++    dependency_audit = Path("scripts/dependency-audit.ps1").read_text(encoding="utf-8")
++
++    assert "sync --locked --group dev --group retrieval" in bootstrap
++    assert "scripts\\bootstrap.ps1" in workflow
++    assert 'groups.get("retrieval")' in dependency_audit
++    assert '["numpy==2.5.1", "scikit-learn==1.9.0"]' in dependency_audit
++    assert '"retrieval": sorted(retrieval' in dependency_audit
++    assert '"export", "--locked", "--all-groups"' in dependency_audit
+diff --git a/uv.lock b/uv.lock
+index 2f09abed7b4f1cf83191cc4a011b76fddafb2c9d..fa7f35455d9d6aa36ffcb1ddd6425a494ede250e 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -284,6 +284,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+ ]
+ 
++[[package]]
++name = "joblib"
++version = "1.5.3"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/41/f2/d34e8b3a08a9cc79a50b2208a93dce981fe615b64d5a4d4abee421d898df/joblib-1.5.3.tar.gz", hash = "sha256:8561a3269e6801106863fd0d6d84bb737be9e7631e33aaed3fb9ce5953688da3", size = 331603, upload-time = "2025-12-15T08:41:46.427Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/7b/91/984aca2ec129e2757d1e4e3c81c3fcda9d0f85b74670a094cc443d9ee949/joblib-1.5.3-py3-none-any.whl", hash = "sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713", size = 309071, upload-time = "2025-12-15T08:41:44.973Z" },
++]
++
+ [[package]]
+ name = "librt"
+ version = "0.13.0"
+@@ -393,6 +402,10 @@ dev = [
+     { name = "pytest-socket" },
+     { name = "ruff" },
+ ]
++retrieval = [
++    { name = "numpy" },
++    { name = "scikit-learn" },
++]
+ 
+ [package.metadata]
+ requires-dist = [
+@@ -415,6 +428,10 @@ dev = [
+     { name = "pytest-socket", specifier = "==0.8.0" },
+     { name = "ruff", specifier = "==0.15.22" },
+ ]
++retrieval = [
++    { name = "numpy", specifier = "==2.5.1" },
++    { name = "scikit-learn", specifier = "==1.9.0" },
++]
+ 
+ [[package]]
+ name = "msgpack"
+@@ -467,6 +484,34 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/79/7b/2c79738432f5c924bef5071f933bcc9efd0473bac3b4aa584a6f7c1c8df8/mypy_extensions-1.1.0-py3-none-any.whl", hash = "sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505", size = 4963, upload-time = "2025-04-22T14:54:22.983Z" },
+ ]
+ 
++[[package]]
++name = "narwhals"
++version = "2.24.0"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/2b/1d/58946e5aab18393e793bd4add6985b95d0e01c3a2d832f38f54468b10dcd/narwhals-2.24.0.tar.gz", hash = "sha256:b5c0f684ccd9d7475b564111e319a4964abcf2baf79d3cf6b1003d06ac9b828d", size = 661143, upload-time = "2026-07-13T10:49:19.086Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/7e/85/a5bfaebfd305ac18b57b0854d74e37e586809061a91fda62f0bd50c8518e/narwhals-2.24.0-py3-none-any.whl", hash = "sha256:42fdedf44e5b2ca7505630d45b4ac3058f38d8485cba9fe1652ca23152df7489", size = 461030, upload-time = "2026-07-13T10:49:17.571Z" },
++]
++
++[[package]]
++name = "numpy"
++version = "2.5.1"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/22/fd/89965aa4ac08c74998539fcbf24fa3540f3e15237fbeb6bcf9c908f4aade/numpy-2.5.1.tar.gz", hash = "sha256:a48a113e6afea91f5608793bafa7ef2ad481fefbda87ec5069f483de61cb9fa3", size = 20755553, upload-time = "2026-07-04T17:08:00.933Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/62/7b/14687aa674250e5e546f616f486b0d56d3631cd5b2415739141ce40bdcea/numpy-2.5.1-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:2c889b56fe48b1018f764b0eec8df59ab654e9148aa91faa12596043500de277", size = 16801574, upload-time = "2026-07-04T17:06:12.423Z" },
++    { url = "https://files.pythonhosted.org/packages/e1/19/cc5bb2a3f2913d27d6dbb2c78d25921fabaedc6741d4a5a615a11f3c5bf3/numpy-2.5.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:ab451b59c5643c570974c43aef780703ef1d3b4965d2be07afd530615a9358d1", size = 11772250, upload-time = "2026-07-04T17:06:15.726Z" },
++    { url = "https://files.pythonhosted.org/packages/42/77/fdf34a71dd30f54979b18603bee915e0aaf825b07afe79acd60b04b691e2/numpy-2.5.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:78798bd5b9ad744056af8efa90e3b9ddaa53272a0848a483084a1cc0a13b2dc0", size = 5331516, upload-time = "2026-07-04T17:06:17.913Z" },
++    { url = "https://files.pythonhosted.org/packages/ce/e2/eb7efa015b4cce41e2517bf182a7fce0d7d5b9d9ed76a29bfa0f4fe4505c/numpy-2.5.1-cp312-cp312-macosx_14_0_x86_64.whl", hash = "sha256:2ae0ca40bcb22d6ba59c1dfd5446f49940b0f2d821fde133f10dda11f816b84e", size = 6664863, upload-time = "2026-07-04T17:06:20.02Z" },
++    { url = "https://files.pythonhosted.org/packages/a9/4b/a2b32dd94ee9ffbeecb28152240042a3949db33b1c834d44090b80e1b3b8/numpy-2.5.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:61ac47e772e6b8ea489e1d2f441a34c5c3ac17327e7ce294cbdf535795ad4e75", size = 15167977, upload-time = "2026-07-04T17:06:21.621Z" },
++    { url = "https://files.pythonhosted.org/packages/b8/a9/6e73d68500f80773f65f0654ea932019d6694329a0eb0ed0533de38df376/numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca", size = 16672469, upload-time = "2026-07-04T17:06:24.064Z" },
++    { url = "https://files.pythonhosted.org/packages/24/7d/ad3e59015135f5261c95fd4cafeff159c955febd83a99a1d9250c4233815/numpy-2.5.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:f7119ebff1a9829e9f431a4f9d28e703023bb6b9fe7c8f724467dbfc27c94ab3", size = 16527531, upload-time = "2026-07-04T17:06:26.69Z" },
++    { url = "https://files.pythonhosted.org/packages/83/d0/a39b2fbcde9cb17a1dac678f254b33a6336298af9df338824c685425d5e8/numpy-2.5.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:e824c2acf8862052246be5a44c15da1777940c60d010dd2aab897824d9c430f9", size = 18431940, upload-time = "2026-07-04T17:06:29.521Z" },
++    { url = "https://files.pythonhosted.org/packages/04/12/cff070947791c1ed425ff76413189adbdc2fbe215eba7ce7fa454a03c7f8/numpy-2.5.1-cp312-cp312-win32.whl", hash = "sha256:08d60c810432eb83360958dea0999ac4cfb94531ea8efcbf0b7f277c2068aeb2", size = 6066764, upload-time = "2026-07-04T17:06:32.571Z" },
++    { url = "https://files.pythonhosted.org/packages/65/66/53f31807a48a750f9d748da273bc3fcedd12b27ff1f3e373bfec55ef2dc0/numpy-2.5.1-cp312-cp312-win_amd64.whl", hash = "sha256:f7d60026c0bdb1380e83bfa7a0419c4577ee4b9a08880afcb6dadeb74c649fa2", size = 12430966, upload-time = "2026-07-04T17:06:34.926Z" },
++    { url = "https://files.pythonhosted.org/packages/2b/2a/d1a88066b1c14186f5d3c0d18c94f17b064511982bab0578d49ee9d43c29/numpy-2.5.1-cp312-cp312-win_arm64.whl", hash = "sha256:17a25e09640602e10bc8de0e6fa2b3fd68eedd84ba6d7842dc8f32f9ab87bd0b", size = 10350488, upload-time = "2026-07-04T17:06:37.785Z" },
++]
++
+ [[package]]
+ name = "packageurl-python"
+ version = "0.17.6"
+@@ -773,6 +818,48 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/57/c9/e69b1ff4c8b69093ef08b8919ab767af0569666865b39c30a8795d88d3c6/ruff-0.15.22-py3-none-win_arm64.whl", hash = "sha256:e1168075b72158510839f250027659cdd78476f40507dd517892304c41318661", size = 11298172, upload-time = "2026-07-16T15:14:10.51Z" },
+ ]
+ 
++[[package]]
++name = "scikit-learn"
++version = "1.9.0"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "joblib" },
++    { name = "narwhals" },
++    { name = "numpy" },
++    { name = "scipy" },
++    { name = "threadpoolctl" },
++]
++sdist = { url = "https://files.pythonhosted.org/packages/fa/6f/37092bdb25f712817231799fc5674d8e704066a8a70c1d2d40517e18b4ab/scikit_learn-1.9.0.tar.gz", hash = "sha256:8833266989d3a5110178a9fae30783675460724d0e1efb13b14901d2c660c557", size = 7750767, upload-time = "2026-06-02T11:54:32.706Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/ac/20/75f915ff375d6249e6550ac740fdbbd66159a068fd3af1400ff62036b07a/scikit_learn-1.9.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:2bd41b0d201bc81575531b96b713d3eb5e5f50fb0b82101ff0f92294fdc236ac", size = 8741122, upload-time = "2026-06-02T11:53:24.08Z" },
++    { url = "https://files.pythonhosted.org/packages/cc/d5/2b5148f2279196775e1db2aeb85d14b70ac80e7e32b3b28e7ebeafb0901d/scikit_learn-1.9.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:5be45aa4a42a68a533913a6ed736cf309de2226411c79ef8d609a5456f1939b1", size = 8261512, upload-time = "2026-06-02T11:53:27.183Z" },
++    { url = "https://files.pythonhosted.org/packages/a0/ee/5adbc77656b71f9456a2f5a7a9fdb4bcf9207a6b962889f1c2f9323afa4e/scikit_learn-1.9.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5e50ed4da51974e86e940690e9a3d82e729b62b5a49f7c9bac534d515d39d86f", size = 8837603, upload-time = "2026-06-02T11:53:30.328Z" },
++    { url = "https://files.pythonhosted.org/packages/6c/c2/63fdda36c56437eeb44aaf9493c8bcd62ce230ab1598924fc626ffbfa943/scikit_learn-1.9.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:056c92bb67ad4c28463c2f2653d9701449201e7e7a9e94e321be0f71c4fef2b8", size = 9132097, upload-time = "2026-06-02T11:53:33.456Z" },
++    { url = "https://files.pythonhosted.org/packages/83/a4/c8e67227c680e2259c8864ae72ff48b06e16a6f51253a22167aa02a8aa4e/scikit_learn-1.9.0-cp312-cp312-win_amd64.whl", hash = "sha256:4306775fad04cc4b472a1b15af1ae9cede1540fbfcc17fbce3767cd8dc7ae283", size = 8211173, upload-time = "2026-06-02T11:53:36.602Z" },
++    { url = "https://files.pythonhosted.org/packages/cf/fd/3c0863792e98e67e9184aa4029288a175935eb65443afcd30d4f143450cf/scikit_learn-1.9.0-cp312-cp312-win_arm64.whl", hash = "sha256:26e22435f63bcdcf396b574273f29f13dd531f5ea035801f5be10ba1540a4e60", size = 7867451, upload-time = "2026-06-02T11:53:39.075Z" },
++]
++
++[[package]]
++name = "scipy"
++version = "1.18.0"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "numpy" },
++]
++sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/6a/19/ca10ead60b0acc80b2b833c2c4a4f2ff753d0f58b811f70d911c7e94a25c/scipy-1.18.0-cp312-cp312-macosx_10_15_x86_64.whl", hash = "sha256:7bd21faaf5a1a3b2eff922d02db5f191b99a6518db9078a8fb23169f6d22259a", size = 31056519, upload-time = "2026-06-19T14:59:45.203Z" },
++    { url = "https://files.pythonhosted.org/packages/96/72/1e6442a00cd2924d361aa1b642ab6373ec35c6fabf311a760be9f76e0f13/scipy-1.18.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:265915e79107de9f946b855e50d7470d5893ec3f54b342e1aa6201cbdcd8bb6b", size = 28681889, upload-time = "2026-06-19T14:59:48.103Z" },
++    { url = "https://files.pythonhosted.org/packages/9b/2d/11dd93d21e147a73ba22bd75c0b9208d3a2e0ec76d53170ce7d9029b1015/scipy-1.18.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:9ab7b758be6940954a713ee466e2043e9f6e2ed965c1fce5c91039f4be3d90a9", size = 20423580, upload-time = "2026-06-19T14:59:50.665Z" },
++    { url = "https://files.pythonhosted.org/packages/9c/01/93552f75e0d2a7dd115a45e59209c51e8d514daff02fc887d2623be06fe1/scipy-1.18.0-cp312-cp312-macosx_14_0_x86_64.whl", hash = "sha256:97b6cddaaee0a779ef6b5ca83c9604b27cc16b2b8fc22c142652df8793319fb8", size = 23054441, upload-time = "2026-06-19T14:59:53.564Z" },
++    { url = "https://files.pythonhosted.org/packages/3c/23/21f5e703643d66f21faa6b4c73195bfcad70c55efcb4f1ab327cd7c4101a/scipy-1.18.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:52a96e21517c7292375c0e27dd796a811f03fcea5fd4d108fdfea8145dcf17ab", size = 33968720, upload-time = "2026-06-19T14:59:56.415Z" },
++    { url = "https://files.pythonhosted.org/packages/dd/aa/1b939f6c67ed68635bb538e6752d3dacc02f66535182e939a89581a44e9c/scipy-1.18.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1f55797419e16e7f30cf88ffb3113ce0467f00cfe3f70d5c281730b21769bfc2", size = 35287115, upload-time = "2026-06-19T14:59:59.411Z" },
++    { url = "https://files.pythonhosted.org/packages/b6/ff/eec46be7e9234208f801062b53e1983085eddebd693f6c9bfb03b459830d/scipy-1.18.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:ad033410e2e0672ffdc1042110cef20e1c46f8fd0616cee1d44d8d58fad8fc11", size = 35577989, upload-time = "2026-06-19T15:00:02.235Z" },
++    { url = "https://files.pythonhosted.org/packages/84/ca/210d4759c7210bb7d269437421959b39a33434e2776b60c5cb8a763bb30a/scipy-1.18.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:4a55985d54c769c872e64b7f4c8a81cc30ef700cc04296abbbf3705439c126de", size = 37421717, upload-time = "2026-06-19T15:00:05.102Z" },
++    { url = "https://files.pythonhosted.org/packages/2b/54/9a9edb45345bd6744da5ddfb6628e5d5185920494c6a67ec45b6381004cb/scipy-1.18.0-cp312-cp312-win_amd64.whl", hash = "sha256:71ccc8faa2dd16ac310233203474a8b5cb67f10dedd54a3116d34943f4b19132", size = 36597428, upload-time = "2026-06-19T15:00:08.112Z" },
++    { url = "https://files.pythonhosted.org/packages/99/0e/33f32a2a58987e26aec0f7df252cbbad1e90ae77bdbc76f40dd4ed0cf0ea/scipy-1.18.0-cp312-cp312-win_arm64.whl", hash = "sha256:d88363fd9d8fbd3511bd273f1a49efb2a540773ddf92a91d57498ce7dd7f3e76", size = 24351481, upload-time = "2026-06-19T15:00:11.103Z" },
++]
++
+ [[package]]
+ name = "sortedcontainers"
+ version = "2.4.0"
+@@ -815,6 +902,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/e6/6a/a9ff0b4b7603f9498fa419b63ff09e182536ff2f739c85df7f38c0b46781/starlette-1.5.0-py3-none-any.whl", hash = "sha256:9ca76b47375e56f279d7c66651e801ef11167e58557c429be7ec55702d81d4bb", size = 74328, upload-time = "2026-08-08T07:23:14.675Z" },
+ ]
+ 
++[[package]]
++name = "threadpoolctl"
++version = "3.6.0"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/b7/4d/08c89e34946fce2aec4fbb45c9016efd5f4d7f24af8e5d93296e935631d8/threadpoolctl-3.6.0.tar.gz", hash = "sha256:8ab8b4aa3491d812b623328249fab5302a68d2d71745c8a4c719a2fcaba9f44e", size = 21274, upload-time = "2025-03-13T13:49:23.031Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/32/d5/f9a850d79b0851d1d4ef6456097579a9005b31fea68726a4ae5f2d82ddd9/threadpoolctl-3.6.0-py3-none-any.whl", hash = "sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb", size = 18638, upload-time = "2025-03-13T13:49:21.846Z" },
++]
++
+ [[package]]
+ name = "tomli"
+ version = "2.4.1"
