@@ -1,5 +1,47 @@
 # V1 Traceability Matrix
 
+## M1B-FAERS-001
+
+| Owner decision | Domain evidence | Offline tests |
+|---|---|---|
+| Unit/mode/latest | Query, bucket, and result models | `test_source_outcomes.py` |
+| No role predicate | Request/query/bucket/locator literals | `test_scope.py`, `test_reports.py` |
+| Identity/date/query | Request/date/query validators and exact date-bound query-ID preimage | `test_scope.py`, `test_source_outcomes.py`, `test_openapi.py` |
+| PT authority/exclusions | Exact constants and bucket literal | `test_scope.py`, `test_source_outcomes.py` |
+| Bounds/transport/freshness | Execution and policy models | `test_provenance.py` |
+| Aggregate/report/locator | Exact result/section/locator comparators and discriminated source-section union | `test_source_outcomes.py`, `test_reports.py`, `test_openapi.py` |
+| Limitations | Exact mandatory limitation tuple | `test_source_outcomes.py`, `test_reports.py` |
+
+Status: Terminal Audit001 PASS; final-byte rebind and Git pending.
+No connector, persistence, migration, tool, FAERS API route, dependency,
+network, or M1B-FAERS-002 work is claimed. The enabled M1B OpenAPI envelope
+reflects the additive typed FAERS request/section union only.
+
+Review001 remains immutable FAIL history. P1-01 was remediated in cycle 1/3.
+Owner-authorized cycle 2/3 closes P1-02 with an exact 0..8 typed FAERS request
+tuple, discriminated DailyMed/FAERS section union, exact request-owned
+request/result/outcome comparison, and additive enabled OpenAPI parity. No
+FAERS route was added; PubMed default bytes and the 76-component PubMed subtree
+remain unchanged. Review002 returned `FAIL — P0 0 / P1 1 / P2 0` for omitted
+serialized date-bound query-identity constants. Final cycle 3/3 requires exact
+present literals `365` and `366`, includes them in the query-ID preimage and
+OpenAPI, and rejects omission, drift, and accepted-instance bypass. Fresh
+Review003 inspected the complete remediated 22-path candidate and returned
+`PASS — P0 0 / P1 0 / P2 0`, binding manifest
+`bddadeeade832b763cd0f37e0ce15e666e03e0ee2a0eb627651c7fda57100859`.
+It verified all three historical finding closures, frozen FAERS semantics,
+unchanged M1A/PubMed compatibility, retained DailyMed behavior, and absence of
+a FAERS route. At that review gate, terminal audit remained pending; no
+completion or Git lifecycle was claimed.
+
+Terminal Evidence Audit001 returned `PASS — P0 0 / P1 0 / P2 0`, binding exact
+audited manifest
+`e572da3ef99f568dbfba27569c3921b5879ce76a68cf7f2d8b65432048aa6f97`.
+All focused, API/OpenAPI, full offline, static, scope, encoding, fixture,
+dependency, route, and index gates passed. Persisting audit evidence changes
+the candidate bytes; final-byte rebind and Git remain pending, with no
+completion, integration, or FAERS-002 claim.
+
 ## 1. Purpose and use
 
 This matrix maps every V1 requirement to exact governing design locations,

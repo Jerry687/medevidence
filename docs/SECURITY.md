@@ -1,5 +1,16 @@
 # Security, Medical Safety, and Trust Boundaries
 
+## FAERS-001 closed trust metadata
+
+`FAERS_M1B_CONSTRAINED_V1` is a frozen, non-weakenable design tuple, not network
+permission. Validation hosts remain empty and source network execution is false.
+It fixes HTTPS host/path/method, zero redirects, count field, phase/deadline
+timeouts, two attempts, retry classes, bounded backoff/Retry-After, five pages,
+100 records/buckets, and 5,242,880-byte response/cumulative ceilings. Result
+caching and stale fallback are forbidden; replay is immutable raw snapshot only.
+Arbitrary query syntax, pre-encoded input, raw mode, role predicates, and any
+weakened policy values fail closed.
+
 ## 1. V1 boundary
 
 MedEvidence V1 is a local, single-user research demonstration over public data

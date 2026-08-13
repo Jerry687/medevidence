@@ -95,9 +95,9 @@ def _register_public_components(app: FastAPI, *, dailymed_enabled: bool) -> None
         required_fields = {
             "DailyMedLocatorV1": ("schema_version", "locator_kind", "source"),
             "DailyMedSelectionRequestV1": ("schema_version",),
+            "FaersAggregateRequestV1": ("pt_values", "statistical_unit"),
             "M1BResearchRequestV1": ("schema_version",),
             "M1BSourcePlanEntryV1": ("schema_version",),
-            "M1BSourceSection": ("schema_version", "section_kind", "source"),
         }
         report_component = components.get("M1BResearchReportV1")
         if isinstance(report_component, dict):
@@ -107,6 +107,9 @@ def _register_public_components(app: FastAPI, *, dailymed_enabled: bool) -> None
         for component_name, discriminator_fields in required_fields.items():
             component = components.get(component_name)
             if isinstance(component, dict):
+                properties = component.get("properties")
+                if not isinstance(properties, dict):
+                    continue
                 required = set(component.get("required", ()))
                 required.update(discriminator_fields)
                 component["required"] = sorted(required)

@@ -10,7 +10,14 @@ from typing import cast
 
 from medevidence.api import ApiDependencies, create_app
 from medevidence.api.errors import ApiErrorCode
-from medevidence.domain import M1BResearchReportV1, M1BResearchRequestV1, ResearchReport
+from medevidence.domain import (
+    FaersAggregateRequestV1,
+    FaersExecutionBoundsV1,
+    FaersInclusiveDateRangeV1,
+    M1BResearchReportV1,
+    M1BResearchRequestV1,
+    ResearchReport,
+)
 from medevidence.tools import ResearchPubMedRequest
 
 FIXTURE = Path("tests/fixtures/api/openapi-v1.json")
@@ -120,10 +127,22 @@ def test_openapi_exact_route_metadata_models_and_examples() -> None:
         "M1BResearchReportV1": {"schema_version"},
         "M1BResearchRequestV1": {"schema_version"},
         "M1BSourcePlanEntryV1": {"schema_version"},
-        "M1BSourceSection": {"schema_version", "section_kind", "source"},
     }.items():
         component = cast(dict[str, object], schemas[component_name])
         assert discriminators <= set(cast(list[str], component["required"]))
+
+    section_union = cast(dict[str, object], schemas["M1BSourceSection"])
+    assert section_union["discriminator"] == {
+        "propertyName": "section_kind",
+        "mapping": {
+            "dailymed_label": "#/components/schemas/DailyMedLabelSectionV1",
+            "faers_aggregate": "#/components/schemas/FaersAggregateSectionV1",
+        },
+    }
+    assert section_union["oneOf"] == [
+        {"$ref": "#/components/schemas/DailyMedLabelSectionV1"},
+        {"$ref": "#/components/schemas/FaersAggregateSectionV1"},
+    ]
 
     dailymed = cast(dict[str, object], paths["/v1/research/dailymed"])
     dailymed_post = cast(dict[str, object], dailymed["post"])
@@ -283,7 +302,8 @@ def test_enabled_response_requiredness_matches_strict_recursive_presence() -> No
         "InclusiveDateRangeResponse": 3,
         "LabelSection": 15,
         "M1BSourcePlanEntryV1": 5,
-        "M1BSourceSection": 15,
+        "DailyMedLabelSectionV1": 15,
+        "FaersAggregateSectionV1": 11,
         "ResearchScopeResponse": 10,
         "RetainedSplResponse": 33,
         "SourceOutcomeResponse": 12,
@@ -321,6 +341,20 @@ def test_enabled_input_optionality_and_response_nullability_are_distinct() -> No
     assert set(
         cast(list[str], cast(dict[str, object], components["InclusiveDateRange"])["required"])
     ) == {"start_date", "end_date"}
+    assert set(
+        cast(
+            list[str],
+            cast(dict[str, object], components["FaersAggregateRequestV1"])["required"],
+        )
+    ) == {
+        "drug_concept_id",
+        "execution_bounds",
+        "identity_exact_value",
+        "identity_strategy",
+        "inclusive_date_range",
+        "pt_values",
+        "statistical_unit",
+    }
 
     request_schema = cast(dict[str, object], components["M1BResearchRequestV1"])
     request_properties = cast(dict[str, object], request_schema["properties"])
@@ -329,6 +363,11 @@ def test_enabled_input_optionality_and_response_nullability_are_distinct() -> No
         cast(dict[str, object], request_properties["dailymed_selection_requests"])["items"],
     )
     assert request_items["$ref"] == "#/components/schemas/DailyMedSelectionRequestV1"
+    faers_request_items = cast(
+        dict[str, object],
+        cast(dict[str, object], request_properties["faers_query_requests"])["items"],
+    )
+    assert faers_request_items["$ref"] == "#/components/schemas/FaersAggregateRequestV1"
 
     for response_name, input_name in {
         "DailyMedSelectionRequestV1Response": "DailyMedSelectionRequestV1",
@@ -369,12 +408,13 @@ def test_enabled_input_optionality_and_response_nullability_are_distinct() -> No
         "DailyMedSelectionRequestV1Response": ("pinned_setid", "pinned_spl_version"),
         "LabelSection": ("parent_section_id",),
         "M1BSourcePlanEntryV1": ("reason", "reason_code"),
-        "M1BSourceSection": (
+        "DailyMedLabelSectionV1": (
             "label_version",
             "retained_response",
             "selection_decision_id",
             "selection_status",
         ),
+        "FaersAggregateResult": ("provider_as_of_utc",),
         "ResearchScopeResponse": ("date_range",),
         "SourceOutcomeResponse": ("failure_id",),
     }
@@ -385,6 +425,36 @@ def test_enabled_input_optionality_and_response_nullability_are_distinct() -> No
         for field in fields:
             assert field in required
             assert allows_null(properties[field])
+
+
+def test_enabled_faers_input_requiredness_matches_runtime_presence() -> None:
+    components = cast(
+        dict[str, object], cast(dict[str, object], _schema()["components"])["schemas"]
+    )
+    models = {
+        "FaersAggregateRequestV1": FaersAggregateRequestV1,
+        "FaersExecutionBoundsV1": FaersExecutionBoundsV1,
+        "FaersInclusiveDateRangeV1": FaersInclusiveDateRangeV1,
+    }
+    explicit_runtime_presence = {
+        "FaersAggregateRequestV1": {"pt_values", "statistical_unit"},
+    }
+    for component_name, model in models.items():
+        runtime_required = {
+            name for name, field in model.model_fields.items() if field.is_required()
+        } | explicit_runtime_presence.get(component_name, set())
+        component = cast(dict[str, object], components[component_name])
+        openapi_required = set(cast(list[str], component.get("required", ())))
+        assert openapi_required == runtime_required
+
+    request_component = cast(dict[str, object], components["M1BResearchRequestV1"])
+    request_properties = cast(dict[str, object], request_component["properties"])
+    faers_items = cast(
+        dict[str, object],
+        cast(dict[str, object], request_properties["faers_query_requests"])["items"],
+    )
+    assert faers_items == {"$ref": "#/components/schemas/FaersAggregateRequestV1"}
+    assert "faers_query_requests" not in set(cast(list[str], request_component["required"]))
 
 
 def test_normalized_openapi_fixture_is_byte_exact() -> None:

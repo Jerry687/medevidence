@@ -1,5 +1,17 @@
 # Evaluation Plan
 
+## M1B-FAERS-001 offline contract evaluation
+
+Socket-disabled tests cover the exact PT mapping and inference negatives; both
+identity pairs and crossed/fallback drift; receivedate boundary cases; exact
+provider-count unit, no-role shape, profile and bounds; query-preimage identity;
+complete bucket membership/order/ties/ordinals; degraded outcome truthfulness;
+locators/sections; mandatory limitations; and M1A/DailyMed regressions. Live
+FAERS requests, connectors, migrations, and database validation are inapplicable.
+Byte-exact enabled OpenAPI tests verify the FAERS request/section discriminator,
+runtime-required field parity, unchanged PubMed component digest, and unchanged
+PubMed-plus-DailyMed route inventory.
+
 ## 1. Objective
 
 Evaluation must identify which layer succeeds or fails. A fluent report cannot

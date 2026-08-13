@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    FAERS_MANDATORY_LIMITATIONS,
     RESEARCH_ONLY_NOTICE,
     AbstractSection,
     AcquisitionOutcomeRef,
@@ -35,6 +36,15 @@ from medevidence.domain import (
     EvidenceClaim,
     ExecutionBounds,
     ExecutionStatus,
+    FaersAggregateBucketV1,
+    FaersAggregateQueryV1,
+    FaersAggregateRequestV1,
+    FaersAggregateResult,
+    FaersAggregateSectionV1,
+    FaersExecutionBoundsV1,
+    FaersIdentityStrategy,
+    FaersInclusiveDateRangeV1,
+    FaersLocatorV1,
     IndexingStatus,
     LabelSection,
     LabelSelectionDecision,
@@ -74,6 +84,294 @@ RUN_INTENT_ID = f"run-intent:sha256:{'1' * 64}"
 CATALOG_HASH = f"sha256:{'2' * 64}"
 SNAPSHOT_ID = f"sha256:{'3' * 64}"
 ENVELOPE_ID = f"registration-envelope:acquisition:sha256:{'4' * 64}"
+
+
+def faers_report_parts() -> tuple[
+    FaersAggregateRequestV1,
+    FaersAggregateResult,
+    AcquisitionOutcomeRef,
+    FaersAggregateSectionV1,
+]:
+    request = FaersAggregateRequestV1(
+        drug_concept_id="drug:test",
+        identity_strategy=FaersIdentityStrategy.HARMONIZED_SUBSTANCE,
+        identity_exact_value="TEST DRUG",
+        pt_values=("DIARRHOEA", "NAUSEA", "VOMITING"),
+        inclusive_date_range=FaersInclusiveDateRangeV1(
+            start_date=date(2025, 1, 1), end_date=date(2025, 12, 31)
+        ),
+        execution_bounds=FaersExecutionBoundsV1(
+            max_date_difference_days=365,
+            max_inclusive_calendar_dates=366,
+        ),
+        statistical_unit="provider_count_occurrence",
+    )
+    query = FaersAggregateQueryV1.create(request)
+    outcome = SourceOutcome(
+        source=SourceType.FAERS,
+        query_id=query.query_id,
+        execution_status=ExecutionStatus.SUCCEEDED,
+        coverage_status=CoverageStatus.COMPLETE,
+        result_status=ResultStatus.MATCHES,
+        configured_bounds=ExecutionBounds(
+            max_query_characters=512,
+            max_pages=5,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            max_total_seconds=30,
+        ),
+        valid_result_count=2,
+        pages_completed=1,
+        truncated=False,
+    )
+    buckets = tuple(
+        FaersAggregateBucketV1(
+            query_id=query.query_id,
+            bucket_ordinal=ordinal,
+            reaction_pt=pt,
+            report_count=count,
+            identity_stratum=query.identity_stratum,
+        )
+        for ordinal, (pt, count) in enumerate((("NAUSEA", 8), ("VOMITING", 3)))
+    )
+    result = FaersAggregateResult(
+        query=query,
+        buckets=buckets,
+        source_outcome=outcome,
+        retrieved_at_utc=NOW,
+        provider_as_of_utc=None,
+        snapshot_id="snapshot:faers",
+        manifest_id="manifest:faers",
+        limitations=FAERS_MANDATORY_LIMITATIONS,
+    )
+    ref = AcquisitionOutcomeRef(
+        run_id=RUN_ID,
+        source=SourceType.FAERS,
+        acquisition_id="acquisition:faers",
+        acquisition_intent_id=f"acquisition-intent:sha256:{'a' * 64}",
+        acquisition_ordinal=0,
+        operation="search",
+        query_id=query.query_id,
+        source_outcome_id="outcome:faers",
+        snapshot_id="snapshot:faers",
+    )
+    locators = tuple(
+        FaersLocatorV1(
+            report_id=f"report:sha256:{'b' * 64}",
+            run_id=RUN_ID,
+            acquisition_id=ref.acquisition_id,
+            snapshot_id=ref.snapshot_id,
+            outcome_query_id=query.query_id,
+            query_id=query.query_id,
+            identity_stratum=query.identity_stratum,
+            reaction_pt=bucket.reaction_pt,
+            bucket_ordinal=bucket.bucket_ordinal,
+            report_count=bucket.report_count,
+        )
+        for bucket in buckets
+    )
+    section = FaersAggregateSectionV1(
+        report_id=f"report:sha256:{'b' * 64}",
+        run_id=RUN_ID,
+        ordinal=0,
+        request=request,
+        acquisition_outcome_refs=(ref,),
+        result=result,
+        locators=locators,
+        limitations=FAERS_MANDATORY_LIMITATIONS,
+    )
+    return request, result, ref, section
+
+
+def test_faers_section_and_locators_bind_exact_complete_aggregate() -> None:
+    _request, result, _ref, section = faers_report_parts()
+    assert len(section.locators) == len(result.buckets)
+    assert all(locator.role_policy == "unfiltered_provider_roles" for locator in section.locators)
+    assert "role_predicate" not in FaersAggregateSectionV1.model_fields
+    for locator, bucket in zip(section.locators, result.buckets, strict=True):
+        locator.validate_against(result.query, bucket)
+
+    with pytest.raises(ValueError):
+        section.locators[0].validate_against(result.query, result.buckets[1])
+
+    base = section.model_dump(mode="python")
+    for changes in (
+        {"locators": section.locators[:-1]},
+        {
+            "locators": (
+                section.locators[0].model_copy(update={"report_count": 99}),
+                section.locators[1],
+            )
+        },
+        {"limitations": section.limitations[:-1]},
+        {
+            "acquisition_outcome_refs": (
+                section.acquisition_outcome_refs[0].model_copy(
+                    update={"snapshot_id": "snapshot:foreign"}
+                ),
+            )
+        },
+    ):
+        with pytest.raises(ValidationError):
+            FaersAggregateSectionV1(**{**base, **changes})
+
+
+def m1b_faers_report() -> tuple[
+    M1BResearchReportV1,
+    M1BResearchRequestV1,
+    tuple[tuple[FaersAggregateRequestV1, AcquisitionOutcomeRef, SourceOutcome], ...],
+]:
+    faers_request, result, ref, section = faers_report_parts()
+    report_scope = scope(selected_sources=(SourceType.FAERS,))
+    request = M1BResearchRequestV1(
+        request_id="request:00000000-0000-4000-8000-000000000021",
+        scope=report_scope,
+        requested_sources=(SourceType.FAERS,),
+        faers_query_requests=(faers_request,),
+    )
+    report = M1BResearchReportV1.create(
+        report_id=section.report_id,
+        run_id=section.run_id,
+        request_id=request.request_id,
+        scope=report_scope,
+        source_plan=(
+            M1BSourcePlanEntryV1(
+                source=SourceType.FAERS,
+                planning_status=PlanningStatus.SELECTED,
+            ),
+        ),
+        source_outcomes=(result.source_outcome,),
+        source_sections=(section,),
+        retrieved_as_of=NOW,
+    )
+    trusted = ((faers_request, ref, result.source_outcome),)
+    return report, request, trusted
+
+
+def test_m1b_faers_report_binds_exact_request_section_result_and_outcome() -> None:
+    report, request, trusted = m1b_faers_report()
+    report.validate_against(
+        request,
+        trusted_acquisition_outcomes=trusted,
+        trusted_selection_decisions=(),
+    )
+    assert isinstance(report.source_sections[0], FaersAggregateSectionV1)
+
+    with pytest.raises(ValueError, match="canonical request-owned union"):
+        report.validate_against(
+            request,
+            trusted_acquisition_outcomes=(),
+            trusted_selection_decisions=(),
+        )
+    with pytest.raises(ValueError, match="unique and unambiguous"):
+        report.validate_against(
+            request,
+            trusted_acquisition_outcomes=(*trusted, trusted[0]),
+            trusted_selection_decisions=(),
+        )
+
+    foreign_outcome = trusted[0][2].model_copy(update={"query_id": "query:foreign"})
+    with pytest.raises(ValueError, match="query identity drift"):
+        report.validate_against(
+            request,
+            trusted_acquisition_outcomes=((trusted[0][0], trusted[0][1], foreign_outcome),),
+            trusted_selection_decisions=(),
+        )
+
+
+def test_m1b_faers_report_rejects_missing_duplicate_and_cross_request_sections() -> None:
+    report, request, trusted = m1b_faers_report()
+    with pytest.raises(ValidationError, match="needs outcomes and truthful sections"):
+        M1BResearchReportV1.create(
+            report_id=report.report_id,
+            run_id=report.run_id,
+            request_id=report.request_id,
+            scope=report.scope,
+            source_plan=report.source_plan,
+            source_outcomes=(),
+            source_sections=(),
+            retrieved_as_of=report.retrieved_as_of,
+        )
+    with pytest.raises(
+        ValidationError,
+        match=r"same-source section ordinals|exactly one source section|globally unique",
+    ):
+        M1BResearchReportV1.create(
+            report_id=report.report_id,
+            run_id=report.run_id,
+            request_id=report.request_id,
+            scope=report.scope,
+            source_plan=report.source_plan,
+            source_outcomes=report.source_outcomes,
+            source_sections=(report.source_sections[0], report.source_sections[0]),
+            retrieved_as_of=report.retrieved_as_of,
+        )
+
+    foreign_request = FaersAggregateRequestV1(
+        **{
+            **request.faers_query_requests[0].model_dump(mode="python"),
+            "identity_exact_value": "FOREIGN DRUG",
+        }
+    )
+    foreign_envelope = M1BResearchRequestV1(
+        request_id=request.request_id,
+        scope=request.scope,
+        requested_sources=request.requested_sources,
+        faers_query_requests=(foreign_request,),
+    )
+    with pytest.raises(ValueError, match="FAERS section requests must exactly echo"):
+        report.validate_against(
+            foreign_envelope,
+            trusted_acquisition_outcomes=trusted,
+            trusted_selection_decisions=(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("run_id", "run:00000000-0000-4000-8000-000000000099"),
+        ("source", SourceType.DAILYMED),
+        ("acquisition_id", "acquisition:foreign"),
+        ("acquisition_intent_id", f"acquisition-intent:sha256:{'9' * 64}"),
+        ("acquisition_ordinal", 1),
+        ("operation", "fetch"),
+        ("query_id", "query:foreign"),
+        ("source_outcome_id", "outcome:foreign"),
+        ("snapshot_id", "snapshot:foreign"),
+    ),
+)
+def test_m1b_faers_report_rejects_each_foreign_acquisition_identity(
+    field: str, value: object
+) -> None:
+    report, request, trusted = m1b_faers_report()
+    forged_ref = trusted[0][1].model_copy(update={field: value})
+    with pytest.raises(ValueError):
+        report.validate_against(
+            request,
+            trusted_acquisition_outcomes=((trusted[0][0], forged_ref, trusted[0][2]),),
+            trusted_selection_decisions=(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("reaction_pt_set_id", "foreign"),
+        ("aggregation_mode", "foreign"),
+        ("statistical_unit", "foreign"),
+        ("role_policy", "foreign"),
+        ("execution_profile_id", "foreign"),
+        ("effective_total_deadline_ms", 29_000),
+    ),
+)
+def test_faers_section_rejects_each_request_query_preimage_drift(field: str, value: object) -> None:
+    request, _result, _ref, section = faers_report_parts()
+    drifted_request = request.model_copy(update={field: value})
+    with pytest.raises(ValidationError):
+        FaersAggregateSectionV1.model_validate(
+            section.model_copy(update={"request": drifted_request})
+        )
 
 
 def report_bindings() -> dict[str, object]:

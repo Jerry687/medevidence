@@ -1,5 +1,19 @@
 # Data Sources and Source Semantics
 
+## FAERS/openFDA M1B V1 contract
+
+The approved mode is the provider count endpoint at the non-authorizing design
+boundary `https://api.fda.gov/drug/event.json`, grouped only by
+`patient.reaction.reactionmeddrapt.exact`. No request is authorized or executed
+by FAERS-001. Its sole unit is `provider_count_occurrence`; there is no raw
+report aggregation, inferred case-version reconstruction, or extra deduplication.
+Drug roles are unfiltered and not interpreted.
+
+The exact PT tuple is `DIARRHOEA`, `NAUSEA`, `VOMITING`, mapped only to
+`Diarrhoea`, `Nausea`, `Vomiting` using MedDRA Version 29.0, English,
+reference-only authority. `CONSTIPATION` and `ABDOMINAL PAIN` are excluded at
+this evidence gate. Neither exclusion nor a zero bucket means a GI event is absent.
+
 ## 1. Governing principle
 
 MedEvidence uses four source classes with different collection mechanisms,

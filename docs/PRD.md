@@ -1,5 +1,17 @@
 # Product Requirements Document
 
+## M1B FAERS aggregate contract candidate
+
+M1B adds a bounded, research-only FAERS aggregate domain contract without
+changing M1A or DailyMed behavior. It supports exactly provider-count occurrence
+buckets for `GI_PT_SET_M1B_V1=(DIARRHOEA, NAUSEA, VOMITING)`, under MedDRA 29.0
+English reference-only authority, with no role predicate and no raw individual
+reports. Outputs disclose that the subset is non-comprehensive and that counts
+establish neither incidence, causality, risk, exposure, nor product ranking.
+Connector, persistence, tool, a FAERS API route, and live execution remain
+outside FAERS-001. The existing enabled M1B OpenAPI envelope truthfully exposes
+the additive typed FAERS request and report-section contracts.
+
 ## 1. Product definition
 
 MedEvidence is a portfolio-grade research assistant for multi-source public
