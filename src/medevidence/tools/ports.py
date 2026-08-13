@@ -1,4 +1,4 @@
-"""Consumer-owned injected ports for PubMed tools and run persistence."""
+"""Consumer-owned injected ports for stable source application tools."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from medevidence.domain import (
     ArtifactId,
     DailyMedCandidateLabel,
     ExecutionStatus,
+    FaersAggregateQueryV1,
     LabelSelectionDecision,
     M1BResearchReportV1,
     M1BResearchRequestV1,
@@ -35,6 +36,8 @@ from .contracts import (
     DailyMedDiscoveryResponse,
     DailyMedFetchRequest,
     DailyMedFetchResponse,
+    FaersAggregateExecution,
+    PersistedFaersAggregate,
     ResolvedConceptCatalog,
     RunIntentInput,
     SearchPubMedResponse,
@@ -394,6 +397,20 @@ class DailyMedReportApplicationPort(Protocol):
 
     def __call__(self, request: M1BResearchRequestV1) -> M1BResearchReportV1:
         """Return the exact closed report for one typed request."""
+
+
+class FaersExecutionPort(Protocol):
+    """Execute one frozen aggregate without exposing provider-native objects."""
+
+    def execute(self, query: FaersAggregateQueryV1) -> FaersAggregateExecution:
+        """Return the exact bounded execution for the closed query."""
+
+
+class FaersPersistencePort(Protocol):
+    """Insert or verify one immutable FAERS execution before it is returned."""
+
+    def persist(self, execution: FaersAggregateExecution) -> PersistedFaersAggregate:
+        """Return a trusted exact echo after durable persistence succeeds."""
 
 
 class AcquisitionPersistencePort(Protocol):

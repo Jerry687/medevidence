@@ -105,19 +105,31 @@ def test_upgrade_downgrade_upgrade_and_exact_catalog() -> None:
                     ") AS names"
                 )
             )
+            faers_termination_check = connection.scalar(
+                sa.text(
+                    "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c "
+                    "JOIN pg_class t ON t.oid=c.conrelid "
+                    "JOIN pg_namespace n ON n.oid=t.relnamespace "
+                    "WHERE n.nspname='medevidence' "
+                    "AND t.relname='m1b_snapshot_artifacts' "
+                    "AND c.conname='ck_member_termination'"
+                )
+            )
     finally:
         engine.dispose()
 
-    assert table_count == 28
-    assert constraint_counts == {"c": 121, "f": 53, "p": 28, "u": 62}
+    assert table_count == 30
+    assert constraint_counts == {"c": 133, "f": 56, "p": 30, "u": 63}
     assert secondary_indexes == 12
-    assert len(fk_rows) == 53
+    assert len(fk_rows) == 56
     assert all(row["confupdtype"] == "r" and row["confdeltype"] == "r" for row in fk_rows)
     assert {row["conname"] for row in fk_rows if row["condeferrable"] or row["condeferred"]} == {
         "fk_research_run_report"
     }
-    assert version == "m1bdm002001"
+    assert version == "m1bfaers002001"
     assert version_schema == "public"
     assert forbidden_objects == 0
     assert raw_byte_columns == 0
     assert longest_identifier is not None and longest_identifier <= 63
+    assert faers_termination_check is not None
+    assert "read_timeout" in faers_termination_check

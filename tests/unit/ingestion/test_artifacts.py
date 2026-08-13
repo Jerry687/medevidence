@@ -2,26 +2,50 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import cast
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
 from medevidence.connectors.dailymed.parsing import parse_spl_document
-from medevidence.domain import CoverageStatus, ExecutionStatus, ResultStatus
+from medevidence.connectors.faers import (
+    FaersConnector,
+    FaersConnectorResult,
+    FaersFailureKind,
+)
+from medevidence.domain import (
+    CoverageStatus,
+    ExecutionBounds,
+    ExecutionStatus,
+    FaersAggregateBucketV1,
+    FaersAggregateQueryV1,
+    FaersAggregateRequestV1,
+    FaersExecutionBoundsV1,
+    FaersIdentityStrategy,
+    FaersInclusiveDateRangeV1,
+    ResultStatus,
+    SourceOutcome,
+    SourceType,
+)
+from medevidence.domain.identifiers import m1a_canonical_json_bytes
 from medevidence.ingestion import artifacts as artifacts_module
 from medevidence.ingestion.artifacts import (
     DailyMedManifestMember,
     DailyMedSnapshotManifest,
+    FaersManifestMember,
+    FaersSnapshotManifest,
     ManifestFile,
     SnapshotManifest,
     capture_acquisition,
     capture_dailymed_snapshot,
+    capture_faers_snapshot,
     manifest_file_from_link,
     replay_dailymed_snapshot,
+    replay_faers_snapshot,
     replay_manifest,
     response_observation,
     write_immutable_manifest,
@@ -44,6 +68,129 @@ VALID_SEARCH_BODY = (
     b"<eSearchResult><Count>1</Count><RetMax>1</RetMax><RetStart>0</RetStart>"
     b"<IdList><Id>1</Id></IdList></eSearchResult>"
 )
+
+
+class ReadTimeoutStream(httpx.SyncByteStream):
+    def __init__(self, prefix: bytes) -> None:
+        self.prefix = prefix
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        yield self.prefix
+        raise httpx.ReadTimeout("synthetic streamed read timeout")
+
+
+def faers_query() -> FaersAggregateQueryV1:
+    return FaersAggregateQueryV1.create(
+        FaersAggregateRequestV1(
+            drug_concept_id="drug:synthetic",
+            identity_strategy=FaersIdentityStrategy.HARMONIZED_SUBSTANCE,
+            identity_exact_value="SYNTHETIC",
+            pt_values=("DIARRHOEA", "NAUSEA", "VOMITING"),
+            inclusive_date_range=FaersInclusiveDateRangeV1(
+                start_date=date(2025, 1, 1), end_date=date(2025, 12, 31)
+            ),
+            statistical_unit="provider_count_occurrence",
+            execution_bounds=FaersExecutionBoundsV1(
+                max_date_difference_days=365,
+                max_inclusive_calendar_dates=366,
+            ),
+        )
+    )
+
+
+def faers_buckets() -> tuple[FaersAggregateBucketV1, ...]:
+    query = faers_query()
+    return tuple(
+        FaersAggregateBucketV1(
+            query_id=query.query_id,
+            bucket_ordinal=ordinal,
+            reaction_pt=pt,
+            report_count=count,
+            identity_stratum=query.identity_stratum,
+        )
+        for ordinal, (pt, count) in enumerate((("NAUSEA", 8), ("VOMITING", 4)))
+    )
+
+
+def faers_outcome() -> SourceOutcome:
+    return SourceOutcome(
+        source=SourceType.FAERS,
+        query_id=faers_query().query_id,
+        execution_status=ExecutionStatus.SUCCEEDED,
+        coverage_status=CoverageStatus.COMPLETE,
+        result_status=ResultStatus.MATCHES,
+        configured_bounds=ExecutionBounds(
+            max_query_characters=512,
+            max_pages=5,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            max_total_seconds=30,
+        ),
+        valid_result_count=2,
+        pages_completed=1,
+        truncated=False,
+    )
+
+
+def faers_observation(
+    body: bytes,
+    *,
+    second: int,
+    status: int = 200,
+    complete: bool = True,
+    termination_reason: artifacts_module.TerminationReason = "complete_response",
+) -> artifacts_module.RawResponseObservation:
+    return response_observation(
+        body=body,
+        observed_at_utc=datetime(2026, 8, 12, 0, 0, second, tzinfo=UTC),
+        headers=(("content-type", "application/json"),),
+        http_status=status,
+        body_complete=complete,
+        termination_reason=termination_reason,
+    )
+
+
+def faers_manifest_values(
+    members: tuple[FaersManifestMember, ...],
+    *,
+    attempts_used: int,
+) -> dict[str, object]:
+    return {
+        "run_id": "run:00000000-0000-4000-8000-000000000002",
+        "acquisition_id": "acquisition:faers-attempt-lineage",
+        "acquisition_intent_id": f"acquisition-intent:sha256:{'5' * 64}",
+        "acquisition_ordinal": 0,
+        "query": faers_query(),
+        "snapshot_id": "snapshot:faers-attempt-lineage",
+        "started_at_utc": datetime(2026, 8, 12, tzinfo=UTC),
+        "completed_at_utc": datetime(2026, 8, 12, 0, 0, 3, tzinfo=UTC),
+        "source_outcome": faers_outcome(),
+        "retrieved_at_utc": datetime(2026, 8, 12, 0, 0, 3, tzinfo=UTC),
+        "provider_as_of_utc": None,
+        "attempts_used": attempts_used,
+        "buckets": faers_buckets(),
+        "members": members,
+        "code_revision": "a" * 40,
+    }
+
+
+def connector_observations(
+    result: FaersConnectorResult,
+) -> tuple[artifacts_module.RawResponseObservation, ...]:
+    return tuple(
+        response_observation(
+            body=raw.body,
+            observed_at_utc=raw.observed_at_utc,
+            headers=raw.headers,
+            http_status=raw.status_code,
+            body_complete=raw.body_complete,
+            termination_reason=cast(
+                artifacts_module.TerminationReason,
+                raw.termination_reason,
+            ),
+        )
+        for raw in result.raw_responses
+    )
 
 
 def artifact_link() -> ArtifactLink:
@@ -1107,3 +1254,537 @@ def test_manifest_rejects_unknown_fields_and_noncontiguous_files() -> None:
     )
     with pytest.raises(ValidationError, match="contiguous"):
         manifest(files=(file_entry(), second))
+
+
+def test_faers_snapshot_capture_replay_and_exact_raw_bytes(tmp_path: Path) -> None:
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    body = b'{"results":[{"term":"NAUSEA","count":8}]}'
+    observation = response_observation(
+        body=body,
+        observed_at_utc=datetime(2026, 8, 12, tzinfo=UTC),
+        headers=(("content-type", "application/json"),),
+        http_status=200,
+        body_complete=True,
+        termination_reason="complete_response",
+    )
+    with snapshots.writer():
+        captured = capture_faers_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            acquisition_id="acquisition:faers-synthetic",
+            acquisition_intent_id=f"acquisition-intent:sha256:{'2' * 64}",
+            acquisition_ordinal=0,
+            query=faers_query(),
+            snapshot_id="snapshot:faers-synthetic",
+            started_at_utc=datetime(2026, 8, 12, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+            source_outcome=faers_outcome(),
+            retrieved_at_utc=datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+            provider_as_of_utc=None,
+            attempts_used=1,
+            buckets=faers_buckets(),
+            observations=(observation,),
+            code_revision="a" * 40,
+        )
+    assert captured.member_paths[0].read_bytes() == body
+    assert captured.manifest_path.read_bytes() == captured.manifest.canonical_bytes()
+    replayed = replay_faers_snapshot(
+        captured.manifest_path.read_bytes(),
+        snapshots,
+        expected_manifest_id=captured.manifest.manifest_id,
+        expected_query=faers_query(),
+        expected_members=captured.manifest.members,
+    )
+    assert replayed == captured.manifest
+
+
+def test_faers_replay_rejects_query_or_raw_byte_drift(tmp_path: Path) -> None:
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    observation = response_observation(
+        body=b'{"results":[]}',
+        observed_at_utc=datetime(2026, 8, 12, tzinfo=UTC),
+        headers=(("content-type", "application/json"),),
+        http_status=200,
+        body_complete=True,
+        termination_reason="complete_response",
+    )
+    no_match = SourceOutcome(
+        **{
+            **faers_outcome().model_dump(mode="python"),
+            "result_status": ResultStatus.NO_MATCH,
+            "valid_result_count": 0,
+        }
+    )
+    with snapshots.writer():
+        captured = capture_faers_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            acquisition_id="acquisition:faers-empty",
+            acquisition_intent_id=f"acquisition-intent:sha256:{'3' * 64}",
+            acquisition_ordinal=0,
+            query=faers_query(),
+            snapshot_id="snapshot:faers-empty",
+            started_at_utc=datetime(2026, 8, 12, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+            source_outcome=no_match,
+            retrieved_at_utc=datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+            provider_as_of_utc=None,
+            attempts_used=1,
+            buckets=(),
+            observations=(observation,),
+            code_revision="a" * 40,
+        )
+    foreign_query = FaersAggregateQueryV1.create(
+        FaersAggregateRequestV1(
+            drug_concept_id="drug:foreign",
+            identity_strategy=FaersIdentityStrategy.HARMONIZED_SUBSTANCE,
+            identity_exact_value="FOREIGN",
+            pt_values=("DIARRHOEA", "NAUSEA", "VOMITING"),
+            inclusive_date_range=FaersInclusiveDateRangeV1(
+                start_date=date(2025, 1, 1), end_date=date(2025, 12, 31)
+            ),
+            statistical_unit="provider_count_occurrence",
+            execution_bounds=FaersExecutionBoundsV1(
+                max_date_difference_days=365,
+                max_inclusive_calendar_dates=366,
+            ),
+        )
+    )
+    with pytest.raises(SnapshotIntegrityError, match="query differs"):
+        replay_faers_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_query=foreign_query,
+            expected_members=captured.manifest.members,
+        )
+    captured.member_paths[0].write_bytes(b"drift")
+    with pytest.raises(SnapshotIntegrityError):
+        replay_faers_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_query=faers_query(),
+            expected_members=captured.manifest.members,
+        )
+
+
+def test_faers_manifest_rejects_missing_response_and_foreign_bucket() -> None:
+    query = faers_query()
+    values: dict[str, object] = {
+        "run_id": "run:00000000-0000-4000-8000-000000000002",
+        "acquisition_id": "acquisition:faers-synthetic",
+        "acquisition_intent_id": f"acquisition-intent:sha256:{'2' * 64}",
+        "acquisition_ordinal": 0,
+        "query": query,
+        "snapshot_id": "snapshot:faers-synthetic",
+        "started_at_utc": datetime(2026, 8, 12, tzinfo=UTC),
+        "completed_at_utc": datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+        "source_outcome": faers_outcome(),
+        "retrieved_at_utc": datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+        "provider_as_of_utc": None,
+        "attempts_used": 1,
+        "buckets": faers_buckets(),
+        "members": (),
+        "code_revision": "a" * 40,
+    }
+    with pytest.raises(ValidationError, match="retained response"):
+        FaersSnapshotManifest(**values)
+    foreign = faers_buckets()[0].model_copy(update={"query_id": "query:foreign"})
+    with pytest.raises(ValidationError):
+        FaersSnapshotManifest(**{**values, "buckets": (foreign, faers_buckets()[1])})
+
+
+def test_faers_capture_rejects_identical_retry_bodies_before_writes(tmp_path: Path) -> None:
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    observations = tuple(
+        response_observation(
+            body=b'{"results":[{"term":"NAUSEA","count":8}]}',
+            observed_at_utc=datetime(2026, 8, 12, 0, 0, ordinal, tzinfo=UTC),
+            headers=(("content-type", "application/json"),),
+            http_status=503 if ordinal == 0 else 200,
+            body_complete=ordinal == 1,
+            termination_reason="stream_error" if ordinal == 0 else "complete_response",
+        )
+        for ordinal in range(2)
+    )
+
+    with (
+        snapshots.writer(),
+        pytest.raises(
+            SnapshotIntegrityError,
+            match=r"duplicate FAERS artifact_id .*ordinal=0 link_id=.*ordinal=1 link_id=",
+        ),
+    ):
+        capture_faers_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            acquisition_id="acquisition:faers-duplicate-retry",
+            acquisition_intent_id=f"acquisition-intent:sha256:{'4' * 64}",
+            acquisition_ordinal=0,
+            query=faers_query(),
+            snapshot_id="snapshot:faers-duplicate-retry",
+            started_at_utc=datetime(2026, 8, 12, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 0, 0, 2, tzinfo=UTC),
+            source_outcome=faers_outcome(),
+            retrieved_at_utc=datetime(2026, 8, 12, 0, 0, 2, tzinfo=UTC),
+            provider_as_of_utc=None,
+            attempts_used=2,
+            buckets=faers_buckets(),
+            observations=observations,
+            code_revision="a" * 40,
+        )
+
+    assert _committed_files(snapshots) == ()
+
+
+def test_faers_manifest_and_replay_reject_duplicate_artifact_members(tmp_path: Path) -> None:
+    observations = tuple(
+        response_observation(
+            body=b'{"results":[]}',
+            observed_at_utc=datetime(2026, 8, 12, 0, 0, ordinal, tzinfo=UTC),
+            headers=(("content-type", "application/json"),),
+            http_status=200,
+            body_complete=True,
+            termination_reason="complete_response",
+        )
+        for ordinal in range(2)
+    )
+    members = tuple(
+        artifacts_module._faers_member(ordinal, observation)
+        for ordinal, observation in enumerate(observations)
+    )
+    values = {
+        "run_id": "run:00000000-0000-4000-8000-000000000002",
+        "acquisition_id": "acquisition:faers-duplicate-members",
+        "acquisition_intent_id": f"acquisition-intent:sha256:{'5' * 64}",
+        "acquisition_ordinal": 0,
+        "query": faers_query(),
+        "snapshot_id": "snapshot:faers-duplicate-members",
+        "started_at_utc": datetime(2026, 8, 12, tzinfo=UTC),
+        "completed_at_utc": datetime(2026, 8, 12, 0, 0, 2, tzinfo=UTC),
+        "source_outcome": faers_outcome(),
+        "retrieved_at_utc": datetime(2026, 8, 12, 0, 0, 2, tzinfo=UTC),
+        "provider_as_of_utc": None,
+        "attempts_used": 2,
+        "buckets": faers_buckets(),
+        "members": members,
+        "code_revision": "a" * 40,
+    }
+    with pytest.raises(ValidationError, match="duplicate FAERS artifact_id"):
+        FaersSnapshotManifest(**values)
+
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    valid_member = cast(FaersManifestMember, members[0].model_copy(update={"ordinal": 0}))
+    valid_manifest = FaersSnapshotManifest(
+        **{**values, "attempts_used": 1, "members": (valid_member,)}
+    )
+    duplicate_manifest_payload = valid_manifest.model_dump(mode="python", exclude_none=True)
+    duplicate_manifest_payload["attempts_used"] = 2
+    duplicate_manifest_payload["members"] = [
+        member.model_dump(mode="python", exclude_none=True) for member in members
+    ]
+    with pytest.raises(ValidationError, match="duplicate FAERS artifact_id"):
+        replay_faers_snapshot(
+            m1a_canonical_json_bytes(duplicate_manifest_payload),
+            snapshots,
+            expected_manifest_id=valid_manifest.manifest_id,
+            expected_query=faers_query(),
+            expected_members=(valid_member,),
+        )
+    with pytest.raises(
+        SnapshotIntegrityError,
+        match=r"duplicate FAERS artifact_id .*ordinal=0 link_id=.*ordinal=1 link_id=",
+    ):
+        replay_faers_snapshot(
+            valid_manifest.canonical_bytes(),
+            snapshots,
+            expected_manifest_id=valid_manifest.manifest_id,
+            expected_query=faers_query(),
+            expected_members=members,
+        )
+
+
+def test_faers_capture_rejects_three_responses_before_writes(tmp_path: Path) -> None:
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    observations = tuple(
+        faers_observation(
+            f'{{"attempt":{ordinal}}}'.encode(),
+            second=ordinal,
+            status=503 if ordinal < 2 else 200,
+        )
+        for ordinal in range(1, 4)
+    )
+    with snapshots.writer(), pytest.raises(ValueError, match="at most two"):
+        capture_faers_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            acquisition_id="acquisition:faers-three-responses",
+            acquisition_intent_id=f"acquisition-intent:sha256:{'6' * 64}",
+            acquisition_ordinal=0,
+            query=faers_query(),
+            snapshot_id="snapshot:faers-three-responses",
+            started_at_utc=datetime(2026, 8, 12, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 0, 0, 4, tzinfo=UTC),
+            source_outcome=faers_outcome(),
+            retrieved_at_utc=datetime(2026, 8, 12, 0, 0, 4, tzinfo=UTC),
+            provider_as_of_utc=None,
+            attempts_used=2,
+            buckets=faers_buckets(),
+            observations=observations,
+            code_revision="a" * 40,
+        )
+    assert _committed_files(snapshots) == ()
+
+
+def test_faers_manifest_attempt_response_lineage_matrix() -> None:
+    success = artifacts_module._faers_member(0, faers_observation(b'{"ok":1}', second=1))
+    retry = artifacts_module._faers_member(
+        0,
+        faers_observation(b'{"retry":1}', second=1, status=503),
+    )
+    retry_success = artifacts_module._faers_member(
+        1,
+        faers_observation(b'{"ok":2}', second=2),
+    )
+
+    one_for_one = FaersSnapshotManifest(**faers_manifest_values((success,), attempts_used=1))
+    one_for_two = FaersSnapshotManifest(**faers_manifest_values((success,), attempts_used=2))
+    two_for_two = FaersSnapshotManifest(
+        **faers_manifest_values((retry, retry_success), attempts_used=2)
+    )
+    assert (len(one_for_one.members), one_for_one.attempts_used) == (1, 1)
+    assert (len(one_for_two.members), one_for_two.attempts_used) == (1, 2)
+    assert (len(two_for_two.members), two_for_two.attempts_used) == (2, 2)
+
+    with pytest.raises(ValidationError, match="cannot exceed attempts_used"):
+        FaersSnapshotManifest(**faers_manifest_values((retry, retry_success), attempts_used=1))
+    terminal_first = artifacts_module._faers_member(
+        0,
+        faers_observation(b'{"ok":0}', second=1),
+    )
+    with pytest.raises(ValidationError, match="terminal response cannot precede"):
+        FaersSnapshotManifest(
+            **faers_manifest_values((terminal_first, retry_success), attempts_used=2)
+        )
+
+
+def test_faers_manifest_rejects_link_and_observation_order_drift() -> None:
+    first = artifacts_module._faers_member(
+        0,
+        faers_observation(b'{"retry":1}', second=1, status=503),
+    )
+    second = artifacts_module._faers_member(1, faers_observation(b'{"ok":2}', second=2))
+    with pytest.raises(ValidationError, match="link must bind"):
+        FaersSnapshotManifest(
+            **faers_manifest_values(
+                (
+                    first.model_copy(update={"link_id": f"artifact-link:sha256:{'f' * 64}"}),
+                    second,
+                ),
+                attempts_used=2,
+            )
+        )
+    late_first = artifacts_module._faers_member(
+        0,
+        faers_observation(b'{"retry":3}', second=2, status=503),
+    )
+    early_second = artifacts_module._faers_member(
+        1,
+        faers_observation(b'{"ok":4}', second=1),
+    )
+    with pytest.raises(ValidationError, match="follow response order"):
+        FaersSnapshotManifest(**faers_manifest_values((late_first, early_second), attempts_used=2))
+
+
+@pytest.mark.parametrize("status", (408, 429, 500, 501, 599))
+def test_faers_manifest_admits_exact_complete_retryable_statuses(status: int) -> None:
+    retry = artifacts_module._faers_member(
+        0, faers_observation(b'{"retry":1}', second=1, status=status)
+    )
+    success = artifacts_module._faers_member(1, faers_observation(b'{"ok":2}', second=2))
+    manifest = FaersSnapshotManifest(**faers_manifest_values((retry, success), attempts_used=2))
+    assert manifest.members[0].http_status == status
+
+
+def test_faers_manifest_rejects_nonretryable_incomplete_or_permanent_continuation() -> None:
+    success = artifacts_module._faers_member(1, faers_observation(b'{"ok":2}', second=2))
+    read_timeout = artifacts_module._faers_member(
+        0,
+        faers_observation(
+            b'{"partial":',
+            second=1,
+            complete=False,
+            termination_reason="read_timeout",
+        ),
+    )
+    assert (
+        FaersSnapshotManifest(**faers_manifest_values((read_timeout, success), attempts_used=2))
+        .members[0]
+        .termination_reason
+        == "read_timeout"
+    )
+
+    invalid_first_members = (
+        artifacts_module._faers_member(
+            0,
+            faers_observation(
+                b'{"stream":',
+                second=1,
+                complete=False,
+                termination_reason="stream_error",
+            ),
+        ),
+        artifacts_module._faers_member(0, faers_observation(b'{"bad":1}', second=1, status=400)),
+    )
+    for first in invalid_first_members:
+        with pytest.raises(ValidationError, match="terminal response cannot precede"):
+            FaersSnapshotManifest(**faers_manifest_values((first, success), attempts_used=2))
+
+
+def test_connector_stream_timeout_then_success_captures_and_replays(tmp_path: Path) -> None:
+    requests = 0
+    body = Path("tests/fixtures/faers/count-single-bucket.json").read_bytes()
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return httpx.Response(200, stream=ReadTimeoutStream(b'{"partial":'))
+        return httpx.Response(200, content=body, headers={"content-type": "application/json"})
+
+    fixed = datetime(2026, 1, 1, tzinfo=UTC)
+    with FaersConnector(
+        httpx.MockTransport(handler),
+        utc_now=lambda: fixed,
+        sleep=lambda _: None,
+        jitter=lambda: 0.0,
+    ) as connector:
+        result = connector.aggregate(faers_query())
+    assert result.failure is None and result.value is not None
+    assert tuple(raw.termination_reason for raw in result.raw_responses) == (
+        "read_timeout",
+        "complete_response",
+    )
+    buckets = tuple(
+        FaersAggregateBucketV1(
+            query_id=faers_query().query_id,
+            bucket_ordinal=ordinal,
+            reaction_pt=bucket.reaction_pt,
+            report_count=bucket.report_count,
+            identity_stratum=faers_query().identity_stratum,
+        )
+        for ordinal, bucket in enumerate(result.value.buckets)
+    )
+    outcome = SourceOutcome(
+        **{
+            **faers_outcome().model_dump(mode="python"),
+            "valid_result_count": len(buckets),
+        }
+    )
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    with snapshots.writer():
+        captured = capture_faers_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            acquisition_id="acquisition:faers-timeout-success",
+            acquisition_intent_id=f"acquisition-intent:sha256:{'7' * 64}",
+            acquisition_ordinal=0,
+            query=faers_query(),
+            snapshot_id="snapshot:faers-timeout-success",
+            started_at_utc=fixed,
+            completed_at_utc=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+            source_outcome=outcome,
+            retrieved_at_utc=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+            provider_as_of_utc=result.value.provider_as_of_utc,
+            attempts_used=result.request_count,
+            buckets=buckets,
+            observations=connector_observations(result),
+            code_revision="a" * 40,
+        )
+    assert (
+        replay_faers_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_query=faers_query(),
+            expected_members=captured.manifest.members,
+        )
+        == captured.manifest
+    )
+
+
+def test_connector_stream_timeout_exhaustion_captures_and_replays(tmp_path: Path) -> None:
+    requests = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            200,
+            stream=ReadTimeoutStream(f'{{"partial":{requests}'.encode()),
+        )
+
+    fixed = datetime(2026, 1, 1, tzinfo=UTC)
+    with FaersConnector(
+        httpx.MockTransport(handler),
+        utc_now=lambda: fixed,
+        sleep=lambda _: None,
+        jitter=lambda: 0.0,
+    ) as connector:
+        result = connector.aggregate(faers_query())
+    assert result.failure is not None
+    assert result.failure.kind is FaersFailureKind.RETRY_EXHAUSTED
+    assert tuple(raw.termination_reason for raw in result.raw_responses) == (
+        "read_timeout",
+        "read_timeout",
+    )
+    outcome = SourceOutcome(
+        source=SourceType.FAERS,
+        query_id=faers_query().query_id,
+        execution_status=ExecutionStatus.FAILED,
+        coverage_status=CoverageStatus.PARTIAL,
+        result_status=ResultStatus.INDETERMINATE,
+        configured_bounds=ExecutionBounds(
+            max_query_characters=512,
+            max_pages=5,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            max_total_seconds=30,
+        ),
+        valid_result_count=0,
+        pages_completed=0,
+        truncated=True,
+        warning_codes=("incomplete_coverage",),
+        failure_id="failure:synthetic-read-timeout",
+    )
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    with snapshots.writer():
+        captured = capture_faers_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            acquisition_id="acquisition:faers-timeout-exhausted",
+            acquisition_intent_id=f"acquisition-intent:sha256:{'8' * 64}",
+            acquisition_ordinal=0,
+            query=faers_query(),
+            snapshot_id="snapshot:faers-timeout-exhausted",
+            started_at_utc=fixed,
+            completed_at_utc=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+            source_outcome=outcome,
+            retrieved_at_utc=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+            provider_as_of_utc=None,
+            attempts_used=result.request_count,
+            buckets=(),
+            observations=connector_observations(result),
+            code_revision="a" * 40,
+        )
+    assert (
+        replay_faers_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_query=faers_query(),
+            expected_members=captured.manifest.members,
+        )
+        == captured.manifest
+    )

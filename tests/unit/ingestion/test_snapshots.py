@@ -58,6 +58,28 @@ def test_existing_corruption_is_never_overwritten(tmp_path: Path) -> None:
     assert written.path.read_bytes() == b"damage"
 
 
+def test_faers_exact_raw_bytes_are_immutable_and_counted(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    body = b'{"results":[]}'
+    with snapshots.writer():
+        first = snapshots.store_faers_response(body)
+        second = snapshots.store_faers_response(body)
+    assert first.path.relative_to(snapshots.root).as_posix().startswith("faers/raw/sha256/")
+    assert first.path.read_bytes() == body
+    assert not first.reused_existing
+    assert second.reused_existing
+    assert snapshots._ledger().raw_bytes == len(body)
+
+
+def test_faers_verification_rejects_corruption(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    with snapshots.writer():
+        published = snapshots.store_faers_response(b"synthetic")
+    published.path.write_bytes(b"corrupt")
+    with pytest.raises(SnapshotIntegrityError):
+        snapshots.verify_faers(published.artifact_id)
+
+
 def test_capacity_checks_are_injected_and_exact(tmp_path: Path) -> None:
     root = tmp_path / "snapshots"
     with pytest.raises(SnapshotCapacityError, match="13 GiB"):

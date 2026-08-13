@@ -27,7 +27,15 @@ from medevidence.domain.identifiers import (
     m1a_canonical_json_bytes,
     parse_m1a_json_bytes,
 )
-from medevidence.domain.sources import CoverageStatus, ExecutionStatus, ResultStatus
+from medevidence.domain.scope import ExecutionBounds, SourceType
+from medevidence.domain.sources import (
+    CoverageStatus,
+    ExecutionStatus,
+    FaersAggregateBucketV1,
+    FaersAggregateQueryV1,
+    ResultStatus,
+    SourceOutcome,
+)
 
 from .contracts import (
     AcquisitionIntent,
@@ -52,6 +60,7 @@ type TerminationReason = Literal[
     "complete_response",
     "payload_limit",
     "stream_error",
+    "read_timeout",
     "deadline_exceeded",
 ]
 
@@ -266,6 +275,168 @@ class CapturedDailyMedSnapshot:
     """Verified immutable files for one DailyMed acquisition."""
 
     manifest: DailyMedSnapshotManifest
+    manifest_path: Path
+    member_paths: tuple[Path, ...]
+
+
+class FaersManifestMember(DurableModel):
+    """One exact retained aggregate response in a FAERS snapshot manifest."""
+
+    ordinal: int = Field(ge=0, le=1)
+    link_id: ArtifactLinkId
+    artifact_id: Sha256Digest
+    content_hash: Sha256Digest
+    artifact_kind: Literal["faers_http_response"] = "faers_http_response"
+    relative_path: Annotated[
+        str,
+        StringConstraints(pattern=r"^faers/raw/sha256/[0-9a-f]{2}/[0-9a-f]{64}\.bin$"),
+    ]
+    byte_size: int = Field(ge=0, le=RAW_RESPONSE_BYTE_CAPACITY)
+    media_type: MediaType
+    http_status: int = Field(ge=100, le=599)
+    observed_at_utc: UtcDateTime
+    body_complete: bool
+    termination_reason: TerminationReason
+
+    @model_validator(mode="after")
+    def validate_member(self) -> Self:
+        if self.artifact_id != self.content_hash:
+            raise ValueError("FAERS artifact and content identities must match")
+        digest = self.artifact_id.removeprefix("sha256:")
+        if self.relative_path != f"faers/raw/sha256/{digest[:2]}/{digest}.bin":
+            raise ValueError("FAERS response path must match its exact content identity")
+        if self.body_complete != (self.termination_reason == "complete_response"):
+            raise ValueError("FAERS member completion must match termination reason")
+        return self
+
+
+class FaersSnapshotManifest(DurableModel):
+    """Canonical immutable manifest for one bounded FAERS aggregate acquisition."""
+
+    manifest_schema_version: Literal["m1b.faers.snapshot-manifest.v1"] = (
+        "m1b.faers.snapshot-manifest.v1"
+    )
+    source_type: Literal["faers"] = "faers"
+    run_id: RunId
+    acquisition_id: AcquisitionId
+    acquisition_intent_id: AcquisitionIntentId
+    acquisition_ordinal: int = Field(ge=0, le=100)
+    query: FaersAggregateQueryV1
+    snapshot_id: SnapshotId
+    started_at_utc: UtcDateTime
+    completed_at_utc: UtcDateTime
+    source_outcome: SourceOutcome
+    retrieved_at_utc: UtcDateTime
+    provider_as_of_utc: UtcDateTime | None = None
+    attempts_used: int = Field(ge=1, le=2)
+    buckets: tuple[FaersAggregateBucketV1, ...] = Field(max_length=100)
+    members: tuple[FaersManifestMember, ...] = Field(max_length=2)
+    connector_name: Literal["medevidence.connectors.faers"] = "medevidence.connectors.faers"
+    connector_version: Literal["m1b-faers-002"] = "m1b-faers-002"
+    source_record_schema_version: Literal["m1b.faers.aggregate.v1"] = "m1b.faers.aggregate.v1"
+    code_revision: CodeRevision
+
+    @classmethod
+    def from_json_bytes(cls, raw: bytes) -> Self:
+        """Parse strict JSON and require exact complete canonical bytes."""
+
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise ValueError("FAERS manifest exceeds 1,048,576 bytes")
+        parsed = parse_m1a_json_bytes(raw)
+        manifest = cls.model_validate_json(
+            json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+        )
+        if manifest.canonical_bytes() != raw:
+            raise ValueError("FAERS manifest bytes are not canonical JSON")
+        return manifest
+
+    def canonical_bytes(self) -> bytes:
+        """Return exact canonical UTF-8 bytes with one terminal LF."""
+
+        raw = m1a_canonical_json_bytes(self)
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise ValueError("FAERS manifest exceeds 1,048,576 bytes")
+        return raw
+
+    @property
+    def manifest_id(self) -> Sha256Digest:
+        """Identify the exact complete canonical manifest bytes."""
+
+        return f"sha256:{sha256(self.canonical_bytes()).hexdigest()}"
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> Self:
+        if self.completed_at_utc < self.started_at_utc:
+            raise ValueError("FAERS manifest completion precedes start")
+        if self.source_outcome.source is not SourceType.FAERS:
+            raise ValueError("FAERS manifest outcome source must be faers")
+        if self.source_outcome.configured_bounds != ExecutionBounds(
+            max_query_characters=512,
+            max_pages=5,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            max_total_seconds=30,
+        ):
+            raise ValueError("FAERS manifest outcome bounds must equal the named profile")
+        if self.source_outcome.query_id != self.query.query_id:
+            raise ValueError("FAERS manifest outcome must bind the exact query")
+        if len(self.buckets) != self.source_outcome.valid_result_count:
+            raise ValueError("FAERS manifest buckets must equal valid_result_count")
+        expected_order = tuple(
+            sorted(self.buckets, key=lambda item: (-item.report_count, item.reaction_pt))
+        )
+        if self.buckets != expected_order:
+            raise ValueError("FAERS manifest buckets must use canonical ordering")
+        if tuple(bucket.bucket_ordinal for bucket in self.buckets) != tuple(
+            range(len(self.buckets))
+        ):
+            raise ValueError("FAERS manifest bucket ordinals must be contiguous")
+        if len({bucket.reaction_pt for bucket in self.buckets}) != len(self.buckets):
+            raise ValueError("FAERS manifest bucket reaction PT values must be unique")
+        for bucket in self.buckets:
+            bucket.validate_against(self.query)
+        if tuple(member.ordinal for member in self.members) != tuple(range(len(self.members))):
+            raise ValueError("FAERS manifest members must be contiguous from zero")
+        if len(self.members) > self.attempts_used:
+            raise ValueError("FAERS response members cannot exceed attempts_used")
+        if len({member.link_id for member in self.members}) != len(self.members):
+            raise ValueError("FAERS manifest member links must be unique")
+        _validate_unique_faers_member_artifacts(self.members, error_type=ValueError)
+        for member in self.members:
+            if member.link_id != _faers_member_link_id(member):
+                raise ValueError("FAERS member link must bind its exact ordered response evidence")
+            if not self.started_at_utc <= member.observed_at_utc <= self.completed_at_utc:
+                raise ValueError("FAERS member observation must be within acquisition time")
+        if tuple(member.observed_at_utc for member in self.members) != tuple(
+            sorted(member.observed_at_utc for member in self.members)
+        ):
+            raise ValueError("FAERS member observations must follow response order")
+        if any(not _faers_member_permits_retry(member) for member in self.members[:-1]):
+            raise ValueError("FAERS terminal response cannot precede another retained response")
+        if sum(member.byte_size for member in self.members) > RAW_RESPONSE_BYTE_CAPACITY:
+            raise ValueError("FAERS responses exceed the cumulative 5,242,880-byte bound")
+        if self.source_outcome.coverage_status is CoverageStatus.UNAVAILABLE and (
+            self.members or self.buckets
+        ):
+            raise ValueError("unavailable FAERS acquisition retains no response or bucket")
+        if self.source_outcome.coverage_status is CoverageStatus.COMPLETE:
+            if not self.members:
+                raise ValueError("complete FAERS coverage requires a retained response")
+            effective = self.members[-1]
+            if (
+                not effective.body_complete
+                or effective.byte_size == 0
+                or not 200 <= effective.http_status <= 299
+            ):
+                raise ValueError("complete FAERS coverage requires nonempty complete 2xx")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedFaersSnapshot:
+    """Verified immutable files for one FAERS aggregate acquisition."""
+
+    manifest: FaersSnapshotManifest
     manifest_path: Path
     member_paths: tuple[Path, ...]
 
@@ -782,6 +953,167 @@ def replay_dailymed_snapshot(
         ):
             raise SnapshotIntegrityError("DailyMed manifest member metadata differs")
     return manifest
+
+
+def capture_faers_snapshot(
+    store: SnapshotStore,
+    *,
+    run_id: RunId,
+    acquisition_id: AcquisitionId,
+    acquisition_intent_id: AcquisitionIntentId,
+    acquisition_ordinal: int,
+    query: FaersAggregateQueryV1,
+    snapshot_id: SnapshotId,
+    started_at_utc: datetime,
+    completed_at_utc: datetime,
+    source_outcome: SourceOutcome,
+    retrieved_at_utc: datetime,
+    provider_as_of_utc: datetime | None,
+    attempts_used: int,
+    buckets: tuple[FaersAggregateBucketV1, ...],
+    observations: tuple[RawResponseObservation, ...],
+    code_revision: CodeRevision,
+) -> CapturedFaersSnapshot:
+    """Publish exact FAERS responses and their complete canonical manifest."""
+
+    if len(observations) > 2:
+        raise ValueError("FAERS capture accepts at most two response observations")
+    members = tuple(
+        _faers_member(ordinal, observation) for ordinal, observation in enumerate(observations)
+    )
+    _validate_unique_faers_member_artifacts(members, error_type=SnapshotIntegrityError)
+    manifest = FaersSnapshotManifest(
+        run_id=run_id,
+        acquisition_id=acquisition_id,
+        acquisition_intent_id=acquisition_intent_id,
+        acquisition_ordinal=acquisition_ordinal,
+        query=query,
+        snapshot_id=snapshot_id,
+        started_at_utc=started_at_utc,
+        completed_at_utc=completed_at_utc,
+        source_outcome=source_outcome,
+        retrieved_at_utc=retrieved_at_utc,
+        provider_as_of_utc=provider_as_of_utc,
+        attempts_used=attempts_used,
+        buckets=buckets,
+        members=members,
+        code_revision=code_revision,
+    )
+    paths: list[Path] = []
+    for observation, member in zip(observations, members, strict=True):
+        published = store.store_faers_response(observation.body)
+        if published.artifact_id != member.artifact_id or published.byte_size != member.byte_size:
+            raise SnapshotIntegrityError("published FAERS body differs from preflight identity")
+        paths.append(published.path)
+    digest = manifest.manifest_id.removeprefix("sha256:")
+    manifest_path = store.publish_bytes(
+        f"faers/manifests/sha256/{digest[:2]}/{digest}.json",
+        manifest.canonical_bytes(),
+        artifact_class="manifest",
+    ).path
+    return CapturedFaersSnapshot(manifest, manifest_path, tuple(paths))
+
+
+def replay_faers_snapshot(
+    raw: bytes,
+    store: SnapshotStore,
+    *,
+    expected_manifest_id: Sha256Digest,
+    expected_query: FaersAggregateQueryV1,
+    expected_members: tuple[FaersManifestMember, ...],
+) -> FaersSnapshotManifest:
+    """Revalidate FAERS manifest identity, query ownership, and exact raw bytes."""
+
+    if len(expected_members) > 2:
+        raise SnapshotIntegrityError("FAERS replay membership exceeds the two-attempt profile")
+    _validate_unique_faers_member_artifacts(
+        expected_members,
+        error_type=SnapshotIntegrityError,
+    )
+    manifest = FaersSnapshotManifest.from_json_bytes(raw)
+    if len(expected_members) > manifest.attempts_used:
+        raise SnapshotIntegrityError("FAERS replay members exceed manifest attempts_used")
+    if manifest.manifest_id != expected_manifest_id:
+        raise SnapshotIntegrityError("FAERS manifest identity differs from expected")
+    if manifest.query != expected_query:
+        raise SnapshotIntegrityError("FAERS manifest query differs from expected")
+    if manifest.members != expected_members:
+        raise SnapshotIntegrityError("FAERS manifest members differ from expected")
+    for member in manifest.members:
+        path = store.verify_faers(member.artifact_id)
+        if (
+            path.relative_to(store.root).as_posix() != member.relative_path
+            or path.stat().st_size != member.byte_size
+        ):
+            raise SnapshotIntegrityError("FAERS manifest member metadata differs")
+    return manifest
+
+
+def _validate_unique_faers_member_artifacts(
+    members: tuple[FaersManifestMember, ...],
+    *,
+    error_type: type[ValueError] | type[SnapshotIntegrityError],
+) -> None:
+    """Reject one retained body represented as two snapshot memberships."""
+
+    by_artifact: dict[str, FaersManifestMember] = {}
+    by_content: dict[str, FaersManifestMember] = {}
+    for member in members:
+        for identity_name, identity, seen in (
+            ("artifact_id", member.artifact_id, by_artifact),
+            ("content_hash", member.content_hash, by_content),
+        ):
+            first = seen.get(identity)
+            if first is not None:
+                raise error_type(
+                    f"duplicate FAERS {identity_name} {identity} across retained attempts "
+                    f"ordinal={first.ordinal} link_id={first.link_id} and "
+                    f"ordinal={member.ordinal} link_id={member.link_id}"
+                )
+            seen[identity] = member
+
+
+def _faers_member(ordinal: int, observation: RawResponseObservation) -> FaersManifestMember:
+    digest = sha256(observation.body).hexdigest()
+    artifact_id = f"sha256:{digest}"
+    member = FaersManifestMember(
+        ordinal=ordinal,
+        link_id=f"artifact-link:sha256:{'0' * 64}",
+        artifact_id=artifact_id,
+        content_hash=artifact_id,
+        relative_path=f"faers/raw/sha256/{digest[:2]}/{digest}.bin",
+        byte_size=len(observation.body),
+        media_type=observation.media_type,
+        http_status=observation.http_status,
+        observed_at_utc=observation.observed_at_utc,
+        body_complete=observation.body_complete,
+        termination_reason=observation.termination_reason,
+    )
+    return member.model_copy(update={"link_id": _faers_member_link_id(member)})
+
+
+def _faers_member_link_id(member: FaersManifestMember) -> ArtifactLinkId:
+    identity_payload = {
+        "ordinal": member.ordinal,
+        "artifact_id": member.artifact_id,
+        "artifact_kind": "faers_http_response",
+        "byte_size": member.byte_size,
+        "media_type": member.media_type,
+        "http_status": member.http_status,
+        "observed_at_utc": member.observed_at_utc.isoformat(timespec="microseconds").replace(
+            "+00:00", "Z"
+        ),
+        "body_complete": member.body_complete,
+        "termination_reason": member.termination_reason,
+    }
+    encoded = json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"artifact-link:sha256:{sha256(encoded).hexdigest()}"
+
+
+def _faers_member_permits_retry(member: FaersManifestMember) -> bool:
+    if not member.body_complete:
+        return member.termination_reason == "read_timeout"
+    return member.http_status in {408, 429} or 500 <= member.http_status <= 599
 
 
 def _dailymed_member(
