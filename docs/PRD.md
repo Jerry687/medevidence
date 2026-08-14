@@ -170,15 +170,17 @@ graph nodes. Connector failure shall produce explicit partial coverage rather
 than an empty-success result.
 
 Under M1B Option E, that generic workflow and partial-coverage rule applies to
-PubMed, DailyMed, and FAERS source execution. CADEC remains visible through
-exactly one M1B source plan entry with `planning_status=skipped_by_policy`,
-`reason_code=source_execution_not_authorized`, and reason `CADEC remains
-visible in the M1B source plan, but source execution is not authorized under
-Option E.` Visibility is distinct from execution: CADEC has no executable
-request, research-request connector invocation, `SourceOutcome`, report
-section, API/OpenAPI execution, tool, or graph node. Its exact external
-loader/parser fails closed at its standalone verification boundary and does
-not create report coverage.
+PubMed, DailyMed, and FAERS source execution. Repository governance records
+CADEC as an explicitly known M1B source with
+`planning_status=skipped_by_policy` and
+`reason_code=source_execution_not_authorized`. This governance visibility is
+distinct from each runtime request plan: `M1BResearchReportV1.source_plan`
+remains equal to that request's `scope.selected_sources`, so DailyMed-only and
+FAERS-only requests retain source-only plans and CADEC is not added to
+`requested_sources`. CADEC has no executable request, research-request
+connector invocation, `SourceOutcome`, report section, API/OpenAPI execution,
+tool, or graph node. Its exact external loader/parser fails closed at its
+standalone verification boundary and does not create report coverage.
 
 ### V1-FR-013 — Citation and safety gates
 
@@ -235,15 +237,16 @@ evidence. Partial matches retain partial coverage. Final reports distinguish
 `no_match` from `indeterminate`, and run aggregation cannot promote partial or
 unavailable coverage to complete.
 
-M1B Option E explicitly distinguishes CADEC plan visibility from source
-execution. Exactly one CADEC plan entry is visible with
-`planning_status=skipped_by_policy`,
-`reason_code=source_execution_not_authorized`, and the frozen human-readable
-reason above. The exact empty `cadec_query_requests` tuple and unchanged
-`M1BSourceSection` preserve no executable request, research-request connector
-invocation, `SourceOutcome`, report section, or API/OpenAPI execution. Any
-later CADEC materialization or search remains an M2 concern subject to
-`ME-000C` and separate authorization.
+M1B Option E explicitly distinguishes repository-level CADEC planning
+visibility from per-request runtime planning. Governance records CADEC as
+`planning_status=skipped_by_policy` with
+`reason_code=source_execution_not_authorized`; runtime
+`M1BResearchReportV1.source_plan` remains scoped to exactly
+`scope.selected_sources`. The exact empty `cadec_query_requests` tuple and
+unchanged `M1BSourceSection` preserve no executable request, research-request
+connector invocation, `SourceOutcome`, report section, or API/OpenAPI
+execution. Any later CADEC materialization or search remains an M2 concern
+subject to `ME-000C` and separate authorization.
 
 ## 6. V1 non-functional requirements
 
@@ -390,10 +393,11 @@ Acceptance:
 - CADEC remains visibly auxiliary and cannot affect product-risk conclusions.
 - DailyMed and FAERS can fail independently and produce partial coverage.
   CADEC loader/parser verification fails closed outside report execution and
-  remains visible through exactly one `skipped_by_policy` plan entry with
-  `reason_code=source_execution_not_authorized`; it produces no executable
-  request, research-request connector invocation, `SourceOutcome`, report
-  section, API/OpenAPI execution, or partial coverage.
+  remains visible at repository-governance level as `skipped_by_policy` with
+  `reason_code=source_execution_not_authorized`; it is not injected into a
+  per-request runtime plan and produces no executable request,
+  research-request connector invocation, `SourceOutcome`, report section,
+  API/OpenAPI execution, or partial coverage.
 
 ### M2 — Retrieval and reranking evaluation
 
@@ -553,13 +557,15 @@ M1B-CADEC-002 then added the offline-only exact external loader and strict
 provider-gold parser. Owner-frozen Option E makes that CADEC-002 loader/parser
 the final executable M1B CADEC surface. The existing exact empty
 `M1BResearchRequestV1.cadec_query_requests` tuple and unchanged
-`M1BSourceSection` union remain closed. Exactly one visible CADEC M1B source
-plan entry has `planning_status=skipped_by_policy`,
-`reason_code=source_execution_not_authorized`, and reason `CADEC remains
-visible in the M1B source plan, but source execution is not authorized under
-Option E.` Visibility does not create an executable request, research-request
-connector invocation, `SourceOutcome`, CADEC report section, or API/OpenAPI
-execution.
+`M1BSourceSection` union remain closed. Repository governance records CADEC as
+an explicitly known M1B source with `planning_status=skipped_by_policy` and
+`reason_code=source_execution_not_authorized`. That governance record is not a
+runtime source-plan entry: `M1BResearchReportV1.source_plan` remains exactly
+the request's `scope.selected_sources`; DailyMed-only and FAERS-only requests
+therefore retain source-only plans, and CADEC is not added to
+`requested_sources`. This visibility creates no executable request,
+research-request connector invocation, `SourceOutcome`, CADEC report section,
+or API/OpenAPI execution.
 
 The exact asset has 1,250 canonical and 1,248 admitted documents. The exact
 sorted exclusions are `DICLOFENAC-SODIUM.7` and `LIPITOR.221`. Five malformed
@@ -630,14 +636,13 @@ feature `03fffef7ad8f68a9ca36c4961a5264b2e0b295ff`, merge
 run `31748194823` with both checks `SUCCESS`, and merged-main run `31748381436`
 with both checks `SUCCESS`.
 
-M1B-CADEC-003 is a documentation-only boundary closeout. Its
-[delivery record](../.delivery/M1B-CADEC-003.md) and
-[review boundary](reviews/M1B-CADEC-003-BOUNDARY-REVIEW-001.md) are
-`ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`. Immutable Review001
-remains `FAIL` at `P0 0 / P1 1 / P2 2`; the closure review after remediation
-batch 1/1 remains `FAIL` at `P0 0 / P1 1 / P2 1`. The Owner-authorized
-additional mechanical correction freezes visible `skipped_by_policy` planning
-without authorizing execution. No fresh-review PASS, terminal audit, commit,
-or completion is claimed. The exact post-terminal targets
+M1B-CADEC-003 is the integrated documentation-only boundary closeout. Feature
+commit `83617405e58bcec657bdaa84aceb8d2460d46fb1` was integrated by merge
+`c226a632753e6fc65e8c84c74ec568d994612b7d` through PR #21. Its fresh
+independent review and terminal evidence audit each passed at
+`P0 0 / P1 0 / P2 0`; immutable Review001 and closure-review failure history
+remains preserved in the
+[review record](reviews/M1B-CADEC-003-BOUNDARY-REVIEW-001.md). The completed
+[delivery record](../.delivery/M1B-CADEC-003.md) establishes
 `M1B-CADEC-003_COMPLETE`, `M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
-`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` are not achieved in this candidate.
+`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` without authorizing M2 work.
