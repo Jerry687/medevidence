@@ -65,14 +65,24 @@ from medevidence.retrieval.core import (  # noqa: E402
 )
 
 from .datasets import EvaluationDataset, relevance_grade_histogram  # noqa: E402
+from .medcpt import MedCPTIndex  # noqa: E402
 from .metrics import aggregate, evaluate_query  # noqa: E402
 
-HARNESS_VERSION = "m2.harness.v1"
+HARNESS_VERSION = "m2.harness.v2"
 NATIVE_THREAD_USER_APIS = frozenset({"blas", "openmp"})
 MODE_DISPLAY_NAMES = {
     "sparse": "BM25",
     "dense": "classical_lsi_dense",
     "hybrid_rrf": "rrf_bm25_lsi",
+    "medcpt": "medcpt_dense",
+    "hybrid_rrf_medcpt": "rrf_bm25_medcpt",
+}
+MODE_COMPONENTS = {
+    "sparse": ("sparse",),
+    "dense": ("dense",),
+    "hybrid_rrf": ("sparse", "dense"),
+    "medcpt": ("medcpt",),
+    "hybrid_rrf_medcpt": ("sparse", "medcpt"),
 }
 
 
@@ -261,6 +271,11 @@ class RunConfig:
     random_state: int = 0
     query_concurrency: int = 1
     blas_threads: int = 1
+    medcpt_dimensions: int = 768
+    medcpt_query_max_length: int = 64
+    medcpt_article_max_length: int = 512
+    medcpt_query_batch_size: int = 1
+    medcpt_document_batch_size: int = 8
 
     def __post_init__(self) -> None:
         if self.candidate_limit < self.final_limit or self.final_limit < 1:
@@ -271,6 +286,14 @@ class RunConfig:
             raise ValueError("this pilot requires serial query execution")
         if self.blas_threads != 1:
             raise ValueError("this pilot requires one BLAS thread")
+        if (
+            self.medcpt_dimensions,
+            self.medcpt_query_max_length,
+            self.medcpt_article_max_length,
+            self.medcpt_query_batch_size,
+            self.medcpt_document_batch_size,
+        ) != (768, 64, 512, 1, 8):
+            raise ValueError("MedCPT dimensions, lengths, and batch sizes are frozen")
 
     def config_id(self) -> str:
         """Deterministic identity of this configuration."""
@@ -313,14 +336,27 @@ class RetrievalHarness:
     attributable to the retrieval method rather than to the setup.
     """
 
-    def __init__(self, dataset: EvaluationDataset, config: RunConfig | None = None) -> None:
+    def __init__(
+        self,
+        dataset: EvaluationDataset,
+        config: RunConfig | None = None,
+        *,
+        medcpt_artifact_manifest: str | Path | None = None,
+        medcpt_cache_root: str | Path | None = None,
+        medcpt_index: MedCPTIndex | None = None,
+    ) -> None:
         if not dataset.judged_queries:
             raise ValueError("evaluation requires at least one judged query")
         self.dataset = dataset
         self.config = config or RunConfig()
         self.doc_ids: list[str] = sorted(dataset.corpus)
         self.documents: list[str] = [dataset.document_text(doc_id) for doc_id in self.doc_ids]
+        self.document_titles: list[str] = [
+            dataset.corpus_titles.get(doc_id, "") for doc_id in self.doc_ids
+        ]
+        self.document_bodies: list[str] = [dataset.corpus[doc_id] for doc_id in self.doc_ids]
         self._build_seconds: dict[str, float] = {}
+        self.medcpt: MedCPTIndex | None = None
         self._native_thread_build_observations: list[dict[str, Any]] = []
         self._native_thread_mode_observations: dict[str, list[dict[str, Any]]] = {}
 
@@ -348,10 +384,32 @@ class RetrievalHarness:
                 random_state=self.config.random_state,
             )
             self._build_seconds["dense"] = time.perf_counter() - started
+
+            if medcpt_index is not None and (
+                medcpt_artifact_manifest is not None or medcpt_cache_root is not None
+            ):
+                raise ValueError("inject either a MedCPT index or artifact paths, not both")
+            if (medcpt_artifact_manifest is None) != (medcpt_cache_root is None):
+                raise ValueError("MedCPT artifact manifest and cache root are required together")
+            started = time.perf_counter()
+            if medcpt_index is not None:
+                self.medcpt = medcpt_index
+            elif medcpt_artifact_manifest is not None and medcpt_cache_root is not None:
+                self.medcpt = MedCPTIndex.from_local_artifacts(
+                    self.doc_ids,
+                    self.document_titles,
+                    self.document_bodies,
+                    manifest_path=medcpt_artifact_manifest,
+                    cache_root=medcpt_cache_root,
+                )
+            if self.medcpt is not None:
+                if self.medcpt.doc_ids != self.doc_ids:
+                    raise ValueError("MedCPT index document ids do not match the frozen corpus")
+                self._build_seconds["medcpt"] = time.perf_counter() - started
         self._native_thread_build_observations = build_observations
 
     def _capture_native_thread_observation(self, context: str, boundary: str) -> dict[str, Any]:
-        from threadpoolctl import threadpool_info  # type: ignore[import-untyped]
+        from threadpoolctl import threadpool_info
 
         pools = _relevant_native_pools(threadpool_info())
         _require_single_thread_pools(pools, context=f"{context}:{boundary}")
@@ -359,7 +417,7 @@ class RetrievalHarness:
 
     @contextmanager
     def _native_thread_context(self, context: str) -> Iterator[list[dict[str, Any]]]:
-        from threadpoolctl import threadpool_limits  # type: ignore[import-untyped]
+        from threadpoolctl import threadpool_limits
 
         with threadpool_limits(limits=self.config.blas_threads):
             staged = [self._capture_native_thread_observation(context, "entry")]
@@ -409,6 +467,19 @@ class RetrievalHarness:
                 fused,
                 {"sparse": dict(sparse), "dense": dict(dense)},
                 {"sparse": component_ranks(sparse), "dense": component_ranks(dense)},
+            )
+        if mode in {"medcpt", "hybrid_rrf_medcpt"}:
+            if self.medcpt is None:
+                raise ValueError("MedCPT mode requires verified local-only artifacts")
+            medcpt = self.medcpt.search(query, limit)
+            if mode == "medcpt":
+                return medcpt, {"medcpt": dict(medcpt)}, {"medcpt": component_ranks(medcpt)}
+            sparse = self.bm25.search(query, limit)
+            fused = reciprocal_rank_fusion([sparse, medcpt], k=self.config.rrf_k, limit=limit)
+            return (
+                fused,
+                {"sparse": dict(sparse), "medcpt": dict(medcpt)},
+                {"sparse": component_ranks(sparse), "medcpt": component_ranks(medcpt)},
             )
         raise ValueError(f"unsupported mode {mode!r}")
 
@@ -460,10 +531,11 @@ class RetrievalHarness:
                 per_query[query_id] = scores
 
         summary = aggregate(per_query, latencies)
-        if mode == "hybrid_rrf":
+        if mode in {"hybrid_rrf", "hybrid_rrf_medcpt"}:
+            dense_component = "dense" if mode == "hybrid_rrf" else "medcpt"
             build_timing: dict[str, float | str] = {
-                "seconds": self._build_seconds["sparse"] + self._build_seconds["dense"],
-                "kind": "derived_sum_of_measured_sparse_and_dense_builds",
+                "seconds": self._build_seconds["sparse"] + self._build_seconds[dense_component],
+                "kind": f"derived_sum_of_measured_sparse_and_{dense_component}_builds",
             }
         else:
             build_timing = {
@@ -501,6 +573,9 @@ class RetrievalHarness:
             "threadpoolctl",
         ):
             environment[f"dependency:{distribution}"] = _distribution_version(distribution)
+        if self.medcpt is not None:
+            environment["dependency:torch"] = _distribution_version("torch")
+            environment["dependency:transformers"] = _distribution_version("transformers")
         return environment
 
     def _validate_result(self, mode: str, result: ModeResult) -> None:
@@ -536,6 +611,12 @@ class RetrievalHarness:
                 raise ValueError(
                     f"query {record.query_id!r} final scores are not the candidate prefix"
                 )
+            expected_components = set(MODE_COMPONENTS[mode])
+            if (
+                set(record.component_ranks) != expected_components
+                or set(record.component_scores) != expected_components
+            ):
+                raise ValueError(f"query {record.query_id!r} component evidence is incomplete")
             for component, ranks in record.component_ranks.items():
                 scores = record.component_scores.get(component)
                 if scores is None or set(scores) != set(ranks):
@@ -547,9 +628,9 @@ class RetrievalHarness:
                         f"query {record.query_id!r} component {component!r} "
                         "ranks are not contiguous"
                     )
-            if mode == "hybrid_rrf":
+            if mode in {"hybrid_rrf", "hybrid_rrf_medcpt"}:
                 component_rankings = []
-                for component in ("sparse", "dense"):
+                for component in MODE_COMPONENTS[mode]:
                     ranks = record.component_ranks.get(component, {})
                     scores = record.component_scores.get(component, {})
                     component_rankings.append(
@@ -674,6 +755,9 @@ class RetrievalHarness:
             raise ValueError("at least one mode result is required")
         for mode, result in sorted(results.items()):
             self._validate_result(mode, result)
+        medcpt_runtime_provenance = (
+            self.medcpt.runtime_provenance() if self.medcpt is not None else None
+        )
         selected_native_thread_observations = self._validate_native_thread_evidence(set(results))
         source_patch, untracked_snapshot, source_state = _source_state()
         git_revision = source_state["head"]
@@ -754,6 +838,25 @@ class RetrievalHarness:
                 ),
             },
             "dense_dimensions_actual": self.dense.dimensions,
+            "medcpt_configuration": (
+                {
+                    "dimensions": self.config.medcpt_dimensions,
+                    "query_max_length": self.config.medcpt_query_max_length,
+                    "article_max_length": self.config.medcpt_article_max_length,
+                    "query_batch_size": self.config.medcpt_query_batch_size,
+                    "document_batch_size": self.config.medcpt_document_batch_size,
+                    "pooling": "last_hidden_state_cls",
+                    "normalization": "none",
+                    "similarity": "inner_product",
+                    "device": "cpu",
+                    "artifact_provenance": (
+                        self.medcpt.provenance() if self.medcpt is not None else None
+                    ),
+                    "runtime_provenance": medcpt_runtime_provenance,
+                }
+                if self.medcpt is not None
+                else None
+            ),
             "modes": sorted(results),
             "mode_display_names": {mode: MODE_DISPLAY_NAMES[mode] for mode in sorted(results)},
             "summary": {mode: result.summary for mode, result in results.items()},
@@ -763,10 +866,10 @@ class RetrievalHarness:
                 "sidecar": "manifest.sha256",
             },
             "approval_status": (
-                "EXPERIMENT ONLY. The BM25, classical LSI, and RRF(BM25, LSI) pilot "
-                "exception applies only to this M2 benchmark. ME-000C remains open for "
-                "production/release indexes, Qdrant, transformer dense retrieval, "
-                "rerankers, and later retrieval architecture."
+                "EXPERIMENT ONLY. The BM25, classical LSI, MedCPT, and approved two-way "
+                "RRF pilots apply only to this M2 benchmark. ME-000C remains open for "
+                "production/release indexes, Qdrant, rerankers, and later retrieval "
+                "architecture."
             ),
         }
         manifest_path = run_dir / "manifest.json"

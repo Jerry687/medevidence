@@ -13,15 +13,52 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 from evaluation.datasets import EvaluationDataset, load_jsonl_dataset
 from evaluation.harness import RetrievalHarness, RunConfig
+from evaluation.medcpt import MedCPTIndex
 
 from medevidence.retrieval.core import reciprocal_rank_fusion
 
 FIXTURE = Path(__file__).resolve().parents[3] / "tests/fixtures/retrieval/harness_smoke.json"
 MODES = ("sparse", "dense", "hybrid_rrf")
+
+
+class StubMedCPTIndex:
+    dimensions = 768
+
+    def __init__(self, doc_ids: list[str]) -> None:
+        self.doc_ids = doc_ids
+
+    def search(self, query: str, limit: int) -> list[tuple[str, float]]:
+        offset = float(sum(ord(character) for character in query) % 7)
+        return [
+            (doc_id, float(len(self.doc_ids) - rank) + offset)
+            for rank, doc_id in enumerate(sorted(self.doc_ids)[:limit])
+        ]
+
+    def provenance(self) -> dict[str, object]:
+        return {"schema_version": "offline_fake_medcpt_v1"}
+
+    def runtime_provenance(self) -> dict[str, object]:
+        return {
+            "pytorch_intra_op_threads_observed": 1,
+            "pytorch_inter_op_threads_observed": 1,
+            "model_parameter_dtype_observed": {
+                "query_encoder": "torch.float32",
+                "article_encoder": "torch.float32",
+            },
+            "query_embedding_dtype_observed": "float32",
+            "document_embedding_index_dtype_observed": "float32",
+            "dense_index_memory_bytes": 6_144,
+            "dense_index_memory_measurement": "numpy.ndarray.nbytes",
+            "dense_index_memory_limitation": (
+                "Document embedding matrix only; not Python process RSS, allocator overhead, "
+                "model memory, or total application memory."
+            ),
+        }
 
 
 @pytest.fixture(scope="module")
@@ -232,6 +269,101 @@ class TestResultShape:
     def test_unsupported_mode_is_rejected(self, harness: RetrievalHarness) -> None:
         with pytest.raises(ValueError, match="unsupported mode"):
             harness.run_mode("magic")
+
+    def test_medcpt_mode_requires_verified_local_artifacts(self, harness: RetrievalHarness) -> None:
+        with pytest.raises(ValueError, match="verified local-only artifacts"):
+            harness.run_mode("medcpt")
+
+    def test_medcpt_and_two_way_rrf_retain_complete_evidence(self, tmp_path: Path) -> None:
+        dataset = load_jsonl_dataset(FIXTURE)
+        doc_ids = sorted(dataset.corpus)
+        local_harness = RetrievalHarness(
+            dataset,
+            RunConfig(embedding_dimensions=16),
+            medcpt_index=cast(MedCPTIndex, StubMedCPTIndex(doc_ids)),
+        )
+
+        results = local_harness.run_all(("medcpt", "hybrid_rrf_medcpt"))
+
+        assert all(
+            set(record.component_scores) == {"medcpt"} for record in results["medcpt"].records
+        )
+        for record in results["hybrid_rrf_medcpt"].records:
+            assert set(record.component_scores) == {"sparse", "medcpt"}
+            assert set(record.component_ranks) == {"sparse", "medcpt"}
+            assert "dense" not in record.component_scores
+            components = []
+            for component in ("sparse", "medcpt"):
+                ranks = record.component_ranks[component]
+                scores = record.component_scores[component]
+                components.append(
+                    [
+                        (doc_id, scores[doc_id])
+                        for doc_id in sorted(ranks, key=lambda item: ranks[item])
+                    ]
+                )
+            rebuilt = reciprocal_rank_fusion(
+                components,
+                k=local_harness.config.rrf_k,
+                limit=local_harness.config.candidate_limit,
+            )
+            assert [doc_id for doc_id, _score in rebuilt] == record.candidate_ranked_ids
+        run_dir = local_harness.save(results, tmp_path)
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["mode_display_names"] == {
+            "hybrid_rrf_medcpt": "rrf_bm25_medcpt",
+            "medcpt": "medcpt_dense",
+        }
+        configuration = manifest["medcpt_configuration"]
+        assert configuration["dimensions"] == 768
+        assert configuration["query_max_length"] == 64
+        assert configuration["article_max_length"] == 512
+        assert configuration["query_batch_size"] == 1
+        assert configuration["document_batch_size"] == 8
+        assert configuration["pooling"] == "last_hidden_state_cls"
+        assert configuration["normalization"] == "none"
+        assert configuration["similarity"] == "inner_product"
+        assert configuration["device"] == "cpu"
+        assert configuration["artifact_provenance"] == {"schema_version": "offline_fake_medcpt_v1"}
+        assert configuration["runtime_provenance"] == {
+            "pytorch_intra_op_threads_observed": 1,
+            "pytorch_inter_op_threads_observed": 1,
+            "model_parameter_dtype_observed": {
+                "query_encoder": "torch.float32",
+                "article_encoder": "torch.float32",
+            },
+            "query_embedding_dtype_observed": "float32",
+            "document_embedding_index_dtype_observed": "float32",
+            "dense_index_memory_bytes": 6_144,
+            "dense_index_memory_measurement": "numpy.ndarray.nbytes",
+            "dense_index_memory_limitation": (
+                "Document embedding matrix only; not Python process RSS, allocator overhead, "
+                "model memory, or total application memory."
+            ),
+        }
+
+    def test_missing_runtime_provenance_fails_before_artifact_creation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        dataset = load_jsonl_dataset(FIXTURE)
+        stub = StubMedCPTIndex(sorted(dataset.corpus))
+        local_harness = RetrievalHarness(
+            dataset,
+            RunConfig(embedding_dimensions=16),
+            medcpt_index=cast(MedCPTIndex, stub),
+        )
+        results = local_harness.run_all(("medcpt",))
+
+        def unavailable() -> dict[str, object]:
+            raise ValueError("required runtime observation unavailable")
+
+        monkeypatch.setattr(stub, "runtime_provenance", unavailable)
+
+        with pytest.raises(ValueError, match="required runtime observation unavailable"):
+            local_harness.save(results, tmp_path, run_id="must-not-exist")
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestRawArtifacts:

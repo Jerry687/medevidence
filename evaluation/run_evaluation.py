@@ -77,9 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query-concurrency", type=int, default=1)
     parser.add_argument("--blas-threads", type=int, default=1)
     parser.add_argument(
+        "--medcpt-artifact-manifest",
+        help="external verified MedCPT artifact-acquisition manifest",
+    )
+    parser.add_argument(
+        "--medcpt-cache-root",
+        help="external local-only MedCPT cache root",
+    )
+    parser.add_argument(
         "--modes",
         default="sparse,dense,hybrid_rrf",
-        help="comma-separated subset of sparse,dense,hybrid_rrf",
+        help=("comma-separated subset of sparse,dense,hybrid_rrf,medcpt,hybrid_rrf_medcpt"),
     )
     return parser
 
@@ -129,8 +137,20 @@ def main(argv: list[str] | None = None) -> int:
         query_concurrency=args.query_concurrency,
         blas_threads=args.blas_threads,
     )
-    harness = RetrievalHarness(dataset, config)
     modes = tuple(mode.strip() for mode in args.modes.split(",") if mode.strip())
+    uses_medcpt = bool({"medcpt", "hybrid_rrf_medcpt"}.intersection(modes))
+    if uses_medcpt and not args.medcpt_artifact_manifest:
+        parser.error("MedCPT modes require --medcpt-artifact-manifest")
+    if uses_medcpt and not args.medcpt_cache_root:
+        parser.error("MedCPT modes require --medcpt-cache-root")
+    if not uses_medcpt and (args.medcpt_artifact_manifest or args.medcpt_cache_root):
+        parser.error("MedCPT artifact paths require a selected MedCPT mode")
+    harness = RetrievalHarness(
+        dataset,
+        config,
+        medcpt_artifact_manifest=args.medcpt_artifact_manifest,
+        medcpt_cache_root=args.medcpt_cache_root,
+    )
     results = harness.run_all(modes)
     run_dir = harness.save(results, args.output, run_id=args.run_id)
 
@@ -158,8 +178,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"\nartifacts {run_dir}")
     print(
-        "NOTE      experiment-only M2 pilot. classical_lsi_dense is classical "
-        "latent-semantic dense retrieval, not a transformer embedding or Qdrant. "
+        "NOTE      experiment-only M2 pilot. classical_lsi_dense remains classical "
+        "latent-semantic retrieval; MedCPT modes use verified local-only CPU artifacts. "
         "ME-000C remains open outside this pilot."
     )
     return 0
