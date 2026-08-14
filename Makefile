@@ -18,7 +18,7 @@ help:
 	@echo "compose-down    Stop local infrastructure"
 
 install:
-	powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/bootstrap.ps1
+	pwsh -NoLogo -NoProfile -File ./scripts/bootstrap.ps1
 
 lint:
 	uv run --locked --no-sync ruff check .
@@ -50,16 +50,16 @@ quality:
 check: quality
 
 infrastructure-contract:
-	powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/test-infrastructure-contract.ps1
+	pwsh -NoLogo -NoProfile -File ./scripts/test-infrastructure-contract.ps1
 
 compose-config:
-	powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/validate-compose.ps1 -EnvFile ./.env.example -Template
+	pwsh -NoLogo -NoProfile -File ./scripts/validate-compose.ps1 -EnvFile ./.env.example -Template
 
 compose-smoke:
-	powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/smoke-compose.ps1
+	pwsh -NoLogo -NoProfile -File ./scripts/smoke-compose.ps1
 
 compose-up:
-	powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/validate-compose.ps1 -EnvFile ./.env
+	pwsh -NoLogo -NoProfile -File ./scripts/validate-compose.ps1 -EnvFile ./.env
 	docker compose --env-file .env up -d --wait
 
 compose-down:
