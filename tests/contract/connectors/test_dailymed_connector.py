@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import json
 import zipfile
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -60,6 +61,38 @@ def test_connector_uses_only_injected_transport_and_parses_discovery() -> None:
     assert len(observed) == 1
     assert observed[0].url.host == "dailymed.nlm.nih.gov"
     assert observed[0].headers["accept-encoding"] == "identity"
+
+
+def test_connector_accepts_synthetic_provider_summary_without_enrichment() -> None:
+    body = json.dumps(
+        {
+            "data": [
+                {
+                    "setid": SETID,
+                    "spl_version": 1,
+                    "title": "Synthetic provider summary",
+                    "published_date": "Jan 1, 2026",
+                }
+            ],
+            "metadata": {
+                "current_page": 1,
+                "per_page": 1,
+                "total_elements": 1,
+                "total_pages": 1,
+            },
+        }
+    ).encode()
+
+    with DailyMedConnector(
+        httpx.MockTransport(lambda _: httpx.Response(200, content=body)), utc_now=_fixed_utc
+    ) as connector:
+        result = connector.discover(setid=SETID, pagesize=1)
+
+    assert result.failure is None
+    assert result.value is not None
+    assert result.value[0].candidates[0].setid == SETID
+    assert result.value[0].candidates[0].spl_versions == ("1",)
+    assert not hasattr(result.value[0].candidates[0], "ingredients")
 
 
 def test_connector_retries_429_once_and_honors_bounded_retry_after() -> None:

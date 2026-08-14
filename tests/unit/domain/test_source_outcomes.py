@@ -665,6 +665,19 @@ def dailymed_candidate_for_factory(
     )
 
 
+def test_authoritative_dailymed_candidate_requires_complete_ingredient_identity() -> None:
+    candidate = dailymed_candidate_for_factory(
+        setid="11111111-1111-1111-1111-111111111111",
+        ordinal=0,
+        spl_versions=("3",),
+    )
+    payload = candidate.model_dump(mode="python")
+    payload["ingredients"] = ()
+
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        DailyMedCandidateLabel.model_validate(payload)
+
+
 def test_dailymed_candidate_revalidates_every_model_copy_field() -> None:
     candidate = dailymed_candidate_for_factory(
         setid="11111111-1111-1111-1111-111111111111",
