@@ -1,7 +1,6 @@
 # ADR-013: M1B CADEC asset and standalone domain contracts
 
-- Status: CADEC-001 and CADEC-002 integrated; CADEC-003 Option E amendment
-  `ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`
+- Status: CADEC-001, CADEC-002, and CADEC-003 Option E amendment integrated
 - Approved by: Boqi Niu, Project Owner
 - Approval date: 2026-08-13
 - Work items: `M1B-CADEC-001`, `M1B-CADEC-002`, `M1B-CADEC-003`
@@ -122,15 +121,17 @@ annotations, exact locators, and Option-A provenance with visible limitations.
 The output is not directly retrieval-consumable.
 
 The exact `cadec_query_requests` value remains `tuple[()]` and
-`M1BSourceSection` remains unchanged. Exactly one visible CADEC M1B source plan
-entry has `planning_status=skipped_by_policy`,
-`reason_code=source_execution_not_authorized`, and reason `CADEC remains
-visible in the M1B source plan, but source execution is not authorized under
-Option E.` Visibility is distinct from execution and creates no executable
-request, research-request connector invocation, `SourceOutcome`, report
-section, or API/OpenAPI execution. M1B therefore prohibits CADEC structured
-retrieval or search tools, persistence, migration, database ingestion,
-indexing, chunking, training, and retrieval evaluation.
+`M1BSourceSection` remains unchanged. Repository governance records CADEC as
+an explicitly known M1B source with `planning_status=skipped_by_policy` and
+`reason_code=source_execution_not_authorized`. That record is not injected
+into every runtime report: `M1BResearchReportV1.source_plan` remains exactly
+the request's `scope.selected_sources`, so DailyMed-only and FAERS-only plans
+remain source-only and CADEC is not added to `requested_sources`. Governance
+visibility is distinct from execution and creates no executable request,
+research-request connector invocation, `SourceOutcome`, report section, or
+API/OpenAPI execution. M1B therefore prohibits CADEC structured retrieval or
+search tools, persistence, migration, database ingestion, indexing, chunking,
+training, and retrieval evaluation.
 
 Future M2 owns `search_local_adr_corpus` and a text-bearing materializer,
 subject to `ME-000C`. It must reread the exact approved external archive,
@@ -142,10 +143,10 @@ implements nor authorizes M2, and
 
 Immutable Review001 remains `FAIL` at `P0 0 / P1 1 / P2 2`. Remediation batch
 1/1 was followed by closure-review `FAIL` at `P0 0 / P1 1 / P2 1` for no-plan
-overreach and Review001 transcription fidelity. The Owner-authorized additional
-mechanical correction is
-`ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`. It claims no
-fresh-review PASS, terminal audit, commit, completion, or achieved post-
-terminal marker. The exact post-terminal targets are
+overreach and Review001 transcription fidelity; those historical findings and
+events remain unchanged. The final mechanical correction then passed fresh
+independent review and terminal audit at `P0 0 / P1 0 / P2 0`. Feature commit
+`83617405e58bcec657bdaa84aceb8d2460d46fb1` was integrated by merge
+`c226a632753e6fc65e8c84c74ec568d994612b7d` through PR #21. This establishes
 `M1B-CADEC-003_COMPLETE`, `M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
-`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING`.
+`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` without authorizing M2 work.

@@ -1,15 +1,19 @@
 # M1B-CADEC-003 delivery record
 
-- Status: `ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`
+- Status: `M1B-CADEC-003_COMPLETE`; `M1B-CADEC_VERTICAL_SLICE_COMPLETE`;
+  `READY_FOR_M2-CADEC-RETRIEVAL-PLANNING`
 - Branch: `feat/m1b-cadec-003-boundary-closeout`
 - Baseline: `a2b97b5a3562fa68857d09fa9f4cd7562b98bd5a`
-- Candidate commit: none
+- Feature commit: `83617405e58bcec657bdaa84aceb8d2460d46fb1`
+- Merge commit: `c226a632753e6fc65e8c84c74ec568d994612b7d`
+- Pull request: #21 merged
 - Immutable Review001: `FAIL` - `P0 0 / P1 1 / P2 2`
 - First remediation: batch 1/1 implemented
 - Closure review: `FAIL` - `P0 0 / P1 1 / P2 1`
-- Additional mechanical correction: Owner-authorized; fresh review pending
-- Terminal evidence audit: not started
-- Completion: not claimed
+- Additional mechanical correction: completed
+- Fresh independent review: `PASS` - `P0 0 / P1 0 / P2 0`
+- Terminal evidence audit: `PASS` - `P0 0 / P1 0 / P2 0`
+- Completion: integrated
 
 ## Objective and boundary
 
@@ -22,15 +26,18 @@ limitations.
 
 The current CADEC-002 output is metadata-only and is **not directly
 retrieval-consumable**. The exact `cadec_query_requests` value remains
-`tuple[()]`; `M1BSourceSection` remains unchanged. Exactly one visible CADEC
-M1B source plan entry has `planning_status=skipped_by_policy`,
-`reason_code=source_execution_not_authorized`, and reason `CADEC remains
-visible in the M1B source plan, but source execution is not authorized under
-Option E.` Visibility is distinct from execution and creates no executable
-request, research-request connector invocation, `SourceOutcome`, report
-section, or API/OpenAPI execution. M1B prohibits a structured retrieval/search
-tool, persistence, migration, database ingestion, indexing, chunking, training,
-and retrieval evaluation.
+`tuple[()]`; `M1BSourceSection` remains unchanged. Repository governance
+records CADEC as an explicitly known M1B source with
+`planning_status=skipped_by_policy` and
+`reason_code=source_execution_not_authorized`. Per-request runtime planning is
+separate: `M1BResearchReportV1.source_plan` remains exactly
+`scope.selected_sources`, DailyMed-only and FAERS-only plans remain
+source-only, and CADEC is not added to `requested_sources`. Governance
+visibility is distinct from execution and creates no executable request,
+research-request connector invocation, `SourceOutcome`, report section, or
+API/OpenAPI execution. M1B prohibits a structured retrieval/search tool,
+persistence, migration, database ingestion, indexing, chunking, training, and
+retrieval evaluation.
 
 Future M2 owns `search_local_adr_corpus` and a text-bearing materializer,
 subject to `ME-000C`. That future materializer must reread the exact approved
@@ -40,10 +47,9 @@ text-bearing chunks with bounded offsets and hashes, and keep raw text outside
 Git. This record neither implements nor authorizes that work.
 `READY_FOR_M2-CADEC-RETRIEVAL-CONSUMPTION` is explicitly prohibited.
 
-The exact post-terminal target markers are `M1B-CADEC-003_COMPLETE`,
+The integrated boundary establishes `M1B-CADEC-003_COMPLETE`,
 `M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
-`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING`. They are targets only and are not
-achieved while this additional correction is pending fresh review.
+`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` without authorizing M2 work.
 
 ## Frozen exact facts
 
@@ -80,9 +86,16 @@ both findings; independent closure and terminal audit are each `PASS` at
 PR run `31748194823` and merged-main run `31748381436` both recorded
 `windows-quality` and `compose-config` as `SUCCESS`.
 
-## Authorized files and writer evidence
+CADEC-003 feature `83617405e58bcec657bdaa84aceb8d2460d46fb1` was integrated
+by merge `c226a632753e6fc65e8c84c74ec568d994612b7d` through PR #21. Fresh
+independent review and terminal evidence audit each passed at
+`P0 0 / P1 0 / P2 0`. The immutable Review001 and closure-review failure
+history remains preserved in
+[Review001](../docs/reviews/M1B-CADEC-003-BOUNDARY-REVIEW-001.md).
 
-Exactly six documentation paths are authorized:
+## Historical CADEC-003 candidate writer scope and evidence
+
+The pre-review CADEC-003 candidate authorized exactly six documentation paths:
 
 - `docs/PRD.md`;
 - `docs/ARCHITECTURE.md`;
@@ -99,7 +112,7 @@ are unchanged. Read-only inspection of existing executable files was allowed
 and performed for review/evidence; no executable or test file was modified. No
 independent-closure or terminal-audit verdict is self-issued.
 
-## Network, data, and Git
+## Historical CADEC-003 candidate network, data, and Git
 
 - Medical-source requests: zero.
 - Bounded read-only GitHub PR/check/run metadata requests occurred to verify
@@ -112,17 +125,17 @@ independent-closure or terminal-audit verdict is self-issued.
 - Stage, commit, push, pull/fetch, merge, rebase, reset, clean, branch deletion,
   history rewrite, and remote mutation: not performed.
 
-## Review gate and remaining risk
+## Historical review sequence and final closure
 
 Review001 remains immutably `FAIL` at `P0 0 / P1 1 / P2 2`; its one P1 and two
 distinct P2 findings remain unchanged. Remediation batch 1/1 was followed by
 closure-review `FAIL` at `P0 0 / P1 1 / P2 1` for no-plan overreach and
-Review001 transcription fidelity. The Owner-authorized additional mechanical
-correction is implemented, and a fresh independent reviewer must inspect the
-actual six-path diff and bind the final bytes. Terminal audit and any authorized
-local commit can occur only after a fresh-review `PASS`. Until then, this record
-remains `ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`; no completion
-or post-terminal marker is claimed.
+Review001 transcription fidelity. The final Owner-authorized mechanical
+correction subsequently passed fresh independent review and terminal audit at
+`P0 0 / P1 0 / P2 0`; feature commit
+`83617405e58bcec657bdaa84aceb8d2460d46fb1` was integrated through PR #21 at
+merge `c226a632753e6fc65e8c84c74ec568d994612b7d`. These current-state facts do
+not rewrite the immutable historical findings or events.
 
 ## Owner interview questions
 

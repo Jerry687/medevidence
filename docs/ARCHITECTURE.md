@@ -654,16 +654,20 @@ closed. The approved output remains metadata-only and is **not directly
 retrieval-consumable**.
 
 The exact `M1BResearchRequestV1.cadec_query_requests` value remains
-`tuple[()]` and `M1BSourceSection` is unchanged. Exactly one visible CADEC M1B
-source plan entry has `planning_status=skipped_by_policy`,
-`reason_code=source_execution_not_authorized`, and reason `CADEC remains
-visible in the M1B source plan, but source execution is not authorized under
-Option E.` Plan visibility is distinct from execution: there is no executable
-request, research-request connector invocation, `SourceOutcome`, report
-section, or API/OpenAPI execution. The M1B boundary also excludes a structured
-retrieval/search tool, persistence, migration, database ingestion, indexing,
-chunking, training, and retrieval evaluation. In particular, M1B does not
-define or expose `search_local_adr_corpus`.
+`tuple[()]` and `M1BSourceSection` is unchanged. Repository governance records
+CADEC as an explicitly known M1B source with
+`planning_status=skipped_by_policy` and
+`reason_code=source_execution_not_authorized`. This is not a global runtime
+plan object or an entry injected into every report. Each
+`M1BResearchReportV1.source_plan` remains exactly its request's
+`scope.selected_sources`, so DailyMed-only and FAERS-only runtime plans remain
+source-only and CADEC is not added to `requested_sources`. Governance
+visibility is distinct from execution: there is no executable request,
+research-request connector invocation, `SourceOutcome`, report section, or
+API/OpenAPI execution. The M1B boundary also excludes a structured retrieval/
+search tool, persistence, migration, database ingestion, indexing, chunking,
+training, and retrieval evaluation. In particular, M1B does not define or
+expose `search_local_adr_corpus`.
 
 Every child uses Option A: `source + corpus_id + corpus_version + split +
 artifact identity`. The namespaced archive and manifest hashes supply the
@@ -703,8 +707,9 @@ Raw text remains outside Git. The materializer and
 `search_local_adr_corpus` are M2-owned, not implemented or authorized by this
 boundary record, and remain subject to `ME-000C`. The marker
 `READY_FOR_M2-CADEC-RETRIEVAL-CONSUMPTION` must not be emitted or claimed.
-The post-terminal targets `M1B-CADEC-003_COMPLETE`,
+CADEC-003 feature commit `83617405e58bcec657bdaa84aceb8d2460d46fb1` was
+integrated by merge `c226a632753e6fc65e8c84c74ec568d994612b7d` through PR
+#21 after independent review and terminal audit each passed at
+`P0 0 / P1 0 / P2 0`. This establishes `M1B-CADEC-003_COMPLETE`,
 `M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
-`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` remain targets only. CADEC-003 is
-`ADDITIONAL_MECHANICAL_CORRECTION_PENDING_FRESH_REVIEW`; no fresh-review PASS,
-terminal audit, commit, or completion is claimed.
+`READY_FOR_M2-CADEC-RETRIEVAL-PLANNING`; it does not authorize M2 work.
