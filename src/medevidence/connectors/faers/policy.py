@@ -189,7 +189,7 @@ def serialize_faers_query(query: FaersAggregateQueryV1) -> str:
     reaction_clause = f"({'+OR+'.join(pt_clauses)})"
     start = validated.inclusive_date_range.start_date.strftime("%Y%m%d")
     end = validated.inclusive_date_range.end_date.strftime("%Y%m%d")
-    date_clause = f"receivedate:[{start}+TO+{end}]"
+    date_clause = f"receivedate:[{start} TO {end}]"
     expression = "+AND+".join((identity_clause, reaction_clause, date_clause))
     if len(expression) > MAX_QUERY_CHARACTERS:
         raise ValueError("FAERS provider expression exceeds 512 characters before encoding")
