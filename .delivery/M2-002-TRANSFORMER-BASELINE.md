@@ -511,3 +511,123 @@ Terminal checks established:
 The terminal auditor made zero repository/evidence writes and zero network,
 model, dependency/advisory, medical-source, or benchmark requests. Review001,
 Review002, Terminal Audit001, Review003, r1, and r2 history remain preserved.
+
+## CI-only dependency-audit remediation submission
+
+Current status: **CI_DELTA_AWAITING_INDEPENDENT_REVIEW**. Review003 and Terminal
+Audit002 remain accepted at **PASS — P0 0 / P1 0 / P2 0** for immutable r2;
+this section makes no new review, terminal-acceptance, completion, readiness,
+merge, or integrated-verification claim.
+
+The accepted candidate was committed as
+`719e2ad1f424b0085b151cef6a634d17ef02d799` and submitted as Draft PR #26. Its
+first hosted run returned `compose-config` PASS in 42 seconds and
+`windows-quality` PASS in 2 minutes 24 seconds. `dependency-audit` failed after
+1 minute 39 seconds at the sole exact expected `torch==2.13.0+cpu` pip-audit
+skip because the workflow supplied none of the already-supported OSV fallback
+paths. The Owner authorized closure of that CI-only omission without reopening
+the accepted benchmark evidence.
+
+The pre-documentation remediation delta is exactly:
+
+```text
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+`scripts/dependency-audit.ps1` remains byte-identical at 87,126 bytes and
+SHA-256
+`f811e80fd12ebe7d416d3d70677b87564323bd4e43dc18a5a88e769d4645bf70`.
+The shared pull-request/push workflow now retains exact raw pip-audit and OSV
+evidence under `RUNNER_TEMP`, performs exactly one pip-audit and one direct OSV
+POST with no retry or redirect following, fails closed before OSV for
+malformed, vulnerable, or non-exact-skip pip evidence, binds the exact approved
+Windows amd64 CPU Torch artifact, and supplies
+`PreservedAuditEvidencePath`, `PreservedOsvResponsePath`, and
+`OsvAcquisitionRecordPath` to the unchanged validator.
+
+Local CI-delta evidence is 93 focused dependency/workflow tests, Ruff, format
+over 120 files, MyPy over 52 source files, the 87-package lock check, and diff
+checks, all PASS. The single mechanical retry was used only for formatting and
+UTC-style lint correction. This remediation made zero local network, benchmark,
+model, medical-source, or Git requests or operations. Immutable r1, completed
+r2, all 1,292 ranking/metric records, dataset/model evidence, Review003, and
+Terminal Audit002 were neither rerun nor modified. One fresh independent
+review of this exact CI-only delta remains required.
+
+## M2-002 CI Delta Review004
+
+Verdict: **PASS — P0 0 / P1 0 / P2 0**.
+
+Current status: **CI_DELTA_REVIEW_PASS_AWAITING_TERMINAL_AUDIT**. This is an
+independent review verdict for the CI-only successor, not terminal acceptance,
+completion, readiness, merge, or integrated verification. All prior benchmark
+and review/audit history remains unchanged.
+
+Review004 bound branch `feat/m2-002-medcpt-ps7`, HEAD
+`719e2ad1f424b0085b151cef6a634d17ef02d799`, and an empty index to the exact
+ordinal repo-relative path-first UTF-8/LF manifest: 5 rows, 564 bytes, SHA-256
+`789f9877a19f9cb1d9ba01e4a01f96dce53d7ffaa09d49de0263db9dbb7a8b2c`.
+
+```text
+.delivery/M2-002-TRANSFORMER-BASELINE.md	31897	9ff8f0459fee1a2effcfad53cacbdb69fe6585431fe32b5a8181d50d3368ef2f
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+docs/reviews/M2-002-TRANSFORMER-BASELINE-INDEPENDENT-REVIEW-001.md	25760	49df739ef86c6667c576c8fdcdfc1fa521c918b1c64f96c56491bfad66f8445a
+evaluation/README.md	24400	b54017c62d4f2278061761bcfb421fc022ce48925c641917668dfdcebd77c863
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+The reviewer confirmed one shared PR/main workflow path; exact raw pip-audit
+retention; strict fail-before-OSV validation; one exact direct POST with no
+redirect or retry; exact installed artifact, lock, source, marker, wheel, and
+hash binding; and all three preserved-evidence parameters. The unchanged audit
+script independently validates the final 84 pip-audit passes + 1 exact OSV
+fallback + 1 inactive identity reconciliation. Tests meaningfully execute the
+embedded workflow boundary, and the evidence history remains truthful.
+
+Review004 itself made zero writes, network requests, test executions, model
+loads, or benchmark runs. This evidence-only persistence changes the three
+documentation paths; exact-byte rebind and one terminal audit remain required.
+
+## M2-002 CI Delta Terminal Audit003
+
+Verdict: **PASS — P0 0 / P1 0 / P2 0**.
+
+Current status: **CI_DELTA_TERMINAL_PASS_AWAITING_HOSTED_CI**. This terminal
+verdict is limited to the CI-only successor and makes no Ready, merge,
+post-merge verification, integrated-completion, or final readiness claim.
+
+Audit003 bound branch `feat/m2-002-medcpt-ps7`, HEAD
+`719e2ad1f424b0085b151cef6a634d17ef02d799`, and an empty index to the exact
+ordinal repo-relative path-first UTF-8/LF candidate: 5 paths, 564 bytes,
+SHA-256
+`f0daf3a5a9a5944ac83790357ad98eb75546f2e1d1365d1128af46b266d4c02d`.
+
+```text
+.delivery/M2-002-TRANSFORMER-BASELINE.md	33870	166bdf79d32f4951f0f3fa60ea515883d6657500eca628be40ab8d0ac7ca72bb
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+docs/reviews/M2-002-TRANSFORMER-BASELINE-INDEPENDENT-REVIEW-001.md	28252	9892856bbd70199bf81df7668d3d7e7350d7f4addc4a6f89a4595845c8d89221
+evaluation/README.md	26019	ec51aff3b51da689390b7f2625118c36d065cfbd92219d633554a81dd23bf9c6
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+The audit verified exact five-path scope, byte equality of the workflow/test
+pair reviewed by Review004, and the three-document Review004 prefix before
+this persistence. `scripts/dependency-audit.ps1` remained unchanged at 87,126
+bytes, SHA-256
+`f811e80fd12ebe7d416d3d70677b87564323bd4e43dc18a5a88e769d4645bf70`.
+
+Executable behavior remained one shared PR/main path with retained raw
+pip-audit evidence, strict pre-OSV rejection, one exact direct OSV POST,
+10-second connect and 30-second read timeouts, a 1,048,576-byte response bound,
+exact artifact/lock/wheel binding, validator-compatible acquisition evidence,
+and all three preserved-evidence paths. The unchanged validator independently
+reconciles 84 pip-audit passes + 1 exact OSV fallback + 1 inactive identity =
+86.
+
+Immutable r1 and r2 artifacts rehashed 9/9 each. UTF-8/LF and diff checks
+passed; accepted validation remained 93 focused tests, Ruff, format over 120
+files, MyPy over 52 source files, and the 87-package lock check. Audit003 made
+zero writes, network requests, test executions, model operations, or benchmark
+runs. This evidence-only persistence changes only the three documentation
+paths; hosted PR CI remains the next gate.

@@ -412,3 +412,129 @@ and diff evidence remained passing and bound.
 
 The terminal audit itself made zero writes and zero network or benchmark
 requests. Exact-byte Git finalization remains pending.
+
+## CI-only dependency-audit remediation submitted for fresh review
+
+Current status: **CI_DELTA_AWAITING_INDEPENDENT_REVIEW**. This submission does
+not amend or supersede immutable Review003 PASS 0/0/0, Terminal Audit002 PASS
+0/0/0, r1, r2, or any of the 1,292 ranking/metric records. It records no new
+review verdict, terminal acceptance, completion, readiness, merge, or
+integrated verification.
+
+The accepted candidate commit
+`719e2ad1f424b0085b151cef6a634d17ef02d799` is on Draft PR #26. Its first
+hosted checks were `compose-config` PASS in 42 seconds, `windows-quality` PASS
+in 2 minutes 24 seconds, and `dependency-audit` FAIL in 1 minute 39 seconds.
+The failure was the exact expected `torch==2.13.0+cpu` pip-audit skip with no
+OSV paths supplied by the workflow, not a benchmark, metric, model, dataset, or
+reported-vulnerability defect. The Owner authorized only this CI closure.
+
+The exact pre-documentation implementation/test delta submitted for review is:
+
+```text
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+The production validator remains byte-identical:
+`scripts/dependency-audit.ps1`, 87,126 bytes, SHA-256
+`f811e80fd12ebe7d416d3d70677b87564323bd4e43dc18a5a88e769d4645bf70`.
+The workflow uses one shared PR/push path, exactly one pip-audit, exactly one
+direct no-retry/nonredirecting OSV POST, external `RUNNER_TEMP` evidence,
+strict fail-before-OSV handling for malformed/vulnerable/non-exact-skip pip
+evidence, exact Windows amd64 CPU Torch binding, and all three existing
+preserved-evidence parameters.
+
+Local evidence is 93 focused tests plus Ruff, format over 120 files, MyPy over
+52 source files, 87-package lock validation, and diff checks, all PASS. The
+single mechanical retry addressed formatting/UTC lint only. The CI remediation
+made no local network request, model load/acquisition, NFCorpus execution,
+medical-source access, benchmark rerun, or Git operation. Fresh independent
+review must bind the final five-path candidate before terminal re-audit.
+
+## M2-002 CI Delta Review004
+
+Verdict: **PASS — P0 0 / P1 0 / P2 0**.
+
+Current status: **CI_DELTA_REVIEW_PASS_AWAITING_TERMINAL_AUDIT**. This verdict
+is limited to the Owner-authorized CI-only remediation. It does not reopen or
+alter r1, r2, Review003, Terminal Audit002, dependency policy, or benchmark
+semantics, and it makes no completion, readiness, merge, release, or integrated
+verification claim.
+
+Review004 bound branch `feat/m2-002-medcpt-ps7`, HEAD
+`719e2ad1f424b0085b151cef6a634d17ef02d799`, and an empty index to the exact
+ordinal repository-relative path-first UTF-8/LF manifest: 5 rows, 564 bytes,
+SHA-256
+`789f9877a19f9cb1d9ba01e4a01f96dce53d7ffaa09d49de0263db9dbb7a8b2c`.
+
+```text
+.delivery/M2-002-TRANSFORMER-BASELINE.md	31897	9ff8f0459fee1a2effcfad53cacbdb69fe6585431fe32b5a8181d50d3368ef2f
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+docs/reviews/M2-002-TRANSFORMER-BASELINE-INDEPENDENT-REVIEW-001.md	25760	49df739ef86c6667c576c8fdcdfc1fa521c918b1c64f96c56491bfad66f8445a
+evaluation/README.md	24400	b54017c62d4f2278061761bcfb421fc022ce48925c641917668dfdcebd77c863
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+The reviewer verified that PR and post-merge main execute one shared workflow
+path; raw pip-audit evidence remains retained externally; malformed,
+vulnerable, or non-exact-skip evidence fails before OSV; and the workflow makes
+one exact direct POST without redirect following or retry. Installed
+`torch==2.13.0+cpu`, the explicit CPU index, lock marker, Windows amd64 wheel,
+and exact wheel SHA remain bound before fallback acquisition. All three
+preserved-evidence parameters reach the unchanged production validator, which
+independently proves the 84 pip-audit pass + 1 exact OSV fallback + 1 inactive
+identity reconciliation.
+
+The focused tests exercise the extracted workflow program with synthetic
+subprocess and HTTPS boundaries, validate accepted evidence through the
+unchanged production validator, and cover relevant fail-closed cases. The
+delivery and evaluation evidence distinguish historical hosted failure,
+Owner-authorized closure, review status, and remaining terminal/hosted gates
+truthfully. Review004 itself performed zero repository/evidence writes, network
+requests, tests, model operations, or benchmark execution. This persistence is
+evidence-only and requires final-byte rebind plus terminal audit.
+
+## M2-002 CI Delta Terminal Audit003
+
+Verdict: **PASS — P0 0 / P1 0 / P2 0**.
+
+Current status: **CI_DELTA_TERMINAL_PASS_AWAITING_HOSTED_CI**. This terminal
+decision accepts only the exact CI-remediation repository candidate. It
+preserves all earlier evidence and makes no Ready, merge, post-merge,
+integrated-completion, or final readiness claim.
+
+Audit003 bound branch `feat/m2-002-medcpt-ps7`, HEAD
+`719e2ad1f424b0085b151cef6a634d17ef02d799`, and an empty index to the exact
+ordinal repository-relative path-first UTF-8/LF manifest: 5 paths, 564 bytes,
+SHA-256
+`f0daf3a5a9a5944ac83790357ad98eb75546f2e1d1365d1128af46b266d4c02d`.
+
+```text
+.delivery/M2-002-TRANSFORMER-BASELINE.md	33870	166bdf79d32f4951f0f3fa60ea515883d6657500eca628be40ab8d0ac7ca72bb
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+docs/reviews/M2-002-TRANSFORMER-BASELINE-INDEPENDENT-REVIEW-001.md	28252	9892856bbd70199bf81df7668d3d7e7350d7f4addc4a6f89a4595845c8d89221
+evaluation/README.md	26019	ec51aff3b51da689390b7f2625118c36d065cfbd92219d633554a81dd23bf9c6
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+The terminal auditor proved exact scope, exact workflow/test equality with
+Review004, and exact three-document Review004 prefixes before persistence. The
+production audit script was outside the delta and remained 87,126 bytes with
+SHA-256
+`f811e80fd12ebe7d416d3d70677b87564323bd4e43dc18a5a88e769d4645bf70`.
+
+The audited workflow has one common PR/main path, retains raw pip-audit bytes,
+rejects malformed/vulnerable/non-exact-skip evidence before OSV, and performs
+one exact direct POST without redirect or retry. It enforces 10-second connect,
+30-second read, and 1,048,576-byte response bounds; proves the exact installed
+CPU Torch, lock, source, marker, Windows amd64 wheel, and hash; emits the exact
+acquisition schema; and supplies all three preserved paths. The unchanged
+validator independently proves the 84 pip-audit pass + 1 exact OSV fallback +
+1 inactive identity = 86 reconciliation.
+
+Immutable r1 and r2 rehashed 9/9 each. UTF-8/LF and diff checks passed, and the
+accepted 93 focused, Ruff, format 120, MyPy 52, and lock 87 evidence remained
+bound. Audit003 itself executed no writes, network request, test, model load,
+or benchmark. This three-document persistence is evidence-only; hosted PR CI
+must independently exercise the accepted candidate next.

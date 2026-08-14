@@ -387,3 +387,96 @@ vulnerabilities, exceptions, unresolved identities, or accelerator packages.
 Focused 54, full offline 1,797 with two warnings and 79% coverage, Ruff,
 120-file format, MyPy 52, lock 87, and diff checks remained bound and passing.
 Audit002 itself made zero writes and zero network or benchmark requests.
+
+### M2-002 CI-only dependency-audit remediation submission
+
+Status: **CI_DELTA_AWAITING_INDEPENDENT_REVIEW**. The accepted r2 benchmark,
+Review003 PASS 0/0/0, and Terminal Audit002 PASS 0/0/0 remain immutable and
+were not rerun. This is not a new acceptance, completion, readiness, merge, or
+integrated-verification claim.
+
+Commit `719e2ad1f424b0085b151cef6a634d17ef02d799` was submitted as Draft PR #26.
+The first hosted run returned `compose-config` PASS in 42 seconds,
+`windows-quality` PASS in 2 minutes 24 seconds, and `dependency-audit` FAIL in
+1 minute 39 seconds at the exact expected `torch==2.13.0+cpu` skip because the
+workflow did not supply the existing validator's OSV evidence paths. The
+Owner-authorized CI-only closure changes exactly these pre-documentation bytes:
+
+```text
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+The dependency script is unchanged at 87,126 bytes, SHA-256
+`f811e80fd12ebe7d416d3d70677b87564323bd4e43dc18a5a88e769d4645bf70`.
+One shared PR/push path performs one pip-audit and one no-retry,
+nonredirecting OSV POST, retains evidence under `RUNNER_TEMP`, fails closed on
+unexpected pip-audit or OSV evidence, validates the exact CPU Torch binding,
+and passes all three preserved-evidence paths to the unchanged audit script.
+
+Local checks passed: 93 focused tests, Ruff, format over 120 files, MyPy over
+52 source files, lock validation over 87 packages, and diff checks. The one
+mechanical retry corrected formatting/UTC lint only. No local network, model,
+benchmark, medical-source, or Git operation occurred. Fresh independent review
+of this exact CI delta is pending.
+
+### M2-002 CI Delta Review004
+
+Review004 returned **PASS — P0 0 / P1 0 / P2 0**. Current status is
+**CI_DELTA_REVIEW_PASS_AWAITING_TERMINAL_AUDIT**; no terminal acceptance,
+completion, readiness, merge, or integrated-verification claim is made.
+
+The review bound branch `feat/m2-002-medcpt-ps7`, HEAD
+`719e2ad1f424b0085b151cef6a634d17ef02d799`, and an empty index to this exact
+ordinal path-first UTF-8/LF manifest: 5 rows, 564 bytes, SHA-256
+`789f9877a19f9cb1d9ba01e4a01f96dce53d7ffaa09d49de0263db9dbb7a8b2c`.
+
+```text
+.delivery/M2-002-TRANSFORMER-BASELINE.md	31897	9ff8f0459fee1a2effcfad53cacbdb69fe6585431fe32b5a8181d50d3368ef2f
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+docs/reviews/M2-002-TRANSFORMER-BASELINE-INDEPENDENT-REVIEW-001.md	25760	49df739ef86c6667c576c8fdcdfc1fa521c918b1c64f96c56491bfad66f8445a
+evaluation/README.md	24400	b54017c62d4f2278061761bcfb421fc022ce48925c641917668dfdcebd77c863
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+The reviewer confirmed the shared PR/main path, retained raw pip evidence,
+strict pre-OSV gate, one exact no-redirect/no-retry direct POST, exact
+artifact/lock/wheel binding, three preserved-evidence parameters, and the
+unchanged validator's independent 84 + 1 + 1 reconciliation. The executable
+tests were meaningful and the evidence history truthful. Review004 itself made
+zero writes, network requests, test executions, model loads, or benchmark
+runs. This three-document persistence now requires exact-byte terminal audit.
+
+### M2-002 CI Delta Terminal Audit003
+
+Terminal Audit003 returned **PASS — P0 0 / P1 0 / P2 0**. Current status is
+**CI_DELTA_TERMINAL_PASS_AWAITING_HOSTED_CI**. No Ready, merge, post-merge,
+integrated-completion, or final readiness marker is claimed.
+
+The audit bound branch `feat/m2-002-medcpt-ps7`, HEAD
+`719e2ad1f424b0085b151cef6a634d17ef02d799`, and an empty index to the exact
+ordinal path-first UTF-8/LF candidate: 5 paths, 564 bytes, SHA-256
+`f0daf3a5a9a5944ac83790357ad98eb75546f2e1d1365d1128af46b266d4c02d`.
+
+```text
+.delivery/M2-002-TRANSFORMER-BASELINE.md	33870	166bdf79d32f4951f0f3fa60ea515883d6657500eca628be40ab8d0ac7ca72bb
+.github/workflows/dependency-audit.yml	20572	0a258f941887c0323b1d29673fdd894c34db605fe7170d5e0feae0384562b0a2
+docs/reviews/M2-002-TRANSFORMER-BASELINE-INDEPENDENT-REVIEW-001.md	28252	9892856bbd70199bf81df7668d3d7e7350d7f4addc4a6f89a4595845c8d89221
+evaluation/README.md	26019	ec51aff3b51da689390b7f2625118c36d065cfbd92219d633554a81dd23bf9c6
+tests/unit/test_dependency_boundaries.py	42155	43c5ffa413d4b48468194eb4b5309bc9f25b2a5064ee0f5a71fafce71cacf2e1
+```
+
+Audit003 verified exact scope, Review004 workflow/test byte equality, and the
+three-document review-prefix proof. The audit script remained unchanged at
+87,126 bytes, SHA-256
+`f811e80fd12ebe7d416d3d70677b87564323bd4e43dc18a5a88e769d4645bf70`.
+The workflow retained one shared path, raw pip evidence, strict pre-OSV
+validation, one exact no-retry/no-redirect POST, 10/30-second timeouts,
+1,048,576-byte response maximum, exact CPU artifact/lock/wheel identity,
+acquisition evidence, and all three preserved paths. The unchanged validator
+reconciles 84 + 1 + 1 = 86 identities.
+
+R1 and r2 rehashed 9/9 each. UTF-8/LF, diff, 93 focused tests, Ruff, format
+120, MyPy 52, and lock 87 remained accepted. Audit003 itself made zero writes,
+network requests, tests, model operations, or benchmark runs. Hosted PR CI is
+the next gate.

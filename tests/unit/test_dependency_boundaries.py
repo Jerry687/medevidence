@@ -7,9 +7,12 @@ import copy
 import hashlib
 import json
 import sys
+import textwrap
 import tomllib
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -52,7 +55,23 @@ def _load_dependency_helper() -> dict[str, object]:
     return namespace
 
 
+def _load_ci_advisory_preflight() -> dict[str, object]:
+    workflow_path = Path(".github/workflows/dependency-audit.yml")
+    workflow = workflow_path.read_text(encoding="utf-8")
+    start_marker = "$preflightSource = @'\n"
+    end_marker = "\n          '@\n"
+    _, start_separator, remainder = workflow.partition(start_marker)
+    assert start_separator == start_marker
+    source, end_separator, _ = remainder.partition(end_marker)
+    assert end_separator == end_marker
+
+    namespace: dict[str, object] = {"__name__": "ci_advisory_preflight_test"}
+    exec(compile(textwrap.dedent(source), str(workflow_path), "exec"), namespace)
+    return namespace
+
+
 DEPENDENCY_HELPER = _load_dependency_helper()
+CI_ADVISORY_PREFLIGHT = _load_ci_advisory_preflight()
 LICENSE_VALIDATOR = cast(
     Callable[[object], str | None], DEPENDENCY_HELPER["validate_license_expression"]
 )
@@ -84,6 +103,13 @@ FINALIZE_ADVISORY_DISPOSITIONS = cast(
         tuple[list[dict[str, str]], dict[str, int]],
     ],
     DEPENDENCY_HELPER["finalize_advisory_dispositions"],
+)
+CI_RUN_PREFLIGHT = cast(
+    Callable[..., tuple[Path, Path, Path]], CI_ADVISORY_PREFLIGHT["run_preflight"]
+)
+CI_ACQUIRE_OSV = cast(Callable[..., None], CI_ADVISORY_PREFLIGHT["acquire_osv"])
+CI_VALIDATE_INSTALLED_TORCH = cast(
+    Callable[[Path], None], CI_ADVISORY_PREFLIGHT["validate_installed_torch"]
 )
 
 TORCH_BINDING = {
@@ -711,6 +737,239 @@ def test_osv_fallback_has_no_network_call_or_retry_loop() -> None:
     assert preserved_branch < pip_invocation
 
 
+class _FakeSocket:
+    def __init__(self) -> None:
+        self.timeout: int | None = None
+
+    def settimeout(self, timeout: int) -> None:
+        self.timeout = timeout
+
+
+class _FakeHttpResponse:
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status = status
+        self._body = body
+
+    def read(self, maximum_bytes: int) -> bytes:
+        return self._body[:maximum_bytes]
+
+
+class _FakeHttpsConnection:
+    def __init__(self, status: int = 200, body: bytes = b"{}") -> None:
+        self.status = status
+        self.body = body
+        self.sock = _FakeSocket()
+        self.connect_count = 0
+        self.close_count = 0
+        self.requests: list[tuple[str, str, bytes, dict[str, str]]] = []
+
+    def connect(self) -> None:
+        self.connect_count += 1
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> None:
+        self.requests.append((method, path, body, headers))
+
+    def getresponse(self) -> _FakeHttpResponse:
+        return _FakeHttpResponse(self.status, self.body)
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+def _ci_runner_with_raw_audit(
+    raw_payload: object,
+    commands: list[list[str]],
+) -> Callable[..., SimpleNamespace]:
+    def runner(command: list[str], **_: object) -> SimpleNamespace:
+        commands.append(command)
+        if "export" in command:
+            output_path = Path(command[command.index("--output-file") + 1])
+            output_path.write_text("example==1 --hash=sha256:" + "0" * 64, encoding="utf-8")
+        if "pip-audit" in command:
+            output_path = Path(command[command.index("--output") + 1])
+            output_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return runner
+
+
+def _clock_pair() -> Callable[[], datetime]:
+    moments = iter(
+        [
+            datetime(2026, 8, 14, 5, 0, 0, tzinfo=UTC),
+            datetime(2026, 8, 14, 5, 0, 0, tzinfo=UTC) + timedelta(milliseconds=250),
+        ]
+    )
+    return lambda: next(moments)
+
+
+def test_hosted_ci_runs_one_exact_pip_audit_and_one_exact_osv_post(tmp_path: Path) -> None:
+    commands: list[list[str]] = []
+    connection = _FakeHttpsConnection()
+    raw_payload = {
+        "dependencies": [
+            {"name": "example", "version": "1", "vulns": []},
+            {"name": "torch", "skip_reason": _active_pip_records()[-1][-1]["skip_reason"]},
+        ],
+        "fixes": [],
+    }
+
+    normalized_path, response_path, acquisition_path = CI_RUN_PREFLIGHT(
+        Path.cwd(),
+        tmp_path,
+        runner=_ci_runner_with_raw_audit(raw_payload, commands),
+        torch_validator=lambda _: None,
+        connection_factory=lambda *args, **kwargs: connection,
+        clock=_clock_pair(),
+    )
+
+    assert sum("pip-audit" in command for command in commands) == 1
+    assert connection.connect_count == 1
+    assert connection.close_count == 1
+    assert connection.sock.timeout == 30
+    assert len(connection.requests) == 1
+    method, path, body, headers = connection.requests[0]
+    assert (method, path, body) == ("POST", "/v1/query", OSV_REQUEST_BODY.encode())
+    assert headers["Content-Type"] == "application/json"
+    assert headers["Content-Length"] == "66"
+    assert normalized_path.is_file()
+    assert response_path.read_bytes() == b"{}"
+    validated = OSV_FALLBACK_VALIDATOR(response_path, acquisition_path, TORCH_BINDING)
+    assert validated["disposition"] == "audited_via_exact_public_version_fallback"
+
+
+def test_hosted_ci_preflight_proves_current_installed_cpu_torch_binding() -> None:
+    CI_VALIDATE_INSTALLED_TORCH(Path.cwd())
+
+
+@pytest.mark.parametrize(
+    "raw_payload",
+    [
+        [],
+        {
+            "dependencies": [
+                {"name": "example", "version": "1", "vulns": [{"id": "TEST-1"}]},
+                {"name": "torch", "skip_reason": _active_pip_records()[-1][-1]["skip_reason"]},
+            ],
+            "fixes": [],
+        },
+        {
+            "dependencies": [
+                {"name": "example", "version": "1", "vulns": []},
+                {"name": "other", "skip_reason": "not audited"},
+            ],
+            "fixes": [],
+        },
+        {
+            "dependencies": [
+                {"name": "example", "vulns": []},
+                {"name": "torch", "skip_reason": _active_pip_records()[-1][-1]["skip_reason"]},
+            ],
+            "fixes": [],
+        },
+    ],
+)
+def test_hosted_ci_rejects_bad_pip_evidence_before_osv(tmp_path: Path, raw_payload: object) -> None:
+    commands: list[list[str]] = []
+    connection_attempts = 0
+
+    def forbidden_connection(*_: object, **__: object) -> None:
+        nonlocal connection_attempts
+        connection_attempts += 1
+        raise AssertionError("OSV must not be contacted")
+
+    with pytest.raises(ValueError):
+        CI_RUN_PREFLIGHT(
+            Path.cwd(),
+            tmp_path,
+            runner=_ci_runner_with_raw_audit(raw_payload, commands),
+            torch_validator=lambda _: None,
+            connection_factory=forbidden_connection,
+            clock=_clock_pair(),
+        )
+
+    assert sum("pip-audit" in command for command in commands) == 1
+    assert connection_attempts == 0
+    assert (tmp_path / "pip-audit.raw.json").is_file()
+    assert not (tmp_path / "osv-torch-response.raw.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (302, b"{}"),
+        (200, b"not-json"),
+        (200, b'{"vulns":[{"id":"OSV-TEST"}]}'),
+        (200, b'{"vulns":[],"nextPageToken":"more"}'),
+    ],
+)
+def test_hosted_ci_osv_call_is_nonredirecting_and_fail_closed(
+    tmp_path: Path, status: int, body: bytes
+) -> None:
+    response_path = tmp_path / "response.json"
+    acquisition_path = tmp_path / "acquisition.json"
+    connection = _FakeHttpsConnection(status=status, body=body)
+
+    with pytest.raises(ValueError):
+        CI_ACQUIRE_OSV(
+            response_path,
+            acquisition_path,
+            connection_factory=lambda *args, **kwargs: connection,
+            clock=_clock_pair(),
+        )
+
+    assert len(connection.requests) == 1
+    assert connection.close_count == 1
+    assert response_path.read_bytes() == body
+    assert not acquisition_path.exists()
+
+
+def test_dependency_workflow_binds_exact_fallback_for_pr_and_post_merge() -> None:
+    workflow = Path(".github/workflows/dependency-audit.yml").read_text(encoding="utf-8")
+    source = textwrap.dedent(
+        workflow.partition("$preflightSource = @'\n")[2].partition("\n          '@\n")[0]
+    )
+
+    assert "pull_request:" in workflow
+    assert 'branches: ["main"]' in workflow
+    assert workflow.count("Acquire advisory evidence and audit the dependency graph") == 1
+    assert "github.event_name == 'pull_request' && github.head_ref || github.ref_name" in workflow
+    assert (
+        "github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha"
+        in workflow
+    )
+    for parameter in (
+        "-PreservedAuditEvidencePath",
+        "-PreservedOsvResponsePath",
+        "-OsvAcquisitionRecordPath",
+    ):
+        assert workflow.count(parameter) == 1
+    assert source.count('"pip-audit",') == 1
+    assert source.count("connection.request(") == 1
+    assert "urllib" not in source
+    assert "retry" not in source.casefold().replace('"retry_count": 0', "")
+    assert CI_ADVISORY_PREFLIGHT["OSV_URL"] == "https://api.osv.dev/v1/query"
+    assert CI_ADVISORY_PREFLIGHT["OSV_REQUEST_BODY"] == OSV_REQUEST_BODY.encode()
+    assert len(cast(bytes, CI_ADVISORY_PREFLIGHT["OSV_REQUEST_BODY"])) == 66
+    assert hashlib.sha256(cast(bytes, CI_ADVISORY_PREFLIGHT["OSV_REQUEST_BODY"])).hexdigest() == (
+        "e0374b4e37becf07c6c0857fc16bec5438b256470f1bc77230155a0f9bf480a2"
+    )
+    assert CI_ADVISORY_PREFLIGHT["TORCH_ARTIFACT"] == {
+        "name": "torch",
+        "version": "2.13.0+cpu",
+        "source_registry": "https://download.pytorch.org/whl/cpu",
+        "wheel_url": TORCH_BINDING["wheel_url"],
+        "wheel_sha256": TORCH_BINDING["wheel_sha256"],
+    }
+
+
 def test_unapproved_spdx_identifier_fails_closed() -> None:
     with pytest.raises(ValueError, match="outside the approved SPDX-expression grammar"):
         LICENSE_VALIDATOR("GPL-3.0-only")
@@ -848,9 +1107,9 @@ def test_ci_installs_and_checks_the_frozen_official_powershell_assets() -> None:
     assert quality.count("./scripts/setup-pwsh-ci.sh") == 2
     assert dependency.count("./scripts/setup-pwsh-ci.sh") == 1
     assert quality.count("shell: pwsh") == 6
-    assert dependency.count("shell: pwsh") == 3
+    assert dependency.count("shell: pwsh") == 2
     assert quality.count("./scripts/assert-pwsh-runtime.ps1 -Quiet") == 6
-    assert dependency.count("./scripts/assert-pwsh-runtime.ps1 -Quiet") == 3
+    assert dependency.count("./scripts/assert-pwsh-runtime.ps1 -Quiet") == 2
     assert 'POWERSHELL_VERSION="7.6.4"' in setup
     assert "powershell-7.6.4-linux-x64.tar.gz" in setup
     assert "PowerShell-7.6.4-win-x64.zip" in setup
