@@ -58,31 +58,421 @@ jobs:
         run: |
           ./scripts/assert-pwsh-runtime.ps1 -Quiet
           uv sync --locked --all-groups
-      - name: Audit the pull-request dependency graph
-        if: github.event_name == 'pull_request'
+      - name: Acquire advisory evidence and audit the dependency graph
         shell: pwsh
         env:
-          MEDEV_EVIDENCE_BRANCH: ${{ github.head_ref }}
-          MEDEV_EVIDENCE_COMMIT: ${{ github.event.pull_request.head.sha }}
+          MEDEV_EVIDENCE_BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+          MEDEV_EVIDENCE_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           ./scripts/assert-pwsh-runtime.ps1 -Quiet
+          $preflightSource = @'
+          from __future__ import annotations
+
+          import argparse
+          import hashlib
+          import http.client
+          import importlib.metadata
+          import json
+          import platform
+          import ssl
+          import subprocess
+          import tomllib
+          from collections.abc import Callable
+          from datetime import UTC, datetime
+          from pathlib import Path
+          from typing import Any
+
+          OSV_HOST = "api.osv.dev"
+          OSV_PATH = "/v1/query"
+          OSV_URL = "https://api.osv.dev/v1/query"
+          OSV_REQUEST_BODY = b'{"package":{"ecosystem":"PyPI","name":"torch"},"version":"2.13.0"}'
+          OSV_REQUEST_SHA256 = "e0374b4e37becf07c6c0857fc16bec5438b256470f1bc77230155a0f9bf480a2"
+          OSV_RESPONSE_MAXIMUM_BYTES = 1_048_576
+          PIP_AUDIT_MAXIMUM_BYTES = 16 * 1_048_576
+          TORCH_SKIP_REASON = (
+              "Dependency not found on PyPI and could not be audited: torch (2.13.0+cpu)"
+          )
+          TORCH_ARTIFACT = {
+              "name": "torch",
+              "version": "2.13.0+cpu",
+              "source_registry": "https://download.pytorch.org/whl/cpu",
+              "wheel_url": (
+                  "https://download-r2.pytorch.org/whl/cpu/"
+                  "torch-2.13.0%2Bcpu-cp312-cp312-win_amd64.whl"
+              ),
+              "wheel_sha256": (
+                  "sha256:a8b450c1e58e5800e5b4691dac412f8d2d65a1dc3298166f91596603a3531e6f"
+              ),
+          }
+
+
+          def fail(message: str) -> None:
+              raise ValueError(message)
+
+
+          def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+              result: dict[str, Any] = {}
+              for key, value in pairs:
+                  if key in result:
+                      fail(f"duplicate JSON key: {key}")
+                  result[key] = value
+              return result
+
+
+          def load_strict_json(raw: bytes, *, maximum_bytes: int, label: str) -> Any:
+              if not raw or len(raw) > maximum_bytes:
+                  fail(f"{label} is empty or exceeds its byte limit")
+              try:
+                  text = raw.decode("utf-8", errors="strict")
+                  return json.loads(
+                      text,
+                      object_pairs_hook=reject_duplicate_keys,
+                      parse_constant=lambda value: fail(
+                          f"{label} contains invalid JSON constant: {value}"
+                      ),
+                  )
+              except UnicodeDecodeError as error:
+                  fail(f"{label} is not strict UTF-8: {error}")
+              except json.JSONDecodeError as error:
+                  fail(f"{label} is malformed JSON: {error}")
+
+
+          def write_json(path: Path, value: Any) -> None:
+              path.write_text(
+                  json.dumps(value, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+                  newline="\n",
+              )
+
+
+          def validate_and_normalize_pip_audit(raw_path: Path, normalized_path: Path) -> None:
+              raw = raw_path.read_bytes()
+              payload = load_strict_json(
+                  raw, maximum_bytes=PIP_AUDIT_MAXIMUM_BYTES, label="pip-audit evidence"
+              )
+              if not isinstance(payload, dict) or not set(payload).issubset(
+                  {"dependencies", "fixes"}
+              ):
+                  fail("pip-audit root must be the exact recognized object")
+              dependencies = payload.get("dependencies")
+              if not isinstance(dependencies, list) or not dependencies:
+                  fail("pip-audit dependencies must be a non-empty array")
+              fixes = payload.get("fixes", [])
+              if not isinstance(fixes, list):
+                  fail("pip-audit fixes must be an array when present")
+
+              normalized_dependencies: list[dict[str, Any]] = []
+              skipped: list[dict[str, Any]] = []
+              vulnerability_count = 0
+              for record in dependencies:
+                  if not isinstance(record, dict):
+                      fail("pip-audit dependency record must be an object")
+                  vulns = record.get("vulns", [])
+                  if not isinstance(vulns, list):
+                      fail("pip-audit vulns must be an array when present")
+                  vulnerability_count += len(vulns)
+                  skip_reason = record.get("skip_reason")
+                  if skip_reason not in {None, ""}:
+                      if set(record) not in (
+                          {"name", "skip_reason"},
+                          {"name", "skip_reason", "vulns"},
+                      ):
+                          fail("pip-audit skipped record has an unexpected schema")
+                      normalized = dict(record)
+                      normalized["vulns"] = vulns
+                      skipped.append(normalized)
+                  else:
+                      if set(record) != {"name", "version", "vulns"}:
+                          fail("pip-audit completed record has an unexpected schema")
+                      if (
+                          not isinstance(record["name"], str)
+                          or not record["name"]
+                          or not isinstance(record["version"], str)
+                          or not record["version"]
+                      ):
+                          fail("pip-audit completed identity is malformed")
+                      normalized = dict(record)
+                  normalized_dependencies.append(normalized)
+
+              if vulnerability_count != 0:
+                  fail("pip-audit reported one or more known vulnerabilities")
+              expected_skip = {
+                  "name": "torch",
+                  "skip_reason": TORCH_SKIP_REASON,
+                  "vulns": [],
+              }
+              if skipped != [expected_skip]:
+                  fail("pip-audit must contain the sole exact torch 2.13.0+cpu skip")
+
+              write_json(
+                  normalized_path,
+                  {
+                      "audit_status": "completed",
+                      "vulnerability_service": "pypi",
+                      "skipped_package_count": 1,
+                      "vulnerability_count": 0,
+                      "dependencies": normalized_dependencies,
+                      "fixes": fixes,
+                  },
+              )
+
+
+          def validate_installed_torch(repository_root: Path) -> None:
+              if platform.system() != "Windows" or platform.machine().casefold() not in {
+                  "amd64",
+                  "x86_64",
+              }:
+                  fail("the exact OSV fallback is restricted to Windows amd64")
+              installed_version = importlib.metadata.version("torch")
+              if installed_version != TORCH_ARTIFACT["version"]:
+                  fail("installed torch is not the exact approved 2.13.0+cpu artifact")
+
+              lock = tomllib.loads((repository_root / "uv.lock").read_text(encoding="utf-8"))
+              records = [record for record in lock["package"] if record.get("name") == "torch"]
+              active = [
+                  record for record in records if record.get("version") == TORCH_ARTIFACT["version"]
+              ]
+              if len(active) != 1:
+                  fail("uv.lock does not contain exactly one Windows CPU torch record")
+              record = active[0]
+              if record.get("resolution-markers") != ["sys_platform != 'darwin'"]:
+                  fail("the Windows CPU torch reachability marker changed")
+              if record.get("source") != {"registry": TORCH_ARTIFACT["source_registry"]}:
+                  fail("the Windows CPU torch source registry changed")
+              expected_wheel = (
+                  TORCH_ARTIFACT["wheel_url"],
+                  TORCH_ARTIFACT["wheel_sha256"],
+              )
+              matching_wheels = [
+                  wheel
+                  for wheel in record.get("wheels", [])
+                  if (wheel.get("url"), wheel.get("hash")) == expected_wheel
+              ]
+              if len(matching_wheels) != 1:
+                  fail("the exact approved Windows CPU torch wheel identity changed")
+
+
+          def validate_osv_response(raw: bytes) -> None:
+              payload = load_strict_json(
+                  raw, maximum_bytes=OSV_RESPONSE_MAXIMUM_BYTES, label="OSV response"
+              )
+              if not isinstance(payload, dict) or not set(payload).issubset(
+                  {"vulns", "nextPageToken"}
+              ):
+                  fail("OSV response must be an exact recognized vulnerability-list object")
+              if "nextPageToken" in payload:
+                  fail("OSV response pagination is incomplete")
+              vulnerabilities = payload.get("vulns", [])
+              if not isinstance(vulnerabilities, list):
+                  fail("OSV response vulns must be an array")
+              if vulnerabilities:
+                  fail("OSV reported one or more vulnerabilities for torch 2.13.0")
+
+
+          def utc_milliseconds(value: datetime) -> str:
+              return value.astimezone(UTC).isoformat(
+                  timespec="milliseconds"
+              ).replace("+00:00", "Z")
+
+
+          def acquire_osv(
+              response_path: Path,
+              acquisition_path: Path,
+              *,
+              connection_factory: Callable[..., Any] = http.client.HTTPSConnection,
+              clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+          ) -> None:
+              started = utc_milliseconds(clock())
+              connection = connection_factory(
+                  OSV_HOST, 443, timeout=10, context=ssl.create_default_context()
+              )
+              try:
+                  connection.connect()
+                  if connection.sock is None:
+                      fail("OSV TLS connection did not expose a socket")
+                  connection.sock.settimeout(30)
+                  connection.request(
+                      "POST",
+                      OSV_PATH,
+                      body=OSV_REQUEST_BODY,
+                      headers={
+                          "Accept": "application/json",
+                          "Connection": "close",
+                          "Content-Length": str(len(OSV_REQUEST_BODY)),
+                          "Content-Type": "application/json",
+                      },
+                  )
+                  response = connection.getresponse()
+                  raw = response.read(OSV_RESPONSE_MAXIMUM_BYTES + 1)
+                  status = response.status
+              finally:
+                  connection.close()
+              received = utc_milliseconds(clock())
+              response_path.write_bytes(raw)
+              if status != 200:
+                  fail(f"OSV returned HTTP {status}; redirects and non-200 responses are rejected")
+              validate_osv_response(raw)
+
+              started_value = datetime.fromisoformat(started[:-1] + "+00:00")
+              received_value = datetime.fromisoformat(received[:-1] + "+00:00")
+              elapsed_milliseconds = int(
+                  (received_value - started_value).total_seconds() * 1000
+              )
+              if elapsed_milliseconds < 0 or elapsed_milliseconds > 40_000:
+                  fail("OSV acquisition elapsed time is invalid")
+              response_sha256 = hashlib.sha256(raw).hexdigest()
+              write_json(
+                  acquisition_path,
+                  {
+                      "schema_version": "1.0",
+                      "acquisition_method": "direct_osv_post",
+                      "vulnerability_service": "osv",
+                      "service_url": OSV_URL,
+                      "http_method": "POST",
+                      "request_content_type": "application/json",
+                      "request_body_utf8": OSV_REQUEST_BODY.decode("utf-8"),
+                      "request_body_byte_count": len(OSV_REQUEST_BODY),
+                      "request_body_sha256": OSV_REQUEST_SHA256,
+                      "request_started_at_utc": started,
+                      "response_received_at_utc": received,
+                      "acquired_at_utc": received,
+                      "elapsed_milliseconds": elapsed_milliseconds,
+                      "http_status": 200,
+                      "attempt_count": 1,
+                      "retry_count": 0,
+                      "connect_timeout_seconds": 10,
+                      "read_timeout_seconds": 30,
+                      "maximum_response_bytes": OSV_RESPONSE_MAXIMUM_BYTES,
+                      "response_body_byte_count": len(raw),
+                      "response_body_sha256": response_sha256,
+                      "osv_coordinate": {
+                          "ecosystem": "PyPI",
+                          "name": "torch",
+                          "version": "2.13.0",
+                      },
+                      "installed_artifact": TORCH_ARTIFACT,
+                  },
+              )
+
+
+          def run_preflight(
+              repository_root: Path,
+              evidence_directory: Path,
+              *,
+              runner: Callable[..., Any] = subprocess.run,
+              torch_validator: Callable[[Path], None] = validate_installed_torch,
+              connection_factory: Callable[..., Any] = http.client.HTTPSConnection,
+              clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+          ) -> tuple[Path, Path, Path]:
+              evidence_directory.mkdir(parents=True, exist_ok=True)
+              requirements_path = evidence_directory / "resolved-requirements.txt"
+              raw_audit_path = evidence_directory / "pip-audit.raw.json"
+              normalized_audit_path = evidence_directory / "pip-audit.normalized.json"
+              osv_response_path = evidence_directory / "osv-torch-response.raw.json"
+              osv_acquisition_path = evidence_directory / "osv-torch-acquisition-record.json"
+
+              export_command = [
+                  "uv",
+                  "export",
+                  "--locked",
+                  "--all-groups",
+                  "--no-emit-project",
+                  "--no-annotate",
+                  "--no-header",
+                  "--format",
+                  "requirements.txt",
+                  "--output-file",
+                  str(requirements_path),
+              ]
+              export_result = runner(
+                  export_command,
+                  cwd=repository_root,
+                  capture_output=True,
+                  text=True,
+                  encoding="utf-8",
+                  errors="strict",
+                  timeout=600,
+                  check=False,
+              )
+              if export_result.returncode != 0 or not requirements_path.is_file():
+                  fail(f"locked dependency export failed: {export_result.stderr}")
+
+              pip_audit_command = [
+                  "uv",
+                  "run",
+                  "--locked",
+                  "--no-sync",
+                  "pip-audit",
+                  "--requirement",
+                  str(requirements_path),
+                  "--no-deps",
+                  "--disable-pip",
+                  "--require-hashes",
+                  "--vulnerability-service",
+                  "pypi",
+                  "--format",
+                  "json",
+                  "--output",
+                  str(raw_audit_path),
+              ]
+              pip_audit_result = runner(
+                  pip_audit_command,
+                  cwd=repository_root,
+                  capture_output=True,
+                  text=True,
+                  encoding="utf-8",
+                  errors="strict",
+                  timeout=600,
+                  check=False,
+              )
+              if not raw_audit_path.is_file():
+                  fail(f"pip-audit did not retain raw JSON evidence: {pip_audit_result.stderr}")
+              validate_and_normalize_pip_audit(raw_audit_path, normalized_audit_path)
+              if pip_audit_result.returncode != 0:
+                  fail(f"pip-audit exited nonzero: {pip_audit_result.stderr}")
+
+              torch_validator(repository_root)
+              acquire_osv(
+                  osv_response_path,
+                  osv_acquisition_path,
+                  connection_factory=connection_factory,
+                  clock=clock,
+              )
+              return normalized_audit_path, osv_response_path, osv_acquisition_path
+
+
+          def main() -> None:
+              parser = argparse.ArgumentParser()
+              parser.add_argument("--repository-root", type=Path, required=True)
+              parser.add_argument("--evidence-directory", type=Path, required=True)
+              arguments = parser.parse_args()
+              run_preflight(
+                  arguments.repository_root.resolve(), arguments.evidence_directory.resolve()
+              )
+
+
+          if __name__ == "__main__":
+              main()
+          '@
+          $preflightPath = Join-Path $env:RUNNER_TEMP "medevidence-ci-advisory-preflight.py"
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText($preflightPath, $preflightSource, $utf8NoBom)
+          $preflightEvidence = Join-Path $env:RUNNER_TEMP "medevidence-dependency-advisory"
+          uv run --locked --no-sync python $preflightPath `
+            --repository-root $PWD.Path `
+            --evidence-directory $preflightEvidence
+          if ($LASTEXITCODE -ne 0) {
+            throw "Dependency advisory preflight failed with exit code $LASTEXITCODE."
+          }
           pwsh -NoLogo -NoProfile `
             -File .\scripts\dependency-audit.ps1 `
             -Mode Audit `
             -OutputDirectory (Join-Path $env:RUNNER_TEMP "medevidence-dependency-audit") `
-            -LogicalBranch $env:MEDEV_EVIDENCE_BRANCH `
-            -ExpectedCommit $env:MEDEV_EVIDENCE_COMMIT
-      - name: Audit the non-pull-request dependency graph
-        if: github.event_name != 'pull_request'
-        shell: pwsh
-        env:
-          MEDEV_EVIDENCE_BRANCH: ${{ github.ref_name }}
-          MEDEV_EVIDENCE_COMMIT: ${{ github.sha }}
-        run: |
-          ./scripts/assert-pwsh-runtime.ps1 -Quiet
-          pwsh -NoLogo -NoProfile `
-            -File .\scripts\dependency-audit.ps1 `
-            -Mode Audit `
-            -OutputDirectory (Join-Path $env:RUNNER_TEMP "medevidence-dependency-audit") `
+            -PreservedAuditEvidencePath `
+              (Join-Path $preflightEvidence "pip-audit.normalized.json") `
+            -PreservedOsvResponsePath `
+              (Join-Path $preflightEvidence "osv-torch-response.raw.json") `
+            -OsvAcquisitionRecordPath `
+              (Join-Path $preflightEvidence "osv-torch-acquisition-record.json") `
             -LogicalBranch $env:MEDEV_EVIDENCE_BRANCH `
             -ExpectedCommit $env:MEDEV_EVIDENCE_COMMIT
