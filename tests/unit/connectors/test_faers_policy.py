@@ -57,8 +57,9 @@ def test_serializer_emits_exact_closed_ast_order_and_no_role_clause() -> None:
         '(patient.reaction.reactionmeddrapt.exact:"DIARRHOEA"+OR+'
         'patient.reaction.reactionmeddrapt.exact:"NAUSEA"+OR+'
         'patient.reaction.reactionmeddrapt.exact:"VOMITING")+AND+'
-        "receivedate:[20250101+TO+20251231]"
+        "receivedate:[20250101 TO 20251231]"
     )
+    assert "+TO+" not in expression
     assert "role" not in expression.casefold()
     assert "receiptdate" not in expression
     assert expression.index(query.identity_field) < expression.index(query.group_field)
@@ -81,11 +82,14 @@ def test_request_performs_once_only_utf8_percent_encoding_with_percent20_spaces(
     assert parts.path == "/drug/event.json"
     assert "+" not in parts.query
     assert "%20" in parts.query
+    assert "%20TO%20" in parts.query
+    assert "%2BTO%2B" not in parts.query
     assert "%2BAND%2B" in parts.query
     assert "%C3%89" in parts.query
     assert "%5C%5C" in parts.query
     assert "%5C%22TEST%5C%22" in parts.query
     assert "%25" not in parts.query
+    assert "receivedate:[20250101 TO 20251231]" in request.provider_expression
     decoded = parse_qs(parts.query, strict_parsing=True)
     assert decoded == {
         "search": [request.provider_expression],
