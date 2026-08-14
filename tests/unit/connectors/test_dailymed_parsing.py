@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from medevidence.connectors.dailymed.parsing import (
+    DailyMedDiscoverySummaryRecord,
     DailyMedParseError,
     parse_candidate_page,
     parse_historical_zip,
@@ -58,6 +59,62 @@ def test_parses_frozen_candidate_selection_inputs(fixture: str, count: int) -> N
         assert page.candidates[0].spl_versions == tuple(
             sorted(page.candidates[0].spl_versions, key=int)
         )
+
+
+@pytest.mark.parametrize(("raw_version", "expected"), [("1", "1"), (1, "1")])
+def test_discovery_summary_accepts_only_explicit_canonical_version_forms(
+    raw_version: object, expected: str
+) -> None:
+    payload = json.dumps(
+        {
+            "data": [{"setid": SETID, "spl_version": raw_version}],
+            "metadata": {"page": 1, "pagesize": 1, "total": 1},
+        }
+    ).encode()
+
+    page = parse_candidate_page(payload)
+
+    assert page.candidates == (
+        DailyMedDiscoverySummaryRecord(setid=SETID, spl_versions=(expected,)),
+    )
+
+
+@pytest.mark.parametrize("raw_version", [True, False, 0, -1, 1.0, "0", "-1", "01", "+1"])
+def test_discovery_summary_rejects_nonpositive_or_noncanonical_versions(
+    raw_version: object,
+) -> None:
+    payload = json.dumps(
+        {
+            "data": [{"setid": SETID, "spl_version": raw_version}],
+            "metadata": {"page": 1, "pagesize": 1, "total": 1},
+        }
+    ).encode()
+
+    with pytest.raises(DailyMedParseError, match="SPL version"):
+        parse_candidate_page(payload)
+
+
+def test_discovery_summary_does_not_project_missing_enrichment_as_known() -> None:
+    payload = json.dumps(
+        {
+            "data": [
+                {
+                    "setid": SETID,
+                    "spl_version": 1,
+                    "title": "Synthetic provider summary",
+                    "published_date": "Jan 1, 2026",
+                }
+            ],
+            "metadata": {"page": 1, "pagesize": 1, "total": 1},
+        }
+    ).encode()
+
+    summary = parse_candidate_page(payload).candidates[0]
+
+    assert summary == DailyMedDiscoverySummaryRecord(setid=SETID, spl_versions=("1",))
+    assert not hasattr(summary, "ingredients")
+    assert not hasattr(summary, "title")
+    assert not hasattr(summary, "published_date")
 
 
 def test_parses_exact_setid_history() -> None:

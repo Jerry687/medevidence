@@ -74,32 +74,23 @@ class DailyMedParseError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class DailyMedCandidateRecord:
-    """Exact selection inputs parsed from one discovery candidate."""
+class DailyMedDiscoverySummaryRecord:
+    """Provider summary identity; never an authoritative selection candidate."""
 
     setid: str
     spl_versions: tuple[str, ...]
-    ingredients: tuple[str, ...]
-    brand_name: str | None
-    generic_name: str | None
-    application_number: str | None
-    product_id: str | None
-    labeler: str | None
-    dosage_forms: tuple[str, ...]
-    routes: tuple[str, ...]
-    strengths: tuple[str, ...]
-    ndcs: tuple[str, ...]
-    marketing_state: str
-    effective_date: date | None
-    published_date: date | None
-    available_section_codes: tuple[str, ...]
+
+
+# Preserve the connector package's existing import name without granting the
+# provider summary any enrichment or selection authority.
+DailyMedCandidateRecord = DailyMedDiscoverySummaryRecord
 
 
 @dataclass(frozen=True, slots=True)
 class DailyMedCandidatePage:
     """Bounded candidate page with provider pagination metadata."""
 
-    candidates: tuple[DailyMedCandidateRecord, ...]
+    candidates: tuple[DailyMedDiscoverySummaryRecord, ...]
     page: int
     pagesize: int
     total: int
@@ -156,7 +147,7 @@ class ParsedSplDocument:
 def parse_candidate_page(
     payload: bytes, *, expected_page: int = 1, expected_pagesize: int | None = None
 ) -> DailyMedCandidatePage:
-    """Parse a bounded candidate page into exact deterministic selection inputs."""
+    """Parse a bounded provider discovery page into non-authoritative summaries."""
 
     root = _json_object(payload)
     rows = _list_from_keys(root, ("data", "results", "spls"))
@@ -369,57 +360,34 @@ def _json_object(payload: bytes) -> Mapping[str, object]:
     return _mapping(value, "JSON root")
 
 
-def _candidate(value: object) -> DailyMedCandidateRecord:
+def _candidate(value: object) -> DailyMedDiscoverySummaryRecord:
     row = _mapping(value, "candidate")
-    return DailyMedCandidateRecord(
+    return DailyMedDiscoverySummaryRecord(
         setid=validate_setid(_required_alias(row, _SETID_KEYS, "SETID")),
         spl_versions=_versions(row),
-        ingredients=_strings(row, ("ingredients", "ingredient_names", "active_ingredients"), True),
-        brand_name=_optional_text(row, ("brand_name", "brandName", "title")),
-        generic_name=_optional_text(row, ("generic_name", "genericName")),
-        application_number=_optional_text(row, ("application_number", "applicationNumber")),
-        product_id=_optional_text(row, ("product_id", "productId")),
-        labeler=_optional_text(row, ("labeler", "labeler_name", "labelerName")),
-        dosage_forms=_strings(row, ("dosage_forms", "dosage_form"), False),
-        routes=_strings(row, ("routes", "route"), False),
-        strengths=_strings(row, ("strengths", "strength"), False),
-        ndcs=_strings(row, ("ndcs", "ndc"), False),
-        marketing_state=_marketing_state(row),
-        effective_date=_optional_date(row, ("effective_date", "effectiveDate")),
-        published_date=_optional_date(row, ("published_date", "publishedDate")),
-        available_section_codes=_section_codes(row),
     )
 
 
 def _versions(row: Mapping[str, object]) -> tuple[str, ...]:
     raw = _first(row, ("spl_versions", "versions", *_SPL_VERSION_KEYS))
     values = raw if isinstance(raw, list) else [raw]
-    versions = tuple(
-        sorted({validate_spl_version(_text("SPL version", value)) for value in values}, key=int)
-    )
+    versions = tuple(sorted({_discovery_version(value) for value in values}, key=int))
     if not versions:
         raise DailyMedParseError("candidate requires at least one SPL version")
     return versions
 
 
-def _strings(row: Mapping[str, object], aliases: Sequence[str], required: bool) -> tuple[str, ...]:
-    raw = _first(row, aliases, required=required)
-    if raw is None:
-        return ()
-    values = raw if isinstance(raw, list) else [raw]
-    result = tuple(
-        sorted({_text(aliases[0], value) for value in values}, key=lambda item: item.encode())
-    )
-    if required and not result:
-        raise DailyMedParseError(f"{aliases[0]} must not be empty")
-    return result
-
-
-def _section_codes(row: Mapping[str, object]) -> tuple[str, ...]:
-    values = _strings(row, ("available_section_codes", "section_codes"), False)
-    if any(value not in LOINC_SECTION_TITLES for value in values):
-        raise DailyMedParseError("candidate contains a non-allowlisted section code")
-    return values
+def _discovery_version(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise DailyMedParseError("SPL version must be positive canonical text or an integer")
+    if isinstance(value, int):
+        if value <= 0:
+            raise DailyMedParseError("SPL version integer must be positive")
+        value = str(value)
+    try:
+        return validate_spl_version(value)
+    except ValueError as error:
+        raise DailyMedParseError("SPL version is not a positive canonical integer") from error
 
 
 def _marketing_state(row: Mapping[str, object]) -> str:
@@ -762,6 +730,7 @@ __all__ = [
     "LOINC_SECTION_TITLES",
     "DailyMedCandidatePage",
     "DailyMedCandidateRecord",
+    "DailyMedDiscoverySummaryRecord",
     "DailyMedHistoryPage",
     "DailyMedHistoryRecord",
     "DailyMedParseError",
