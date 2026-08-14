@@ -335,3 +335,107 @@ def test_malformed_spdx_expressions_fail_closed(expression: str) -> None:
 def test_spdx_allowlist_has_no_generic_or_partial_match_bypass(expression: str) -> None:
     with pytest.raises(ValueError):
         LICENSE_VALIDATOR(expression)
+
+
+POWERSHELL_ENTRYPOINTS = (
+    "bootstrap.ps1",
+    "dependency-audit.ps1",
+    "quality.ps1",
+    "smoke-compose.ps1",
+    "test-infrastructure-contract.ps1",
+    "test.ps1",
+    "validate-compose.ps1",
+    "validate-environment.ps1",
+)
+
+
+def test_every_powershell_entrypoint_runs_the_shared_runtime_preflight_first() -> None:
+    preflight_call = '. (Join-Path $PSScriptRoot "assert-pwsh-runtime.ps1") -Quiet'
+
+    for name in POWERSHELL_ENTRYPOINTS:
+        source = Path("scripts", name).read_text(encoding="utf-8")
+        preflight_index = source.index(preflight_call)
+        error_preference_index = source.index('$ErrorActionPreference = "Stop"')
+        assert preflight_index > error_preference_index
+        assert preflight_index < source.index("$repositoryRoot", preflight_index)
+
+
+def test_powershell_runtime_contract_is_exact_and_executable() -> None:
+    preflight = Path("scripts/assert-pwsh-runtime.ps1").read_text(encoding="utf-8")
+    harness = Path("scripts/test-infrastructure-contract.ps1").read_text(encoding="utf-8")
+
+    assert "[System.Management.Automation.SemanticVersion]$Version" in preflight
+    assert "$actualVersion = $PSVersionTable.PSVersion" in preflight
+    assert "[version]$PSVersionTable.PSVersion" not in preflight
+    assert "$Version.PreReleaseLabel" in preflight
+    assert "$Version.Major -ne 7" in preflight
+    assert "$Version.Minor -ne 6" in preflight
+    assert "$Version.Patch -lt 4" in preflight
+    assert '$Edition -cne "Core"' in preflight
+    assert '$executableName -ine "pwsh"' in preflight
+    assert '$executableName -ine "pwsh.exe"' in preflight
+    assert "[Environment]::ProcessPath" in preflight
+    assert "RuntimePreflightOnly" in harness
+    assert "runtime-core-7.6.4-lower-bound" in harness
+    assert "runtime-core-7.6.5-stable" in harness
+    assert "runtime-rejects-preview-release" in harness
+    assert "runtime-rejects-release-candidate" in harness
+    assert "runtime-rejects-windows-powershell-edition" in harness
+    assert "runtime-rejects-version-before-7.6.4" in harness
+    assert "runtime-rejects-version-7.7.0" in harness
+    assert "runtime-rejects-unsupported-executable" in harness
+
+
+def test_active_repository_commands_use_only_pwsh() -> None:
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+    workflows = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(Path(".github/workflows").glob("*.yml"))
+    )
+    setup = Path("scripts/setup-pwsh-ci.sh").read_text(encoding="utf-8")
+
+    assert "powershell.exe" not in makefile.casefold()
+    assert "shell: powershell" not in workflows.casefold()
+    assert "powershell.exe" not in workflows.casefold()
+    assert "powershell.exe" not in setup.casefold()
+    assert "pwsh -NoLogo -NoProfile -File" in makefile
+    assert "pwsh -NoLogo -NoProfile -File" in readme
+    assert readme.count("`powershell.exe`") == 1
+    assert "Windows PowerShell 5.1" in " ".join(readme.split())
+
+    script_mentions: dict[str, list[str]] = {}
+    for path in sorted(Path("scripts").glob("*.ps1")):
+        mentions = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if "powershell.exe" in line.casefold()
+        ]
+        if mentions:
+            script_mentions[path.name] = mentions
+    assert script_mentions == {
+        "test-infrastructure-contract.ps1": [
+            '-ExecutablePath "powershell.exe"',
+            '-ExecutablePath "powershell.exe"',
+        ]
+    }
+
+
+def test_ci_installs_and_checks_the_frozen_official_powershell_assets() -> None:
+    quality = Path(".github/workflows/quality.yml").read_text(encoding="utf-8")
+    dependency = Path(".github/workflows/dependency-audit.yml").read_text(encoding="utf-8")
+    setup = Path("scripts/setup-pwsh-ci.sh").read_text(encoding="utf-8")
+
+    assert quality.count("./scripts/setup-pwsh-ci.sh") == 2
+    assert dependency.count("./scripts/setup-pwsh-ci.sh") == 1
+    assert quality.count("shell: pwsh") == 6
+    assert dependency.count("shell: pwsh") == 3
+    assert quality.count("./scripts/assert-pwsh-runtime.ps1 -Quiet") == 6
+    assert dependency.count("./scripts/assert-pwsh-runtime.ps1 -Quiet") == 3
+    assert 'POWERSHELL_VERSION="7.6.4"' in setup
+    assert "powershell-7.6.4-linux-x64.tar.gz" in setup
+    assert "PowerShell-7.6.4-win-x64.zip" in setup
+    assert "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721" in setup
+    assert "80832551c52809301e6071c8bac977beb5a2f1ec953eb4db9f94deb953333793" in setup
+    assert "sha256sum --check --strict" in setup
+    assert "/c/Windows/System32/tar.exe" in setup
+    assert '"${pwsh_path}" -NoLogo -NoProfile -File ./scripts/assert-pwsh-runtime.ps1' in setup

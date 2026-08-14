@@ -8,6 +8,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "assert-pwsh-runtime.ps1") -Quiet
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $composeCandidate = $ComposeFile

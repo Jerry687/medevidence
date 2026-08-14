@@ -1,10 +1,12 @@
 [CmdletBinding()]
-param()
+param([switch]$RuntimePreflightOnly)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "assert-pwsh-runtime.ps1") -Quiet
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
+$runtimePreflight = Join-Path $PSScriptRoot "assert-pwsh-runtime.ps1"
 $templatePath = Join-Path $repositoryRoot ".env.example"
 $composePath = Join-Path $repositoryRoot "docker-compose.yml"
 $environmentValidator = Join-Path $PSScriptRoot "validate-environment.ps1"
@@ -41,47 +43,39 @@ function New-RandomPassword {
     return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
 }
 
-function Resolve-CurrentPowerShellExecutable {
-    if ([string]$PSVersionTable.PSEdition -ceq "Desktop") {
-        $desktopExecutable = Join-Path $PSHOME "powershell.exe"
-        if (-not (Test-Path -LiteralPath $desktopExecutable -PathType Leaf)) {
-            throw "Windows PowerShell executable is unavailable."
-        }
-        return (Resolve-Path -LiteralPath $desktopExecutable).ProviderPath
-    }
-
-    $processExecutable = $null
+function Resolve-ApprovedPowerShellExecutable {
     try {
-        $processExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path
-    }
-    catch {
-        $processExecutable = $null
-    }
-    if (
-        -not [string]::IsNullOrWhiteSpace($processExecutable) -and
-        [IO.Path]::IsPathRooted($processExecutable) -and
-        (Test-Path -LiteralPath $processExecutable -PathType Leaf)
-    ) {
-        return (Resolve-Path -LiteralPath $processExecutable).ProviderPath
-    }
-
-    try {
-        $coreCommand = Get-Command pwsh `
+        $pwshCommand = Get-Command pwsh `
             -CommandType Application `
             -ErrorAction Stop |
                 Select-Object -First 1
     }
     catch {
-        throw "PowerShell Core executable is unavailable."
+        throw "The required pwsh executable is unavailable."
     }
-    $coreExecutable = [string]$coreCommand.Source
+
+    $pwshExecutable = [string]$pwshCommand.Source
     if (
-        -not [IO.Path]::IsPathRooted($coreExecutable) -or
-        -not (Test-Path -LiteralPath $coreExecutable -PathType Leaf)
+        -not [IO.Path]::IsPathRooted($pwshExecutable) -or
+        -not (Test-Path -LiteralPath $pwshExecutable -PathType Leaf)
     ) {
-        throw "PowerShell Core executable is unavailable."
+        throw "The required pwsh executable is unavailable."
     }
-    return (Resolve-Path -LiteralPath $coreExecutable).ProviderPath
+
+    $resolvedExecutable = (Resolve-Path -LiteralPath $pwshExecutable).ProviderPath
+    $preflightOutput = @(
+        & $resolvedExecutable `
+            -NoLogo `
+            -NoProfile `
+            -File $runtimePreflight 2>&1
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "The resolved pwsh executable failed the MedEvidence runtime " +
+            "preflight: $($preflightOutput -join ' ')"
+        )
+    }
+    return $resolvedExecutable
 }
 
 if (-not ("MedEvidenceProcessEnvironmentNative" -as [type])) {
@@ -512,20 +506,73 @@ function Assert-DockerComposeRenders {
     }
 }
 
-$powerShellExecutable = Resolve-CurrentPowerShellExecutable
+$powerShellExecutable = Resolve-ApprovedPowerShellExecutable
 if (
     -not [IO.Path]::IsPathRooted($powerShellExecutable) -or
     -not (Test-Path -LiteralPath $powerShellExecutable -PathType Leaf)
 ) {
-    throw "The current PowerShell executable path is invalid."
+    throw "The approved pwsh executable path is invalid."
 }
-$powerShellHost = if ([string]$PSVersionTable.PSEdition -ceq "Desktop") {
-    "Windows PowerShell Desktop"
+$results.Add(
+    "PASS pwsh-runtime-resolved " +
+    "(PSEdition=$($PSVersionTable.PSEdition); " +
+    "version=$($PSVersionTable.PSVersion); path=$powerShellExecutable)"
+)
+
+Assert-Pass "runtime-core-7.6.4-lower-bound" {
+    Assert-MedEvidencePowerShellRuntime `
+        -Edition "Core" `
+        -Version ([System.Management.Automation.SemanticVersion]::Parse("7.6.4")) `
+        -ExecutablePath "pwsh"
 }
-else {
-    "PowerShell Core"
+Assert-Pass "runtime-core-7.6.5-stable" {
+    Assert-MedEvidencePowerShellRuntime `
+        -Edition "Core" `
+        -Version ([System.Management.Automation.SemanticVersion]::Parse("7.6.5")) `
+        -ExecutablePath "pwsh.exe"
 }
-$results.Add("PASS current-host-executable-resolved ($powerShellHost)")
+Assert-Fail "runtime-rejects-preview-release" {
+    Assert-MedEvidencePowerShellRuntime `
+        -Edition "Core" `
+        -Version ([System.Management.Automation.SemanticVersion]::Parse("7.6.4-preview.1")) `
+        -ExecutablePath "pwsh"
+}
+Assert-Fail "runtime-rejects-release-candidate" {
+    Assert-MedEvidencePowerShellRuntime `
+        -Edition "Core" `
+        -Version ([System.Management.Automation.SemanticVersion]::Parse("7.6.4-rc.1")) `
+        -ExecutablePath "pwsh"
+}
+Assert-Fail "runtime-rejects-windows-powershell-edition" {
+    Assert-MedEvidencePowerShellRuntime `
+        -Edition "Desktop" `
+        -Version ([System.Management.Automation.SemanticVersion]::Parse("5.1.0")) `
+        -ExecutablePath "powershell.exe"
+}
+Assert-Fail "runtime-rejects-version-before-7.6.4" {
+    Assert-MedEvidencePowerShellRuntime `
+        -Edition "Core" `
+        -Version ([System.Management.Automation.SemanticVersion]::Parse("7.5.9")) `
+        -ExecutablePath "pwsh"
+}
+Assert-Fail "runtime-rejects-version-7.7.0" {
+    Assert-MedEvidencePowerShellRuntime `
+        -Edition "Core" `
+        -Version ([System.Management.Automation.SemanticVersion]::Parse("7.7.0")) `
+        -ExecutablePath "pwsh"
+}
+Assert-Fail "runtime-rejects-unsupported-executable" {
+    Assert-MedEvidencePowerShellRuntime `
+        -Edition "Core" `
+        -Version ([System.Management.Automation.SemanticVersion]::Parse("7.6.4")) `
+        -ExecutablePath "powershell.exe"
+}
+
+if ($RuntimePreflightOnly) {
+    $results
+    Write-Output "PowerShell runtime contract: $($results.Count) cases passed."
+    return
+}
 
 $validatorSource = [IO.File]::ReadAllText($composeValidator)
 if (

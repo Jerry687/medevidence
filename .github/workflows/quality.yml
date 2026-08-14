@@ -22,6 +22,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install approved PowerShell runtime
+        shell: bash
+        run: bash ./scripts/setup-pwsh-ci.sh
       - name: Install approved uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -29,28 +32,37 @@ jobs:
           python-version: "3.12.13"
           enable-cache: false
       - name: Synchronize locked development and retrieval environment
-        shell: powershell
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
+        shell: pwsh
+        run: |
+          ./scripts/assert-pwsh-runtime.ps1 -Quiet
+          pwsh -NoLogo -NoProfile -File .\scripts\bootstrap.ps1
       - name: Ruff lint
-        shell: powershell
-        env:
-          UV_OFFLINE: "1"
-        run: uv run --locked --no-sync ruff check .
-      - name: Ruff format check
-        shell: powershell
-        env:
-          UV_OFFLINE: "1"
-        run: uv run --locked --no-sync ruff format --check .
-      - name: Mypy
-        shell: powershell
-        env:
-          UV_OFFLINE: "1"
-        run: uv run --locked --no-sync mypy src
-      - name: Offline unit and contract tests
-        shell: powershell
+        shell: pwsh
         env:
           UV_OFFLINE: "1"
         run: |
+          ./scripts/assert-pwsh-runtime.ps1 -Quiet
+          uv run --locked --no-sync ruff check .
+      - name: Ruff format check
+        shell: pwsh
+        env:
+          UV_OFFLINE: "1"
+        run: |
+          ./scripts/assert-pwsh-runtime.ps1 -Quiet
+          uv run --locked --no-sync ruff format --check .
+      - name: Mypy
+        shell: pwsh
+        env:
+          UV_OFFLINE: "1"
+        run: |
+          ./scripts/assert-pwsh-runtime.ps1 -Quiet
+          uv run --locked --no-sync mypy src
+      - name: Offline unit and contract tests
+        shell: pwsh
+        env:
+          UV_OFFLINE: "1"
+        run: |
+          ./scripts/assert-pwsh-runtime.ps1 -Quiet
           uv run --locked --no-sync pytest `
             tests/unit tests/contract `
             --disable-socket `
@@ -66,6 +78,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install approved PowerShell runtime
+        shell: bash
+        run: bash ./scripts/setup-pwsh-ci.sh
       - name: Validate infrastructure contract without containers
         shell: pwsh
-        run: ./scripts/test-infrastructure-contract.ps1
+        run: |
+          ./scripts/assert-pwsh-runtime.ps1 -Quiet
+          pwsh -NoLogo -NoProfile -File ./scripts/test-infrastructure-contract.ps1

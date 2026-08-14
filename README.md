@@ -292,11 +292,13 @@ Owner approval.
 
 ME-000A1 uses uv `0.11.32` as the only Python environment and dependency
 manager. uv installs CPython `3.12.13` and creates the repository-local
-`.venv`; a system Python installation is not used. From Windows PowerShell:
+`.venv`; a system Python installation is not used. MedEvidence supports only
+the `pwsh` executable with PowerShell Core `>= 7.6.4` and `< 7.7.0`. Windows
+PowerShell 5.1 and `powershell.exe` are unsupported. From PowerShell 7.6 LTS:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\quality.ps1
+pwsh -NoLogo -NoProfile -File .\scripts\bootstrap.ps1
+pwsh -NoLogo -NoProfile -File .\scripts\quality.ps1
 ```
 
 Bootstrap uses the explicit development group:
@@ -342,11 +344,11 @@ Validate the committed template and all negative infrastructure-contract cases
 without starting or pulling containers:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+pwsh -NoLogo -NoProfile -File `
   .\scripts\validate-environment.ps1 -EnvFile .\.env.example -Template
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+pwsh -NoLogo -NoProfile -File `
   .\scripts\validate-compose.ps1 -EnvFile .\.env.example -Template
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+pwsh -NoLogo -NoProfile -File `
   .\scripts\test-infrastructure-contract.ps1
 ```
 
@@ -356,9 +358,9 @@ validate the real environment in strict mode, and then start Compose:
 ```powershell
 Copy-Item .\.env.example .\.env
 # Edit only .env and replace POSTGRES_PASSWORD.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+pwsh -NoLogo -NoProfile -File `
   .\scripts\validate-environment.ps1 -EnvFile .\.env
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+pwsh -NoLogo -NoProfile -File `
   .\scripts\validate-compose.ps1 -EnvFile .\.env
 docker compose --env-file .\.env up -d --wait
 docker compose --env-file .\.env down
@@ -369,7 +371,7 @@ loopback ports, verifies exact service versions, image digests, health, and
 bindings, and removes its containers, network, and volumes:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+pwsh -NoLogo -NoProfile -File `
   .\scripts\smoke-compose.ps1
 ```
 

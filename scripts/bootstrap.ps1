@@ -3,6 +3,7 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "assert-pwsh-runtime.ps1") -Quiet
 
 $expectedUvVersion = "0.11.32"
 $expectedPythonVersion = "3.12.13"
