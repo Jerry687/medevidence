@@ -1,12 +1,14 @@
 # M1B-INTEGRATION-001 delivery record
 
-- Status: `TERMINAL_AUDIT_PASS_PENDING_EXACT_BYTE_REBIND_AND_GIT_INTEGRATION`
+- Status: `M1B-INTEGRATION-001_COMPLETE`; `READY_FOR_M1B-ACCEPTANCE-001`
 - Branch: `feat/m1b-integration-001`
 - Baseline: `07c548737ec351c5a2a0669078f559700ac8b9b8`
-- Candidate commit: not created
+- Feature commit: `e346b70949bdeb015d5e49f4fbf383bc7642e7e5`
+- Pull request: #23 merged
+- Merge commit: `fd6e5f62713f9fe611c9b3062aa0246937da0e84`
 - Independent review: `PASS` - `P0 0 / P1 0 / P2 0`
 - Terminal Evidence Audit001: `PASS` - `P0 0 / P1 0 / P2 0`
-- Completion: not claimed
+- Completion: integrated
 
 ## Objective and exact reconciliation
 
@@ -103,7 +105,7 @@ dependency sync, or other network access occurred. No stage, commit, push, PR
 mutation, merge, rebase, reset, clean, branch deletion, or history rewrite was
 performed by this documentation node.
 
-## Remaining gates
+## Integrated current state
 
 Independent review passed at `P0 0 / P1 0 / P2 0` with no A-, B-, or C-class
 findings. The review reran the focused cross-source suite (`406 passed`, two
@@ -128,13 +130,22 @@ computed from canonical ordinal records
 medical-source request, accessed no external archive, database, or M2
 worktree, and performed no Git mutation.
 
-Persisting this terminal-audit evidence changes the candidate bytes. A fresh
-exact-byte rebind is therefore required before Git integration; this record
-does not claim a final aggregate identity. No application suite is rerun
-because only these evidence-document bytes changed.
+The exact-byte rebind passed, and feature commit
+`e346b70949bdeb015d5e49f4fbf383bc7642e7e5` was integrated through PR #23 by
+merge `fd6e5f62713f9fe611c9b3062aa0246937da0e84`. Hosted PR quality run
+`31771556444` passed `compose-config` (job `94678385975`) and
+`windows-quality` (job `94678385999`). Post-merge push run `31771699433`
+completed successfully on the merge commit. The focused cross-source run
+remained `406 passed` with two expected warnings, the injected-port PubMed
+integration remained `1 passed`, the full offline suite remained `1730
+passed` with two expected warnings and 79% coverage, and Ruff, formatting,
+and MyPy remained green.
 
-Exact-byte rebind and authorized Git integration remain pending. This record
-does not claim `M1B-INTEGRATION-001_COMPLETE` or
+These current-state facts supersede only the stale pending lifecycle text;
+they do not rewrite the candidate validation, review, or terminal-audit event
+history above. The GitHub PR/check/run facts were reverified read-only during
+M1B acceptance closeout. No medical-source request accompanied that metadata
+verification. This establishes `M1B-INTEGRATION-001_COMPLETE` and
 `READY_FOR_M1B-ACCEPTANCE-001`.
 
 ## Owner interview questions
