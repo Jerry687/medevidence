@@ -14,7 +14,7 @@ import httpx
 
 from medevidence.domain import FaersAggregateQueryV1
 
-from .parsing import FaersCountPage, FaersParseError, parse_count_page
+from .parsing import FaersCountPage, FaersParseError, parse_count_page, parse_error_envelope
 from .policy import (
     MAX_PAYLOAD_BYTES,
     REDIRECT_STATUS_CODES,
@@ -40,6 +40,12 @@ _SAFE_RESPONSE_HEADERS = frozenset(
         "retry-after",
         "x-ratelimit-limit",
         "x-ratelimit-remaining",
+    }
+)
+_EMPTY_RESULT_PROVIDER_ERRORS = frozenset(
+    {
+        ("NOT_FOUND", "No matches found!"),
+        ("NOT_FOUND", "Nothing to count"),
     }
 )
 
@@ -283,19 +289,24 @@ class FaersConnector:
                 ),
             )
         response, failure = self._send_with_retries(context, request)
+        recognized_empty_result = False
         if failure is not None:
-            return self._failed(context, failure)
-        assert response is not None
-        try:
-            page = parse_count_page(response.body, expected_page=1, expected_page_size=100)
-        except FaersParseError:
-            return self._failed(
-                context,
-                FaersFailure(
-                    FaersFailureKind.MALFORMED_RESPONSE,
-                    "FAERS response failed the frozen count-envelope parser.",
-                ),
-            )
+            page = self._recognized_empty_count_page(context, failure)
+            if page is None:
+                return self._failed(context, failure)
+            recognized_empty_result = True
+        else:
+            assert response is not None
+            try:
+                page = parse_count_page(response.body, expected_page=1, expected_page_size=100)
+            except FaersParseError:
+                return self._failed(
+                    context,
+                    FaersFailure(
+                        FaersFailureKind.MALFORMED_RESPONSE,
+                        "FAERS response failed the frozen count-envelope parser.",
+                    ),
+                )
         context.pages_completed = 1
         if page.next_page is not None:
             return self._failed(
@@ -305,7 +316,10 @@ class FaersConnector:
                     "FAERS count response omitted part of its bounded bucket collection.",
                 ),
             )
-        truncated = context.cumulative_bytes == self._config.max_cumulative_bytes
+        truncated = (
+            not recognized_empty_result
+            and context.cumulative_bytes == self._config.max_cumulative_bytes
+        )
         return FaersConnectorResult(
             value=page,
             failure=None,
@@ -314,6 +328,37 @@ class FaersConnector:
             request_count=context.request_count,
             pages_completed=context.pages_completed,
             truncated=truncated,
+        )
+
+    @staticmethod
+    def _recognized_empty_count_page(
+        context: _Context, failure: FaersFailure
+    ) -> FaersCountPage | None:
+        if (
+            failure.kind is not FaersFailureKind.CLIENT_ERROR
+            or failure.status_code != 404
+            or not context.raw_responses
+        ):
+            return None
+        raw = context.raw_responses[-1]
+        if (
+            raw.status_code != 404
+            or not raw.body_complete
+            or raw.termination_reason != "complete_response"
+        ):
+            return None
+        try:
+            provider_error = parse_error_envelope(raw.body)
+        except FaersParseError:
+            return None
+        if (provider_error.code, provider_error.message) not in _EMPTY_RESULT_PROVIDER_ERRORS:
+            return None
+        return FaersCountPage(
+            buckets=(),
+            page_number=1,
+            page_size=100,
+            provider_record_total=0,
+            next_page=None,
         )
 
     def query(self, query: FaersAggregateQueryV1) -> FaersConnectorResult:

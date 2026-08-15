@@ -6,16 +6,35 @@ from pathlib import Path
 import httpx
 import pytest
 
-from medevidence.connectors.faers import FaersConnector, FaersFailureKind
+from medevidence.connectors.faers import (
+    FaersConnector,
+    FaersFailureKind,
+    build_faers_request,
+)
 from medevidence.domain import (
+    CoverageStatus,
+    ExecutionBounds,
+    ExecutionStatus,
     FaersAggregateQueryV1,
     FaersAggregateRequestV1,
     FaersExecutionBoundsV1,
     FaersIdentityStrategy,
     FaersInclusiveDateRangeV1,
+    ResultStatus,
+    SourceOutcome,
+    SourceType,
 )
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "faers"
+EXPECTED_REQUEST_URL = (
+    "https://api.fda.gov/drug/event.json?search="
+    "patient.drug.openfda.substance_name.exact%3A%22TEST%20DRUG%22%2BAND%2B%28"
+    "patient.reaction.reactionmeddrapt.exact%3A%22DIARRHOEA%22%2BOR%2B"
+    "patient.reaction.reactionmeddrapt.exact%3A%22NAUSEA%22%2BOR%2B"
+    "patient.reaction.reactionmeddrapt.exact%3A%22VOMITING%22%29%2BAND%2B"
+    "receivedate%3A%5B20250101%20TO%2020251231%5D&count="
+    "patient.reaction.reactionmeddrapt.exact&limit=100&skip=0"
+)
 
 
 class _RawStream(httpx.SyncByteStream):
@@ -36,6 +55,15 @@ class _ReadTimeoutRawStream(httpx.SyncByteStream):
     def __iter__(self):  # type: ignore[no-untyped-def]
         yield b'{"results":['
         raise httpx.ReadTimeout("synthetic streamed read timeout")
+
+
+class _IncompleteErrorStream(httpx.SyncByteStream):
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        yield self._body
+        raise httpx.ReadError("synthetic incomplete error response")
 
 
 def _fixed_utc() -> datetime:
@@ -98,6 +126,131 @@ def test_empty_complete_count_is_a_successful_bounded_page() -> None:
     assert result.value is not None and result.value.buckets == ()
     assert result.pages_completed == 1
     assert result.truncated is False
+
+
+@pytest.mark.parametrize("message", ["No matches found!", "Nothing to count"])
+def test_exact_openfda_not_found_is_a_successful_empty_count_page(message: str) -> None:
+    body = f'{{"error":{{"code":"NOT_FOUND","message":"{message}"}}}}'.encode()
+    observed: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        return httpx.Response(404, content=body)
+
+    query = _query()
+    assert build_faers_request(query).url == EXPECTED_REQUEST_URL
+    with FaersConnector(httpx.MockTransport(handler), utc_now=_fixed_utc) as connector:
+        result = connector.aggregate(query)
+
+    assert result.failure is None
+    assert result.value is not None
+    assert result.value.buckets == ()
+    assert result.value.page_number == 1
+    assert result.value.page_size == 100
+    assert result.value.provider_record_total == 0
+    assert result.value.next_page is None
+    assert result.pages_completed == 1
+    assert result.truncated is False
+    assert result.request_count == 1
+    assert result.retry_events == ()
+    assert len(observed) == 1
+    assert str(observed[0].url) == EXPECTED_REQUEST_URL
+    assert len(result.raw_responses) == 1
+    raw = result.raw_responses[0]
+    assert raw.body == body
+    assert raw.status_code == 404
+    assert raw.request_url == EXPECTED_REQUEST_URL
+    assert raw.final_url == EXPECTED_REQUEST_URL
+    assert raw.body_complete is True
+    assert raw.termination_reason == "complete_response"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"error":{"code":"NOT_FOUND","message":"Different message"}}',
+        b'{"error":{"code":"DIFFERENT","message":"No matches found!"}}',
+        b'{"error":',
+        b'{"error":{"code":"NOT_FOUND","message":"No matches found!"},"extra":null}',
+        b'{"error":{"code":"NOT_FOUND","message":"No matches found!","extra":null}}',
+        b'{"error":{"code":"NOT_FOUND","code":"NOT_FOUND","message":"No matches found!"}}',
+        b"\xff",
+    ],
+)
+def test_unrecognized_or_invalid_not_found_envelope_remains_client_error(body: bytes) -> None:
+    with FaersConnector(
+        httpx.MockTransport(lambda _: httpx.Response(404, content=body)), utc_now=_fixed_utc
+    ) as connector:
+        result = connector.aggregate(_query())
+    assert result.value is None
+    assert result.failure is not None
+    assert result.failure.kind is FaersFailureKind.CLIENT_ERROR
+    assert result.failure.status_code == 404
+    assert result.pages_completed == 0
+
+
+@pytest.mark.parametrize("status", [400, 422])
+def test_recognized_not_found_text_under_other_status_remains_client_error(status: int) -> None:
+    body = b'{"error":{"code":"NOT_FOUND","message":"No matches found!"}}'
+    with FaersConnector(
+        httpx.MockTransport(lambda _: httpx.Response(status, content=body)), utc_now=_fixed_utc
+    ) as connector:
+        result = connector.aggregate(_query())
+    assert result.value is None
+    assert result.failure is not None
+    assert result.failure.kind is FaersFailureKind.CLIENT_ERROR
+    assert result.failure.status_code == status
+    assert result.pages_completed == 0
+
+
+def test_incomplete_recognized_not_found_body_remains_a_failure() -> None:
+    body = b'{"error":{"code":"NOT_FOUND","message":"No matches found!"}}'
+    with FaersConnector(
+        httpx.MockTransport(lambda _: httpx.Response(404, stream=_IncompleteErrorStream(body))),
+        utc_now=_fixed_utc,
+    ) as connector:
+        result = connector.aggregate(_query())
+    assert result.value is None
+    assert result.failure is not None
+    assert result.failure.kind is FaersFailureKind.TRANSPORT
+    assert result.pages_completed == 0
+    assert result.raw_responses[0].body == body
+    assert result.raw_responses[0].body_complete is False
+    assert result.raw_responses[0].termination_reason == "stream_error"
+
+
+def test_successful_empty_connector_result_projects_to_complete_no_match() -> None:
+    body = b'{"error":{"code":"NOT_FOUND","message":"Nothing to count"}}'
+    query = _query()
+    with FaersConnector(
+        httpx.MockTransport(lambda _: httpx.Response(404, content=body)), utc_now=_fixed_utc
+    ) as connector:
+        result = connector.aggregate(query)
+    assert result.value is not None
+    outcome = SourceOutcome(
+        source=SourceType.FAERS,
+        query_id=query.query_id,
+        execution_status=ExecutionStatus.SUCCEEDED,
+        coverage_status=CoverageStatus.COMPLETE,
+        result_status=ResultStatus.NO_MATCH,
+        configured_bounds=ExecutionBounds(
+            max_query_characters=512,
+            max_pages=1,
+            max_records=100,
+            max_payload_bytes=5_242_880,
+            max_total_seconds=30,
+        ),
+        valid_result_count=len(result.value.buckets),
+        pages_completed=result.pages_completed,
+        truncated=result.truncated,
+    )
+    assert outcome.execution_status is ExecutionStatus.SUCCEEDED
+    assert outcome.coverage_status is CoverageStatus.COMPLETE
+    assert outcome.result_status is ResultStatus.NO_MATCH
+    assert outcome.valid_result_count == 0
+    assert outcome.pages_completed == 1
+    assert outcome.truncated is False
+    assert outcome.failure_id is None
 
 
 def test_connector_retries_429_once_with_capped_retry_after() -> None:
