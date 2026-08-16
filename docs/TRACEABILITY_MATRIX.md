@@ -489,3 +489,21 @@ is not directly retrieval-consumable, and
 CADEC-003 establishes `M1B-CADEC-003_COMPLETE`,
 `M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
 `READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` without authorizing M2 work.
+
+### M2-004 DailyMed source-native section-semantics candidate
+
+ADR-014 adds the evaluation-only `DailyMedSourceNativeSectionV1` and
+`parse_source_native_spl_document` contracts. Exact LOINC code/system maps to
+normalized type metadata while provider title remains separate source display
+text. Repeated same-code occurrences retain source ordinal, parent ordinal,
+path, exact extracted text/hash, and a source-location/content identity; a
+no-text parent stays visible but is not retrieval eligible. Legacy M1B parser,
+domain, API, and persistence semantics remain unchanged.
+
+Focused evidence requires provider-title inequality acceptance, exact
+code-system and unknown-code boundaries, repeated occurrence preservation,
+stable identity/hash replay, no concatenation/deduplication, and all existing
+XML fail-closed controls. Full offline validation, independent review, and
+terminal audit remain required. The stopped M2-003 evidence is immutable, its
+MOUNJARO authorization is closed, and this candidate makes zero network or
+medical-source requests and no Gold-10 completion claim.

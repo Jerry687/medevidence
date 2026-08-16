@@ -600,3 +600,25 @@ and contain no real inventory/content beyond exact audited metadata. They test:
 
 This establishes standalone contract behavior only, not loader, real
 annotation, retrieval, search, index, model, clinical, or CADEC-002 behavior.
+
+## 17. M2-004 DailyMed source-native occurrence evaluation
+
+The deterministic offline gate covers:
+
+- exact code and `2.16.840.1.113883.6.1` code-system admission;
+- frozen normalized LOINC names kept separate from exact provider headings;
+- exclusion of unknown codes and wrong code systems without fuzzy inference;
+- independent repeated-code occurrences with stable source ordinals, immediate
+  parent ordinals, replayable paths, exact extracted text hashes, and identities
+  based on location/content rather than code alone;
+- explicit non-retrieval structural records for no-text containers and no
+  deduplication, concatenation, or canonical-first behavior; and
+- unchanged DTD/entity, XInclude, XSLT, schema-resolution, external-resource,
+  identity, namespace, and parser-bound rejection.
+
+The retained OZEMPIC inspection records structural metadata and text hashes,
+not source body text, in external evidence. It is a non-authoritative offline
+semantic inventory because the provider-original raw artifact contains
+constructs prohibited by the production parser. No medical-source request,
+Gold-10 corpus, qrels, ranking, metric, completeness, or clinical claim is part
+of this gate.

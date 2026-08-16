@@ -17,6 +17,11 @@ from xml.etree import ElementTree as etree
 from defusedxml import ElementTree as defused_etree  # type: ignore[import-untyped]
 from defusedxml.common import DefusedXmlException  # type: ignore[import-untyped]
 
+from medevidence.domain.sources import (
+    DOMAIN_MODEL_VALIDATION_ERROR,
+    DailyMedSourceNativeSectionV1,
+)
+
 from .policy import (
     MAX_CANDIDATES,
     MAX_PAGES,
@@ -142,6 +147,15 @@ class ParsedSplDocument:
     sections: tuple[ParsedSplSection, ...]
     canonical_text: str
     source_member_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedSourceNativeSplDocument:
+    """Identity-validated SPL with every allowlisted source occurrence retained."""
+
+    setid: str
+    spl_version: str
+    sections: tuple[DailyMedSourceNativeSectionV1, ...]
 
 
 def parse_candidate_page(
@@ -271,6 +285,70 @@ def parse_spl_document(
         sections=tuple(sections),
         canonical_text="".join(canonical_parts),
         source_member_name=source_member_name,
+    )
+
+
+def parse_source_native_spl_document(
+    payload: bytes,
+    *,
+    expected_setid: str,
+    expected_spl_version: str,
+) -> ParsedSourceNativeSplDocument:
+    """Parse allowlisted SPL occurrences while preserving provider-native structure."""
+
+    canonical_setid = validate_setid(expected_setid)
+    canonical_version = validate_spl_version(expected_spl_version)
+    root = _bounded_xml_root(payload)
+    if root.tag != HL7_DOCUMENT:
+        raise DailyMedParseError("SPL root must equal {urn:hl7-org:v3}document")
+    setid = _direct_identity(root, HL7_SETID, "root", validate_setid, "SETID")
+    version = _direct_identity(root, HL7_VERSION, "value", validate_spl_version, "SPL version")
+    if (setid, version) != (canonical_setid, canonical_version):
+        raise DailyMedParseError("parsed SPL identity differs from the selected SETID/version")
+
+    structured_bodies = root.findall(f"./{HL7_COMPONENT}/{HL7_STRUCTURED_BODY}")
+    if len(structured_bodies) > 1:
+        raise DailyMedParseError("SPL contains duplicate direct structured bodies")
+    source_sections = _section_elements(root)
+    source_ordinals = {id(element): ordinal for element, _, ordinal, _ in source_sections}
+    retained: list[DailyMedSourceNativeSectionV1] = []
+    for element, path, ordinal, parent in source_sections:
+        codes = element.findall(f"./{HL7_CODE}")
+        if len(codes) != 1:
+            continue
+        code = codes[0].attrib.get("code")
+        code_system = codes[0].attrib.get("codeSystem")
+        if code not in LOINC_SECTION_TITLES or code_system != "2.16.840.1.113883.6.1":
+            continue
+        provider_title = _source_native_child_text(element, HL7_TITLE, required=True)
+        if provider_title is None:
+            raise RuntimeError("required provider title unexpectedly resolved to None")
+        extracted_text = _source_native_child_text(element, HL7_TEXT, required=False) or ""
+        parent_ordinal = source_ordinals[id(parent)] if parent is not None else None
+        try:
+            section = DailyMedSourceNativeSectionV1.create(
+                setid=setid,
+                spl_version=version,
+                code_system_oid=code_system,
+                section_code=code,
+                normalized_section_name=LOINC_SECTION_TITLES[code],
+                provider_title=provider_title,
+                section_ordinal=ordinal,
+                parent_section_ordinal=parent_ordinal,
+                xml_path=path,
+                extracted_text=extracted_text,
+            )
+        except DOMAIN_MODEL_VALIDATION_ERROR as error:
+            raise DailyMedParseError(
+                "source-native section violates the bounded domain contract"
+            ) from error
+        retained.append(section)
+    if len(retained) > MAXIMUM_LABEL_SECTIONS:
+        raise DailyMedParseError("SPL exceeds the retained-section bound")
+    return ParsedSourceNativeSplDocument(
+        setid=setid,
+        spl_version=version,
+        sections=tuple(retained),
     )
 
 
@@ -580,6 +658,20 @@ def _single_child_text(element: etree.Element, tag: str, *, required: bool) -> s
     return text or None
 
 
+def _source_native_child_text(element: etree.Element, tag: str, *, required: bool) -> str | None:
+    """Extract one direct child without rewriting provider display text."""
+
+    children = element.findall(f"./{tag}")
+    if len(children) > 1 or (required and len(children) != 1):
+        raise DailyMedParseError("section child cardinality is invalid")
+    if not children:
+        return None
+    text = "".join(children[0].itertext())
+    if required and not text.strip():
+        raise DailyMedParseError("section child text must not be blank")
+    return text
+
+
 def _canonical_element_text(element: etree.Element) -> str:
     pieces = [piece for piece in element.itertext()]
     text = " ".join(" ".join(pieces).split())
@@ -734,10 +826,12 @@ __all__ = [
     "DailyMedHistoryPage",
     "DailyMedHistoryRecord",
     "DailyMedParseError",
+    "ParsedSourceNativeSplDocument",
     "ParsedSplDocument",
     "ParsedSplSection",
     "parse_candidate_page",
     "parse_historical_zip",
     "parse_history_page",
+    "parse_source_native_spl_document",
     "parse_spl_document",
 ]

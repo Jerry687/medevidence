@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from medevidence.connectors.dailymed.parsing import (
     DailyMedDiscoverySummaryRecord,
@@ -13,6 +14,7 @@ from medevidence.connectors.dailymed.parsing import (
     parse_candidate_page,
     parse_historical_zip,
     parse_history_page,
+    parse_source_native_spl_document,
     parse_spl_document,
 )
 
@@ -201,6 +203,200 @@ def test_parses_valid_spl_identity_and_canonical_sections() -> None:
     assert parsed.canonical_text[parsed.sections[0].text_start : parsed.sections[0].text_end] == (
         parsed.sections[0].text
     )
+
+
+def test_source_native_sections_keep_provider_titles_repeats_and_structure() -> None:
+    xml = f"""<document xmlns="urn:hl7-org:v3">
+      <setId root="{SETID}"/><versionNumber value="{VERSION}"/>
+      <component><structuredBody><component><section>
+        <code code="43685-7" codeSystem="2.16.840.1.113883.6.1"/>
+        <title> 5 WARNINGS AND PRECAUTIONS </title>
+        <component><section>
+          <code code="43685-7" codeSystem="2.16.840.1.113883.6.1"/>
+          <title>5.1 First warning</title><text>first</text>
+        </section></component>
+        <component><section>
+          <code code="43685-7" codeSystem="2.16.840.1.113883.6.1"/>
+          <title>5.2 Second warning</title><text>second</text>
+        </section></component>
+      </section></component></structuredBody></component>
+    </document>""".encode()
+
+    parsed = parse_source_native_spl_document(
+        xml, expected_setid=SETID, expected_spl_version=VERSION
+    )
+
+    assert len(parsed.sections) == 3
+    container, first, second = parsed.sections
+    assert container.normalized_section_name == (
+        "FDA package insert Warnings and precautions section"
+    )
+    assert container.provider_title == " 5 WARNINGS AND PRECAUTIONS "
+    assert container.code_system_oid == "2.16.840.1.113883.6.1"
+    assert container.extracted_text == ""
+    assert container.text_sha256 == (
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    assert container.is_structural_container is True
+    assert container.retrieval_eligible is False
+    assert [section.section_code for section in parsed.sections] == ["43685-7"] * 3
+    assert [section.extracted_text for section in parsed.sections] == ["", "first", "second"]
+    assert first.parent_section_ordinal == container.section_ordinal
+    assert second.parent_section_ordinal == container.section_ordinal
+    assert first.xml_path != second.xml_path
+    assert len({section.section_occurrence_id for section in parsed.sections}) == 3
+
+
+def test_source_native_section_matching_is_exact_code_and_code_system() -> None:
+    xml = f"""<document xmlns="urn:hl7-org:v3">
+      <setId root="{SETID}"/><versionNumber value="{VERSION}"/>
+      <component><structuredBody>
+        <component><section><code code="34067-9" codeSystem="wrong"/>
+          <title>provider title</title><text>wrong system</text></section></component>
+        <component><section><code code="99999-9" codeSystem="2.16.840.1.113883.6.1"/>
+          <title>provider title</title><text>unknown code</text></section></component>
+        <component><section><code code="34067-9" codeSystem="2.16.840.1.113883.6.1"/>
+          <title>1 INDICATIONS AND USAGE</title><text>accepted</text></section></component>
+      </structuredBody></component>
+    </document>""".encode()
+
+    parsed = parse_source_native_spl_document(
+        xml, expected_setid=SETID, expected_spl_version=VERSION
+    )
+
+    assert len(parsed.sections) == 1
+    assert parsed.sections[0].provider_title == "1 INDICATIONS AND USAGE"
+    assert parsed.sections[0].normalized_section_name == (
+        "FDA package insert Indications and usage section"
+    )
+    assert parsed.sections[0].extracted_text == "accepted"
+
+
+@pytest.mark.parametrize(
+    ("expected_setid", "expected_spl_version"),
+    [
+        ("22222222-2222-2222-2222-222222222222", VERSION),
+        (SETID, "4"),
+    ],
+)
+def test_source_native_parser_rejects_expected_identity_mismatch(
+    expected_setid: str, expected_spl_version: str
+) -> None:
+    with pytest.raises(DailyMedParseError, match="differs from the selected"):
+        parse_source_native_spl_document(
+            _fixture("spl-valid.xml"),
+            expected_setid=expected_setid,
+            expected_spl_version=expected_spl_version,
+        )
+
+
+@pytest.mark.parametrize(
+    "section_xml",
+    [
+        (
+            '<section><code code="34084-4" codeSystem="2.16.840.1.113883.6.1"/>'
+            f"<title>{'x' * 513}</title><text>bounded</text></section>"
+        ),
+        (
+            f"<{'x' * 513}><section>"
+            '<code code="34084-4" codeSystem="2.16.840.1.113883.6.1"/>'
+            "<title>6 ADVERSE REACTIONS</title><text>bounded</text></section>"
+            f"</{'x' * 513}>"
+        ),
+    ],
+)
+def test_source_native_parser_translates_bounded_model_failures(section_xml: str) -> None:
+    payload = (
+        f'<document xmlns="urn:hl7-org:v3"><setId root="{SETID}"/>'
+        f'<versionNumber value="{VERSION}"/><component><structuredBody><component>'
+        f"{section_xml}</component></structuredBody></component></document>"
+    ).encode()
+
+    with pytest.raises(DailyMedParseError, match="bounded domain contract") as caught:
+        parse_source_native_spl_document(
+            payload, expected_setid=SETID, expected_spl_version=VERSION
+        )
+
+    assert isinstance(caught.value.__cause__, ValidationError)
+
+
+def test_source_native_occurrence_identity_binds_location_and_content() -> None:
+    xml = f"""<document xmlns="urn:hl7-org:v3">
+      <setId root="{SETID}"/><versionNumber value="{VERSION}"/>
+      <component><structuredBody>
+        <component><section><code code="34084-4" codeSystem="2.16.840.1.113883.6.1"/>
+          <title>6.1 Alpha</title><text>same</text></section></component>
+        <component><section><code code="34084-4" codeSystem="2.16.840.1.113883.6.1"/>
+          <title>6.2 Beta</title><text>same</text></section></component>
+      </structuredBody></component>
+    </document>""".encode()
+
+    first_parse = parse_source_native_spl_document(
+        xml, expected_setid=SETID, expected_spl_version=VERSION
+    )
+    replay = parse_source_native_spl_document(
+        xml, expected_setid=SETID, expected_spl_version=VERSION
+    )
+
+    assert first_parse == replay
+    assert len(first_parse.sections) == 2
+    assert first_parse.sections[0].text_sha256 == first_parse.sections[1].text_sha256
+    assert (
+        first_parse.sections[0].section_occurrence_id
+        != first_parse.sections[1].section_occurrence_id
+    )
+    assert first_parse.sections[0].extracted_text == "same"
+    assert first_parse.sections[1].extracted_text == "same"
+
+
+def test_source_native_extraction_does_not_normalize_direct_text() -> None:
+    xml = f"""<document xmlns="urn:hl7-org:v3">
+      <setId root="{SETID}"/><versionNumber value="{VERSION}"/>
+      <component><structuredBody><component><section>
+        <code code="34084-4" codeSystem="2.16.840.1.113883.6.1"/>
+        <title>6 ADVERSE <content>REACTIONS</content> </title>
+        <text> first <paragraph>second</paragraph> </text>
+      </section></component></structuredBody></component>
+    </document>""".encode()
+
+    section = parse_source_native_spl_document(
+        xml, expected_setid=SETID, expected_spl_version=VERSION
+    ).sections[0]
+
+    assert section.provider_title == "6 ADVERSE REACTIONS "
+    assert section.extracted_text == " first second "
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    ["spl-malformed.xml", "spl-dtd.xml", "spl-entity.xml", "spl-wrong-namespace.xml"],
+)
+def test_source_native_parser_preserves_xml_fail_closed_policy(fixture: str) -> None:
+    with pytest.raises(DailyMedParseError):
+        parse_source_native_spl_document(
+            _fixture(fixture), expected_setid=SETID, expected_spl_version=VERSION
+        )
+
+
+@pytest.mark.parametrize(
+    "construct",
+    [
+        '<evil:include xmlns:evil="http://www.w3.org/2001/XInclude" href="file:///x"/>',
+        '<evil:stylesheet xmlns:evil="http://www.w3.org/1999/XSL/Transform"/>',
+        '<evil:schema xmlns:evil="http://www.w3.org/2001/XMLSchema"/>',
+        '<component xmlns:x="http://www.w3.org/2001/XMLSchema-instance" '
+        'x:schemaLocation="urn:hl7-org:v3 https://evil.invalid/schema.xsd"/>',
+    ],
+)
+def test_source_native_parser_rejects_external_resolution_constructs(construct: str) -> None:
+    payload = (
+        f'<document xmlns="urn:hl7-org:v3"><setId root="{SETID}"/>'
+        f'<versionNumber value="{VERSION}"/>{construct}</document>'
+    ).encode()
+    with pytest.raises(DailyMedParseError, match="forbidden"):
+        parse_source_native_spl_document(
+            payload, expected_setid=SETID, expected_spl_version=VERSION
+        )
 
 
 @pytest.mark.parametrize(
