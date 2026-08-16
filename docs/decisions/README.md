@@ -112,3 +112,13 @@ ADR-014 separates exact provider display titles from frozen generic LOINC
 names and preserves repeated same-code SPL occurrences by source location and
 content. It is additive to ADR-011, authorizes no medical-source request, and
 does not complete or rerun the stopped M2-003 Gold-10 work item.
+
+## Owner-accepted M2 Gold-10 V2 acquisition record
+
+- [ADR-015: M2-005 MedEvidence Gold-10 V2 acquisition and corpus freeze](ADR-015-m2-005-medevidence-gold10-v2.md)
+
+ADR-015 reuses the immutable M2-003 PubMed and OZEMPIC evidence, applies only
+two exact deletion-only safe-parsing transformations, and admits M2-004
+source-native retrieval occurrences without deduplication. Its new one-shot
+MOUNJARO authority is gated by a fresh independent pre-network PASS and exact
+live acknowledgement; it never transfers authority from M2-003.

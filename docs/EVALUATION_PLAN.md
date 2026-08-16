@@ -622,3 +622,18 @@ semantic inventory because the provider-original raw artifact contains
 constructs prohibited by the production parser. No medical-source request,
 Gold-10 corpus, qrels, ranking, metric, completeness, or clinical claim is part
 of this gate.
+
+## 18. M2-005 Gold-10 V2 pre-network and adjudication gate
+
+The offline gate must reproduce the exact four ESearch memberships, 50 unique
+PubMed records, exact OZEMPIC raw identity, both exact deletion-only
+derivatives, 13 source-native occurrences, 12 distinct retrieval items, and one
+provenance-only structural item. It must prove zero network operations and no
+ranking, scoring, nomination, or qrels generation.
+
+Only an independent `PASS — P0 0 / P1 0 / P2 0` and exact acknowledgement can
+open the separately authorized one-shot MOUNJARO stage. A failure consumes that
+authority and cannot be retried. A success freezes `MEDEVIDENCE_GOLD10_V2` as
+50 PubMed items, 12 OZEMPIC items, and every retrieval-eligible MOUNJARO
+occurrence, then emits the blinded ten-question packet. Human adjudication is
+required before authoritative qrels or any BM25, MedCPT, or RRF benchmark.

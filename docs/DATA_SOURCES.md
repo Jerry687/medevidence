@@ -463,3 +463,24 @@ of `34066-1` and `34067-9`. Exact inventory metadata lives in the external
 M2-004 evidence root; raw XML remains only in the immutable external M2-003
 root. This offline inventory authorizes no request and does not imply that the
 raw provider artifact passed the strict production XML parser.
+
+## 16. M2-005 Gold-10 V2 source reuse and recovery
+
+M2-005 references, without copying, the immutable M2-003 raw evidence for four
+PubMed ESearch responses, one 50-unique-PMID EFetch response, and OZEMPIC SETID
+`adec4fd2-6858-4c99-91d4-531f5f2a2d79` version `20`. PubMed is reconstructed
+offline with all query memberships; no PubMed or OZEMPIC request may repeat.
+
+The provider-original OZEMPIC bytes remain authoritative. Evaluation-only
+derivatives delete exactly one prolog stylesheet PI and one root schema-
+location attribute, with byte ranges, input/removed/output hashes, and splice
+proofs. The 12 text-bearing source-native occurrences are distinct retrieval
+units; the thirteenth structural occurrence remains provenance only.
+
+After the independent pre-network gate, the only new source operation is one
+logical current-SPL GET for exact MOUNJARO SETID
+`d2d7da5d-ad07-4228-955f-cf7e355c8cc0`, at most two attempts and zero
+redirects. No discovery, history, ZIP, NDC, packaging, PubMed, FAERS, or CADEC
+operation is admitted. Raw MOUNJARO bytes must be retained first. Only the same
+two optional byte-deletion classes may be applied, and all strict source-native
+parser controls remain in force.
