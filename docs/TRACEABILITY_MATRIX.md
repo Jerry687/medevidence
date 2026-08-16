@@ -507,3 +507,18 @@ XML fail-closed controls. Full offline validation, independent review, and
 terminal audit remain required. The stopped M2-003 evidence is immutable, its
 MOUNJARO authorization is closed, and this candidate makes zero network or
 medical-source requests and no Gold-10 completion claim.
+
+### M2-005 MedEvidence Gold-10 V2 candidate
+
+ADR-015 and `evaluation/gold10_v2.py` trace M2-005 to exact offline reuse of
+the six successful M2-003 operations, the two deletion-only OZEMPIC derivative
+steps, and the integrated M2-004 source-native occurrence contract. Focused
+evidence covers hash and membership reconciliation, raw immutability, exact
+splice equality, ambiguous-target rejection, unchanged XML controls, 12/1
+OZEMPIC retrieval/structural disposition, and blinded-packet leakage controls.
+
+The live boundary is a distinct stage: it requires a hash-bound independent
+review PASS plus exact acknowledgement, permits only one MOUNJARO logical GET,
+at most two attempts, and zero redirects, and records raw bytes before parsing.
+Failure cannot become success or be rerun. Until that gate is executed, no
+MOUNJARO outcome, final corpus, qrels, ranking, or metric claim exists.
