@@ -9,6 +9,7 @@ from medevidence.connectors.pubmed.parsing import (
     IncompletePubMedXmlError,
     InvalidPubMedXmlError,
     MalformedRecordCode,
+    PubMedBookDocument,
     PubMedXmlErrorCode,
     parse_fetch_response,
     parse_search_page,
@@ -46,6 +47,39 @@ def article(pmid: str, *, title: str = "Title", status: str = "MEDLINE") -> str:
         </Article>
       </MedlineCitation>
     </PubmedArticle>
+    """
+
+
+def book_article(
+    primary_pmid: str,
+    *,
+    secondary_pmid: str | None = None,
+    title: str = "Book chapter title",
+) -> str:
+    secondary = secondary_pmid or primary_pmid
+    return f"""
+    <PubmedBookArticle>
+      <BookDocument>
+        <PMID>{primary_pmid}</PMID>
+        <ArticleIdList><ArticleId IdType="bookaccession">NBK123</ArticleId></ArticleIdList>
+        <Book>
+          <Publisher><PublisherName>Source Publisher</PublisherName>
+          <PublisherLocation>Bethesda (MD)</PublisherLocation></Publisher>
+          <BookTitle>Source Book</BookTitle>
+          <PubDate><Year>2025</Year></PubDate>
+          <Medium>Internet</Medium>
+        </Book>
+        <ArticleTitle>{title}</ArticleTitle>
+        <Language>eng</Language>
+        <AuthorList><Author><LastName>Smith</LastName><ForeName>Ada</ForeName>
+        </Author></AuthorList>
+        <PublicationType>Review</PublicationType>
+        <Abstract><AbstractText>Book abstract.</AbstractText></Abstract>
+      </BookDocument>
+      <PubmedBookData><ArticleIdList>
+        <ArticleId IdType="pubmed">{secondary}</ArticleId>
+      </ArticleIdList></PubmedBookData>
+    </PubmedBookArticle>
     """
 
 
@@ -434,6 +468,80 @@ def test_parse_valid_fetch_preserves_exact_provider_fields() -> None:
     assert record.relationships[0].note == "Publisher notice"
     with pytest.raises(FrozenInstanceError):
         record.title = "mutated"
+
+
+def test_parse_pubmed_book_article_preserves_distinct_source_native_semantics() -> None:
+    payload = f"<PubmedArticleSet>{book_article('31644235')}</PubmedArticleSet>".encode()
+
+    response = parse_fetch_response(payload, expected_pmids=("31644235",), max_items=1)
+
+    assert response.article_occurrence_count == 0
+    assert response.book_document_occurrence_count == 1
+    assert response.records == ()
+    assert response.malformed_records == ()
+    assert response.missing_expected_pmids == ()
+    assert len(response.book_documents) == 1
+    document = response.book_documents[0]
+    assert isinstance(document, PubMedBookDocument)
+    assert document.pmid == "31644235"
+    assert document.title == "Book chapter title"
+    assert document.book_title == "Source Book"
+    assert document.book_accession == "NBK123"
+    assert document.publisher_name == "Source Publisher"
+    assert document.publisher_location == "Bethesda (MD)"
+    assert document.medium == "Internet"
+    assert document.languages == ("eng",)
+    assert document.publication_types == ("Review",)
+    assert document.publication_date is not None
+    assert document.publication_date.year == "2025"
+    assert not hasattr(document, "journal")
+
+
+def test_pubmed_book_article_identifier_mismatch_fails_closed() -> None:
+    payload = (
+        f"<PubmedArticleSet>{book_article('31644235', secondary_pmid='31644236')}"
+        "</PubmedArticleSet>"
+    ).encode()
+
+    response = parse_fetch_response(payload, expected_pmids=("31644235",), max_items=1)
+
+    assert response.book_documents == ()
+    assert response.missing_expected_pmids == ("31644235",)
+    assert len(response.malformed_records) == 1
+    assert response.malformed_records[0].pmid_hint == "31644235"
+    assert response.malformed_records[0].code is MalformedRecordCode.INVALID_PMID
+    assert "do not match" in response.malformed_records[0].detail
+
+
+def test_fetch_counts_article_and_book_occurrences_together_for_bound() -> None:
+    payload = (
+        "<PubmedArticleSet>" + article("111") + book_article("222") + "</PubmedArticleSet>"
+    ).encode()
+
+    with pytest.raises(IncompletePubMedXmlError, match="provider-item bound"):
+        parse_fetch_response(payload, expected_pmids=("111",), max_items=1)
+
+
+def test_fetch_rejects_unknown_top_level_record_kind() -> None:
+    payload = (
+        b"<PubmedArticleSet><DeleteCitation><PMID>111</PMID></DeleteCitation></PubmedArticleSet>"
+    )
+
+    with pytest.raises(IncompletePubMedXmlError, match="unsupported top-level"):
+        parse_fetch_response(payload, expected_pmids=("111",), max_items=1)
+
+
+def test_duplicate_pmid_across_article_and_book_fails_closed() -> None:
+    payload = (
+        "<PubmedArticleSet>" + article("111") + book_article("111") + "</PubmedArticleSet>"
+    ).encode()
+
+    response = parse_fetch_response(payload, expected_pmids=("111",), max_items=2)
+
+    assert response.records == ()
+    assert response.book_documents == ()
+    assert response.duplicate_pmids == ("111",)
+    assert response.missing_expected_pmids == ("111",)
 
 
 def test_mixed_valid_and_malformed_fetch_preserves_valid_record() -> None:

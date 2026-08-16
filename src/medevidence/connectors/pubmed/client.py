@@ -45,6 +45,7 @@ from .parsing import (
     InvalidPubMedXmlError,
     MalformedPubMedRecord,
     PubMedArticle,
+    PubMedBookDocument,
     PubMedFetchResponse,
     PubMedRelationship,
     parse_fetch_response,
@@ -194,6 +195,8 @@ class PubMedFetchResult:
     query_id: str | None
     requested_pmids: tuple[str, ...]
     publications: tuple[PublicationRecord, ...]
+    book_documents: tuple[PubMedBookDocument, ...]
+    book_document_mapping_disposition: Literal["source_native_retained_not_coerced"] | None
     not_retrieved_pmids: tuple[str, ...]
     malformed_records: tuple[MalformedPubMedRecord, ...]
     record_issues: tuple[PubMedRecordIssue, ...]
@@ -342,12 +345,19 @@ class PubMedConnector:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def search(self, query: str, *, query_id: str | None = None) -> PubMedSearchResult:
+    def search(
+        self,
+        query: str,
+        *,
+        query_id: str | None = None,
+        sort: Literal["relevance"] | None = None,
+    ) -> PubMedSearchResult:
         """Execute one bounded ESearch operation through the injected transport."""
 
         canonical_query, resolved_query_id, input_failure = self._prepare_search_input(
             query,
             query_id,
+            sort,
         )
         if input_failure is not None:
             return PubMedSearchResult(
@@ -388,16 +398,19 @@ class PubMedConnector:
                 )
 
             requested_retmax = min(self._config.page_size, remaining_record_slots)
+            params = {
+                "db": "pubmed",
+                "term": canonical_query,
+                "retmode": "xml",
+                "retstart": str(retstart),
+                "retmax": str(requested_retmax),
+            }
+            if sort is not None:
+                params["sort"] = sort
             result = self._get(
                 context,
                 path=PUBMED_ESEARCH_PATH,
-                params={
-                    "db": "pubmed",
-                    "term": canonical_query,
-                    "retmode": "xml",
-                    "retstart": str(retstart),
-                    "retmax": str(requested_retmax),
-                },
+                params=params,
                 page_number=context.pages_completed + 1,
             )
             if result.failure is not None:
@@ -574,6 +587,8 @@ class PubMedConnector:
                 query_id=resolved_query_id,
                 requested_pmids=requested,
                 publications=(),
+                book_documents=(),
+                book_document_mapping_disposition=None,
                 not_retrieved_pmids=requested,
                 malformed_records=(),
                 record_issues=(),
@@ -591,6 +606,7 @@ class PubMedConnector:
         if duplicate_input:
             warnings.add(WARNING_DUPLICATE_PMIDS)
         prepared: list[_PreparedArticle] = []
+        book_documents: list[PubMedBookDocument] = []
         malformed_records: list[MalformedPubMedRecord] = []
         record_issues: list[PubMedRecordIssue] = []
         processed_pmids: set[str] = set()
@@ -629,6 +645,7 @@ class PubMedConnector:
                     query_id=active_query_id,
                     requested=requested,
                     prepared=prepared,
+                    book_documents=book_documents,
                     not_retrieved=not_retrieved,
                     malformed_records=malformed_records,
                     record_issues=record_issues,
@@ -647,6 +664,7 @@ class PubMedConnector:
                     active_query_id,
                     requested,
                     prepared,
+                    book_documents,
                     not_retrieved,
                     malformed_records,
                     record_issues,
@@ -675,6 +693,7 @@ class PubMedConnector:
                     active_query_id,
                     requested,
                     prepared,
+                    book_documents,
                     not_retrieved,
                     malformed_records,
                     record_issues,
@@ -694,6 +713,7 @@ class PubMedConnector:
                     active_query_id,
                     requested,
                     prepared,
+                    book_documents,
                     not_retrieved,
                     malformed_records,
                     record_issues,
@@ -710,6 +730,7 @@ class PubMedConnector:
                     active_query_id,
                     requested,
                     prepared,
+                    book_documents,
                     not_retrieved,
                     malformed_records,
                     record_issues,
@@ -732,6 +753,7 @@ class PubMedConnector:
                     not_retrieved.extend(conflicted_requested)
                     warnings.add(WARNING_MISSING_RECORDS)
                 prepared = [item for item in prepared if item.pmid not in new_conflicts]
+                book_documents = [item for item in book_documents if item.pmid not in new_conflicts]
             seen_provider_pmids.update(observed_pmids)
             self._collect_fetch_defects(
                 parsed,
@@ -754,6 +776,11 @@ class PubMedConnector:
                     warnings.add(issue.code)
                 else:
                     prepared.append(_require_prepared(item))
+            book_documents.extend(
+                document
+                for document in parsed.book_documents
+                if document.pmid not in conflicted_provider_pmids
+            )
 
             if self._remaining_seconds(context) <= 0:
                 not_retrieved.extend(
@@ -766,6 +793,7 @@ class PubMedConnector:
                     active_query_id,
                     requested,
                     prepared,
+                    book_documents,
                     not_retrieved,
                     malformed_records,
                     record_issues,
@@ -795,8 +823,10 @@ class PubMedConnector:
             query_id=active_query_id,
             execution_status=ExecutionStatus.SUCCEEDED,
             coverage_status=CoverageStatus.PARTIAL if partial else CoverageStatus.COMPLETE,
-            result_status=ResultStatus.MATCHES if prepared else ResultStatus.INDETERMINATE,
-            valid_result_count=len(prepared),
+            result_status=(
+                ResultStatus.MATCHES if prepared or book_documents else ResultStatus.INDETERMINATE
+            ),
+            valid_result_count=len(prepared) + len(book_documents),
             pages_completed=context.pages_completed,
             truncated=state is PubMedResultState.BOUNDED_TRUNCATION,
             warning_codes=warnings,
@@ -822,8 +852,12 @@ class PubMedConnector:
                 query_id=active_query_id,
                 execution_status=ExecutionStatus.SUCCEEDED,
                 coverage_status=CoverageStatus.PARTIAL,
-                result_status=ResultStatus.MATCHES if retained else ResultStatus.INDETERMINATE,
-                valid_result_count=len(retained),
+                result_status=(
+                    ResultStatus.MATCHES
+                    if retained or book_documents
+                    else ResultStatus.INDETERMINATE
+                ),
+                valid_result_count=len(retained) + len(book_documents),
                 pages_completed=context.pages_completed,
                 truncated=state is PubMedResultState.BOUNDED_TRUNCATION,
                 warning_codes=warnings,
@@ -844,6 +878,7 @@ class PubMedConnector:
                 active_query_id,
                 requested,
                 prepared,
+                book_documents,
                 list(canonical_not_retrieved),
                 malformed_records,
                 record_issues,
@@ -859,6 +894,8 @@ class PubMedConnector:
             query_id=active_query_id,
             requested_pmids=requested,
             publications=publications,
+            book_documents=tuple(book_documents),
+            book_document_mapping_disposition=_book_mapping_disposition(book_documents),
             not_retrieved_pmids=canonical_not_retrieved,
             malformed_records=tuple(malformed_records),
             record_issues=tuple(record_issues),
@@ -874,6 +911,7 @@ class PubMedConnector:
         self,
         query: str,
         query_id: str | None,
+        sort: Literal["relevance"] | None,
     ) -> tuple[str, str | None, PubMedFailure | None]:
         if self._closed:
             return (
@@ -895,6 +933,15 @@ class PubMedConnector:
                 _failure(
                     PubMedFailureKind.INVALID_INPUT,
                     "query_id is not a stable bounded identifier.",
+                ),
+            )
+        if sort is not None and (not isinstance(sort, str) or sort != "relevance"):
+            return (
+                "",
+                None,
+                _failure(
+                    PubMedFailureKind.INVALID_INPUT,
+                    "PubMed sort must be the exact supported value 'relevance'.",
                 ),
             )
         if not isinstance(query, str):
@@ -1535,6 +1582,7 @@ class PubMedConnector:
         query_id: str,
         requested: tuple[str, ...],
         prepared: list[_PreparedArticle],
+        book_documents: list[PubMedBookDocument],
         not_retrieved: list[str],
         malformed_records: list[MalformedPubMedRecord],
         record_issues: list[PubMedRecordIssue],
@@ -1547,8 +1595,10 @@ class PubMedConnector:
             query_id=query_id,
             execution_status=ExecutionStatus.FAILED,
             coverage_status=CoverageStatus.PARTIAL if partial else CoverageStatus.UNAVAILABLE,
-            result_status=ResultStatus.MATCHES if prepared else ResultStatus.INDETERMINATE,
-            valid_result_count=len(prepared),
+            result_status=(
+                ResultStatus.MATCHES if prepared or book_documents else ResultStatus.INDETERMINATE
+            ),
+            valid_result_count=len(prepared) + len(book_documents),
             pages_completed=context.pages_completed,
             truncated=False,
             warning_codes=warnings,
@@ -1566,6 +1616,8 @@ class PubMedConnector:
             query_id=query_id,
             requested_pmids=requested,
             publications=publications,
+            book_documents=tuple(book_documents),
+            book_document_mapping_disposition=_book_mapping_disposition(book_documents),
             not_retrieved_pmids=_stable_unique(not_retrieved),
             malformed_records=tuple(malformed_records),
             record_issues=tuple(record_issues),
@@ -1596,8 +1648,8 @@ class PubMedConnector:
         if parsed.missing_expected_pmids:
             warnings.add(WARNING_MISSING_RECORDS)
 
+    @staticmethod
     def _prepare_article(
-        self,
         article: PubMedArticle,
         *,
         retrieved_at: datetime,
@@ -1660,8 +1712,8 @@ class PubMedConnector:
             )
         return prepared, None
 
+    @staticmethod
     def _build_publications(
-        self,
         prepared: Sequence[_PreparedArticle],
         *,
         outcome: SourceOutcome,
@@ -1720,6 +1772,107 @@ class PubMedConnector:
                     )
                 )
         return tuple(records), tuple(issues)
+
+
+def reconcile_retained_fetch_response(
+    payload: bytes,
+    expected_pmids: Sequence[str],
+    *,
+    query_id: str,
+    retrieved_at: datetime,
+    config: PubMedConnectorConfig,
+) -> PubMedFetchResult:
+    """Reconcile retained EFetch bytes without constructing a transport or client."""
+
+    if not isinstance(payload, bytes) or len(payload) > config.max_payload_bytes:
+        raise ValueError("retained PubMed payload exceeds the configured byte bound")
+    if _QUERY_ID_PATTERN.fullmatch(query_id) is None:
+        raise ValueError("query_id is not a stable bounded identifier")
+    if retrieved_at.tzinfo is None or retrieved_at.utcoffset() is None:
+        raise ValueError("retrieved_at must be timezone aware")
+    requested = tuple(expected_pmids)
+    if not requested or len(requested) > config.max_records:
+        raise ValueError("retained PubMed PMID count exceeds the configured record bound")
+    parsed = parse_fetch_response(payload, requested, max_items=len(requested))
+    warnings: set[str] = set()
+    malformed_records = list(parsed.malformed_records)
+    not_retrieved = list(parsed.missing_expected_pmids)
+    if parsed.malformed_records:
+        warnings.add(WARNING_MALFORMED_RECORDS)
+    if parsed.duplicate_pmids:
+        warnings.add(WARNING_DUPLICATE_PMIDS)
+    if parsed.unexpected_pmids:
+        warnings.add(WARNING_UNEXPECTED_RECORDS)
+    if parsed.missing_expected_pmids:
+        warnings.add(WARNING_MISSING_RECORDS)
+
+    response_hash = sha256_digest(payload)
+    prepared: list[_PreparedArticle] = []
+    record_issues: list[PubMedRecordIssue] = []
+    for article in parsed.records:
+        item, issue = PubMedConnector._prepare_article(
+            article,
+            retrieved_at=retrieved_at.astimezone(UTC),
+            response_content_hash=response_hash,
+        )
+        if issue is not None:
+            record_issues.append(issue)
+            not_retrieved.append(article.pmid)
+            warnings.add(issue.code)
+        else:
+            prepared.append(_require_prepared(item))
+
+    canonical_not_retrieved = _stable_unique(not_retrieved)
+    partial = bool(
+        canonical_not_retrieved or malformed_records or record_issues or parsed.unexpected_pmids
+    )
+    bounds = ExecutionBounds(
+        max_query_characters=config.max_query_characters,
+        max_pages=config.max_pages,
+        max_records=config.max_records,
+        max_payload_bytes=config.max_payload_bytes,
+        max_total_seconds=config.total_deadline_seconds,
+    )
+    books = parsed.book_documents
+    outcome = SourceOutcome(
+        source=SourceType.PUBMED,
+        query_id=query_id,
+        execution_status=ExecutionStatus.SUCCEEDED,
+        coverage_status=CoverageStatus.PARTIAL if partial else CoverageStatus.COMPLETE,
+        result_status=(ResultStatus.MATCHES if prepared or books else ResultStatus.INDETERMINATE),
+        configured_bounds=bounds,
+        valid_result_count=len(prepared) + len(books),
+        pages_completed=1,
+        truncated=False,
+        warning_codes=_sorted_warnings(warnings),
+        failure_id=None,
+    )
+    publications, build_issues = PubMedConnector._build_publications(
+        prepared,
+        outcome=outcome,
+        failure=None,
+    )
+    if build_issues:
+        raise RuntimeError("retained validated publication mapping was not deterministic")
+    return PubMedFetchResult(
+        state=(
+            PubMedResultState.PARTIAL_SUCCESS if partial else PubMedResultState.COMPLETE_SUCCESS
+        ),
+        query_id=query_id,
+        requested_pmids=requested,
+        publications=publications,
+        book_documents=books,
+        book_document_mapping_disposition=_book_mapping_disposition(books),
+        not_retrieved_pmids=canonical_not_retrieved,
+        malformed_records=tuple(malformed_records),
+        record_issues=tuple(record_issues),
+        source_outcome=outcome,
+        failure=None,
+        warning_codes=_sorted_warnings(warnings),
+        raw_responses=(),
+        retry_events=(),
+        request_count=0,
+    )
 
 
 def _map_publication_date(article: PubMedArticle) -> tuple[PartialDate | None, str | None]:
@@ -1980,10 +2133,17 @@ def _stable_unique(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
+def _book_mapping_disposition(
+    book_documents: Sequence[PubMedBookDocument],
+) -> Literal["source_native_retained_not_coerced"] | None:
+    return "source_native_retained_not_coerced" if book_documents else None
+
+
 def _observed_fetch_pmids(parsed: PubMedFetchResponse) -> tuple[str, ...]:
     """Return bounded canonical provider identifiers observed in one fetch page."""
 
     values = [article.pmid for article in parsed.records]
+    values.extend(document.pmid for document in parsed.book_documents)
     values.extend(parsed.unexpected_pmids)
     values.extend(parsed.duplicate_pmids)
     values.extend(
@@ -2050,4 +2210,5 @@ __all__ = [
     "PubMedFetchResult",
     "PubMedRecordIssue",
     "PubMedSearchResult",
+    "reconcile_retained_fetch_response",
 ]

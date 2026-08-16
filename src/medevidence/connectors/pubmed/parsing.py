@@ -69,12 +69,14 @@ class IncompletePubMedXmlError(PubMedXmlError):
 
 
 class MalformedRecordCode(StrEnum):
-    """Stable record-local reasons for excluding one PubMed article."""
+    """Stable record-local reasons for excluding one PubMed provider record."""
 
     MISSING_PMID = "missing_pmid"
     INVALID_PMID = "invalid_pmid"
     MISSING_TITLE = "missing_title"
     MISSING_JOURNAL = "missing_journal"
+    MISSING_BOOK = "missing_book"
+    MISSING_BOOK_TITLE = "missing_book_title"
     MISSING_LANGUAGE = "missing_language"
     MISSING_MEDLINE_STATUS = "missing_medline_status"
     INVALID_AUTHOR = "invalid_author"
@@ -156,8 +158,26 @@ class PubMedArticle:
 
 
 @dataclass(frozen=True, slots=True)
+class PubMedBookDocument:
+    """Validated source-native PubMed book document, distinct from an article."""
+
+    pmid: str
+    title: str
+    abstract_sections: tuple[PubMedAbstractSection, ...]
+    authors: tuple[PubMedAuthor, ...]
+    book_title: str
+    book_accession: str | None
+    publisher_name: str | None
+    publisher_location: str | None
+    medium: str | None
+    languages: tuple[str, ...]
+    publication_types: tuple[str, ...]
+    publication_date: PubMedPublicationDate | None
+
+
+@dataclass(frozen=True, slots=True)
 class MalformedPubMedRecord:
-    """A deterministic, payload-free description of one rejected article."""
+    """A deterministic, payload-free description of one rejected provider record."""
 
     article_index: int
     pmid_hint: str | None
@@ -170,6 +190,9 @@ class PubMedFetchResponse:
     """Validated fetch records plus explicit record-level coverage defects."""
 
     records: tuple[PubMedArticle, ...]
+    book_documents: tuple[PubMedBookDocument, ...]
+    article_occurrence_count: int
+    book_document_occurrence_count: int
     malformed_records: tuple[MalformedPubMedRecord, ...]
     duplicate_pmids: tuple[str, ...]
     unexpected_pmids: tuple[str, ...]
@@ -254,6 +277,7 @@ def parse_fetch_response(
         raise IncompletePubMedXmlError("expected PubmedArticleSet document root")
 
     records: list[PubMedArticle] = []
+    book_documents: list[PubMedBookDocument] = []
     malformed: list[MalformedPubMedRecord] = []
     duplicate_pmids: list[str] = []
     unexpected_pmids: list[str] = []
@@ -261,17 +285,21 @@ def parse_fetch_response(
     accepted_pmids: set[str] = set()
     conflicted_pmids: set[str] = set()
 
-    articles: list[stdlib_etree.Element] = []
+    provider_records: list[tuple[str, stdlib_etree.Element]] = []
     for child in root:
-        if child.tag != "PubmedArticle":
-            continue
-        if len(articles) >= max_items:
+        if child.tag not in {"PubmedArticle", "PubmedBookArticle"}:
+            raise IncompletePubMedXmlError(
+                "PubmedArticleSet contains an unsupported top-level record kind"
+            )
+        if len(provider_records) >= max_items:
             raise IncompletePubMedXmlError(
                 "PubmedArticleSet exceeds the configured provider-item bound"
             )
-        articles.append(child)
-    for article_index, element in enumerate(articles):
-        pmid_hint = _pmid_hint(element)
+        provider_records.append((child.tag, child))
+    for article_index, (record_kind, element) in enumerate(provider_records):
+        pmid_hint = (
+            _pmid_hint(element) if record_kind == "PubmedArticle" else _book_pmid_hint(element)
+        )
         canonical_hint = pmid_hint if pmid_hint is not None and _is_valid_pmid(pmid_hint) else None
         if canonical_hint is not None:
             if canonical_hint in seen_occurrences and canonical_hint not in duplicate_pmids:
@@ -279,12 +307,19 @@ def parse_fetch_response(
                 conflicted_pmids.add(canonical_hint)
                 accepted_pmids.discard(canonical_hint)
                 records = [record for record in records if record.pmid != canonical_hint]
+                book_documents = [
+                    record for record in book_documents if record.pmid != canonical_hint
+                ]
             seen_occurrences.add(canonical_hint)
             if canonical_hint not in expected_set and canonical_hint not in unexpected_pmids:
                 unexpected_pmids.append(canonical_hint)
 
         try:
-            record = _parse_article(element)
+            record = (
+                _parse_article(element)
+                if record_kind == "PubmedArticle"
+                else _parse_book_document(element)
+            )
         except _RecordError as error:
             malformed.append(
                 MalformedPubMedRecord(
@@ -302,12 +337,22 @@ def parse_fetch_response(
             or record.pmid in conflicted_pmids
         ):
             continue
-        records.append(record)
+        if isinstance(record, PubMedArticle):
+            records.append(record)
+        else:
+            book_documents.append(record)
         accepted_pmids.add(record.pmid)
 
     missing = tuple(pmid for pmid in expected if pmid not in accepted_pmids)
     return PubMedFetchResponse(
         records=tuple(records),
+        book_documents=tuple(book_documents),
+        article_occurrence_count=sum(
+            record_kind == "PubmedArticle" for record_kind, _ in provider_records
+        ),
+        book_document_occurrence_count=sum(
+            record_kind == "PubmedBookArticle" for record_kind, _ in provider_records
+        ),
         malformed_records=tuple(malformed),
         duplicate_pmids=tuple(duplicate_pmids),
         unexpected_pmids=tuple(unexpected_pmids),
@@ -489,6 +534,75 @@ def _parse_article(element: stdlib_etree.Element) -> PubMedArticle:
     )
 
 
+def _parse_book_document(element: stdlib_etree.Element) -> PubMedBookDocument:
+    book_document = _record_child(
+        element,
+        "BookDocument",
+        MalformedRecordCode.MISSING_BOOK,
+    )
+    book_data = _record_child(
+        element,
+        "PubmedBookData",
+        MalformedRecordCode.INVALID_PMID,
+    )
+    primary_pmid = _record_direct_pmid(book_document, "BookDocument")
+    secondary_pmid = _book_data_pmid(book_data)
+    if primary_pmid != secondary_pmid:
+        raise _RecordError(
+            MalformedRecordCode.INVALID_PMID,
+            "BookDocument and PubmedBookData PubMed identifiers do not match",
+        )
+
+    book = _record_child(book_document, "Book", MalformedRecordCode.MISSING_BOOK)
+    book_title = _record_required_text(
+        book,
+        "BookTitle",
+        MalformedRecordCode.MISSING_BOOK_TITLE,
+    )
+    publisher_name: str | None = None
+    publisher_location: str | None = None
+    publishers = [child for child in book if child.tag == "Publisher"]
+    if len(publishers) > 1:
+        raise _RecordError(
+            MalformedRecordCode.MISSING_BOOK,
+            "Book Publisher must occur at most once",
+        )
+    if publishers:
+        publisher_name = _record_optional_child_text(
+            publishers[0],
+            "PublisherName",
+            MalformedRecordCode.MISSING_BOOK,
+        )
+        publisher_location = _record_optional_child_text(
+            publishers[0],
+            "PublisherLocation",
+            MalformedRecordCode.MISSING_BOOK,
+        )
+
+    return PubMedBookDocument(
+        pmid=primary_pmid,
+        title=_record_required_text(
+            book_document,
+            "ArticleTitle",
+            MalformedRecordCode.MISSING_TITLE,
+        ),
+        abstract_sections=_abstract_sections(book_document),
+        authors=_book_authors(book_document),
+        book_title=book_title,
+        book_accession=_book_accession(book_document),
+        publisher_name=publisher_name,
+        publisher_location=publisher_location,
+        medium=_record_optional_child_text(
+            book,
+            "Medium",
+            MalformedRecordCode.MISSING_BOOK,
+        ),
+        languages=_record_languages(book_document),
+        publication_types=_book_publication_types(book_document),
+        publication_date=_book_publication_date(book),
+    )
+
+
 def _record_pmid(citation: stdlib_etree.Element) -> str:
     children = [child for child in citation if child.tag == "PMID"]
     if not children:
@@ -499,6 +613,41 @@ def _record_pmid(citation: stdlib_etree.Element) -> str:
     if not _is_valid_pmid(value):
         raise _RecordError(MalformedRecordCode.INVALID_PMID, "MedlineCitation PMID is invalid")
     return value
+
+
+def _record_direct_pmid(parent: stdlib_etree.Element, location: str) -> str:
+    children = [child for child in parent if child.tag == "PMID"]
+    if len(children) != 1:
+        raise _RecordError(
+            MalformedRecordCode.INVALID_PMID,
+            f"{location} PMID must occur exactly once",
+        )
+    value = _element_text(children[0]).strip()
+    if not _is_valid_pmid(value):
+        raise _RecordError(
+            MalformedRecordCode.INVALID_PMID,
+            f"{location} PMID is invalid",
+        )
+    return value
+
+
+def _book_data_pmid(book_data: stdlib_etree.Element) -> str:
+    identifier_list = _record_child(
+        book_data,
+        "ArticleIdList",
+        MalformedRecordCode.INVALID_PMID,
+    )
+    values = [
+        _optional_element_text(element)
+        for element in identifier_list
+        if element.tag == "ArticleId" and element.attrib.get("IdType") == "pubmed"
+    ]
+    if len(values) != 1 or values[0] is None or not _is_valid_pmid(values[0].strip()):
+        raise _RecordError(
+            MalformedRecordCode.INVALID_PMID,
+            "PubmedBookData requires exactly one valid ArticleId with IdType=pubmed",
+        )
+    return values[0].strip()
 
 
 def _record_languages(article: stdlib_etree.Element) -> tuple[str, ...]:
@@ -572,6 +721,25 @@ def _authors(article: stdlib_etree.Element) -> tuple[PubMedAuthor, ...]:
     return tuple(authors)
 
 
+def _book_authors(book_document: stdlib_etree.Element) -> tuple[PubMedAuthor, ...]:
+    author_lists = [child for child in book_document if child.tag == "AuthorList"]
+    if len(author_lists) > 1:
+        raise _RecordError(
+            MalformedRecordCode.INVALID_AUTHOR,
+            "BookDocument AuthorList must occur at most once",
+        )
+    return _authors(book_document)
+
+
+def _book_publication_types(book_document: stdlib_etree.Element) -> tuple[str, ...]:
+    return tuple(
+        value
+        for element in book_document
+        if element.tag == "PublicationType"
+        and (value := _optional_element_text(element)) is not None
+    )
+
+
 def _publication_types(article: stdlib_etree.Element) -> tuple[str, ...]:
     publication_type_lists = [child for child in article if child.tag == "PublicationTypeList"]
     if not publication_type_lists:
@@ -591,6 +759,22 @@ def _publication_types(article: stdlib_etree.Element) -> tuple[str, ...]:
 
 def _publication_date(journal: stdlib_etree.Element) -> PubMedPublicationDate | None:
     pub_date = journal.find("./JournalIssue/PubDate")
+    return _publication_date_element(pub_date)
+
+
+def _book_publication_date(book: stdlib_etree.Element) -> PubMedPublicationDate | None:
+    dates = [child for child in book if child.tag == "PubDate"]
+    if len(dates) > 1:
+        raise _RecordError(
+            MalformedRecordCode.INVALID_PUBLICATION_DATE,
+            "Book PubDate must occur at most once",
+        )
+    return _publication_date_element(dates[0] if dates else None)
+
+
+def _publication_date_element(
+    pub_date: stdlib_etree.Element | None,
+) -> PubMedPublicationDate | None:
     if pub_date is None:
         return None
     year = _optional_child_text(pub_date, "Year")
@@ -613,6 +797,25 @@ def _publication_date(journal: stdlib_etree.Element) -> PubMedPublicationDate | 
         day=day,
         medline_date=medline_date,
     )
+
+
+def _book_accession(book_document: stdlib_etree.Element) -> str | None:
+    lists = [child for child in book_document if child.tag == "ArticleIdList"]
+    if len(lists) > 1:
+        raise _RecordError(
+            MalformedRecordCode.AMBIGUOUS_ARTICLE_IDENTIFIER,
+            "BookDocument ArticleIdList must occur at most once",
+        )
+    if not lists:
+        return None
+    values = [
+        value
+        for element in lists[0]
+        if element.tag == "ArticleId"
+        and element.attrib.get("IdType") == "bookaccession"
+        and (value := _optional_element_text(element)) is not None
+    ]
+    return _single_optional_identifier("book accession", values)
 
 
 def _article_identifiers(
@@ -700,6 +903,15 @@ def _relationships(citation: stdlib_etree.Element) -> tuple[PubMedRelationship, 
 
 def _pmid_hint(article: stdlib_etree.Element) -> str | None:
     element = article.find("./MedlineCitation/PMID")
+    value = _optional_element_text(element) if element is not None else None
+    if value is None or len(value) > _MAX_PMID_CHARACTERS:
+        return None
+    canonical = value.strip()
+    return canonical if _is_valid_pmid(canonical) else None
+
+
+def _book_pmid_hint(book_article: stdlib_etree.Element) -> str | None:
+    element = book_article.find("./BookDocument/PMID")
     value = _optional_element_text(element) if element is not None else None
     if value is None or len(value) > _MAX_PMID_CHARACTERS:
         return None
@@ -804,6 +1016,7 @@ __all__ = [
     "PubMedAbstractSection",
     "PubMedArticle",
     "PubMedAuthor",
+    "PubMedBookDocument",
     "PubMedFetchResponse",
     "PubMedPublicationDate",
     "PubMedRelationship",

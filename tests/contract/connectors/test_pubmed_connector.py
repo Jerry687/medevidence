@@ -117,6 +117,24 @@ def article_xml(
     )
 
 
+def book_article_xml(primary_pmid: str, *, secondary_pmid: str | None = None) -> str:
+    secondary = secondary_pmid or primary_pmid
+    return (
+        "<PubmedBookArticle><BookDocument>"
+        f"<PMID>{primary_pmid}</PMID>"
+        '<ArticleIdList><ArticleId IdType="bookaccession">NBK123</ArticleId></ArticleIdList>'
+        "<Book><Publisher><PublisherName>Source Publisher</PublisherName>"
+        "<PublisherLocation>Bethesda (MD)</PublisherLocation></Publisher>"
+        "<BookTitle>Source Book</BookTitle><PubDate><Year>2025</Year></PubDate>"
+        "<Medium>Internet</Medium></Book>"
+        "<ArticleTitle>Book chapter title</ArticleTitle><Language>eng</Language>"
+        "<PublicationType>Review</PublicationType>"
+        "</BookDocument><PubmedBookData><ArticleIdList>"
+        f'<ArticleId IdType="pubmed">{secondary}</ArticleId>'
+        "</ArticleIdList></PubmedBookData></PubmedBookArticle>"
+    )
+
+
 def fetch_xml(*articles: str) -> bytes:
     return ("<PubmedArticleSet>" + "".join(articles) + "</PubmedArticleSet>").encode()
 
@@ -178,12 +196,54 @@ def test_one_page_success_uses_fixed_endpoint_and_bounded_parameters() -> None:
     assert request.url.scheme == "https"
     assert request.url.host == "eutils.ncbi.nlm.nih.gov"
     assert request.url.path == PUBMED_ESEARCH_PATH
+    assert str(request.url).endswith(
+        "?db=pubmed&term=aspirin%5BTitle%2FAbstract%5D&retmode=xml&retstart=0&retmax=20&tool=medevidence"
+    )
     assert request.url.params["db"] == "pubmed"
     assert request.url.params["retmode"] == "xml"
     assert request.url.params["retmax"] == "20"
     assert request.url.params["tool"] == "medevidence"
     assert "email" not in request.url.params
     assert request.headers["accept-encoding"] == "identity"
+
+
+def test_relevance_sort_is_serialized_in_the_exact_wire_position() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, content=search_xml())
+
+    with connector(
+        handler,
+        config=PubMedConnectorConfig.m1a_constrained_v1(),
+    ) as client:
+        result = client.search("bounded query", sort="relevance")
+
+    assert result.state is PubMedResultState.EMPTY_SUCCESS
+    assert str(requests[0].url) == (
+        f"{PUBMED_ORIGIN}{PUBMED_ESEARCH_PATH}?db=pubmed&term=bounded+query&retmode=xml"
+        "&retstart=0&retmax=100&sort=relevance&tool=medevidence"
+    )
+
+
+@pytest.mark.parametrize("sort", ["date", "pub_date", "", 1, True])
+def test_unsupported_sort_fails_before_transport(sort: object) -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("invalid sort must not reach transport")
+
+    with connector(handler) as client:
+        result = client.search("bounded query", sort=sort)  # type: ignore[arg-type]
+
+    assert calls == 0
+    assert result.failure is not None
+    assert result.failure.kind is PubMedFailureKind.INVALID_INPUT
+    assert result.request_count == 0
+    assert result.raw_responses == ()
 
 
 def test_provider_external_dtd_search_and_fetch_stay_within_mock_transport() -> None:
@@ -1149,6 +1209,52 @@ def test_fetch_malformed_sibling_is_partial_and_valid_record_is_retained() -> No
     assert result.source_outcome is not None
     assert result.source_outcome.coverage_status is CoverageStatus.PARTIAL
     assert result.source_outcome.result_status is ResultStatus.MATCHES
+
+
+def test_fetch_retains_book_document_without_coercing_article_semantics() -> None:
+    body = fetch_xml(article_xml("111"), book_article_xml("31644235"))
+    with connector(lambda _: httpx.Response(200, content=body)) as client:
+        result = client.fetch(("111", "31644235"))
+
+    assert result.state is PubMedResultState.COMPLETE_SUCCESS
+    assert tuple(record.pmid for record in result.publications) == ("111",)
+    assert len(result.book_documents) == 1
+    assert result.book_documents[0].pmid == "31644235"
+    assert result.book_documents[0].book_title == "Source Book"
+    assert not hasattr(result.book_documents[0], "journal")
+    assert result.book_document_mapping_disposition == "source_native_retained_not_coerced"
+    assert result.not_retrieved_pmids == ()
+    assert result.record_issues == ()
+    assert result.source_outcome is not None
+    assert result.source_outcome.valid_result_count == 2
+    assert result.source_outcome.coverage_status is CoverageStatus.COMPLETE
+
+
+def test_fetch_book_identifier_mismatch_is_partial_and_not_retrieved() -> None:
+    body = fetch_xml(book_article_xml("31644235", secondary_pmid="31644236"))
+    with connector(lambda _: httpx.Response(200, content=body)) as client:
+        result = client.fetch(("31644235",))
+
+    assert result.state is PubMedResultState.PARTIAL_SUCCESS
+    assert result.publications == ()
+    assert result.book_documents == ()
+    assert result.book_document_mapping_disposition is None
+    assert result.not_retrieved_pmids == ("31644235",)
+    assert len(result.malformed_records) == 1
+    assert result.source_outcome is not None
+    assert result.source_outcome.valid_result_count == 0
+
+
+def test_fetch_unknown_top_level_record_kind_fails_closed() -> None:
+    body = fetch_xml("<DeleteCitation><PMID>111</PMID></DeleteCitation>")
+    with connector(lambda _: httpx.Response(200, content=body)) as client:
+        result = client.fetch(("111",))
+
+    assert result.state is PubMedResultState.FAILED
+    assert result.failure is not None
+    assert result.failure.kind is PubMedFailureKind.INCOMPLETE_XML
+    assert result.not_retrieved_pmids == ("111",)
+    assert result.book_documents == ()
 
 
 def test_fetch_all_malformed_is_partial_indeterminate_not_no_match() -> None:
