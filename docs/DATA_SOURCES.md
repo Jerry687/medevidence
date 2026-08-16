@@ -438,3 +438,28 @@ Option-A children use the namespaced archive SHA as corpus ID and namespaced
 manifest SHA as corpus version, plus the exact manifest, terminal audit, split
 membership, and artifact lineage. Document labels must be canonical safe
 `cadec/text/<document_id>.txt` paths and cannot be either exact exclusion.
+
+## 15. M2-004 DailyMed source-native section semantics
+
+M2-004 adds an evaluation-only representation beside the frozen M1B
+`LabelSection`. Exact code plus exact HL7 LOINC code-system OID identifies one
+of the four normalized LOINC section types. The provider's direct `<title>` is
+retained as separate exact display text and need not equal the generic LOINC
+name. No title similarity, fuzzy alias, silent rewriting, or code expansion is
+permitted.
+
+Every same-code source occurrence remains independent and binds SETID, SPL
+version, code/system, normalized name, provider title, source ordinal,
+immediate parent ordinal, XML path, extracted direct-child text, text SHA-256,
+and an identity derived from source location and content. No deduplication,
+concatenation, or first-occurrence selection is allowed. A no-text parent is a
+visible structural occurrence with empty-text SHA-256 and is not retrieval
+eligible.
+
+The immutable retained OZEMPIC artifact contains 13 admitted occurrences:
+three `34084-4` occurrences (one parent and two children), eight `43685-7`
+occurrences (one no-text parent and seven text-bearing children), and one each
+of `34066-1` and `34067-9`. Exact inventory metadata lives in the external
+M2-004 evidence root; raw XML remains only in the immutable external M2-003
+root. This offline inventory authorizes no request and does not imply that the
+raw provider artifact passed the strict production XML parser.

@@ -103,3 +103,12 @@ Independent evidence-only review/audit of the reconciliation candidate, its
 later commit/push and hosted rerun, PR readiness, merge, and approved-`main`
 integration remain pending. No live-source validation occurred. It provides
 no database, tool, report, or API implementation.
+
+## Owner-accepted M2 DailyMed source-native section record
+
+- [ADR-014: M2 DailyMed source-native section occurrences](ADR-014-m2-004-dailymed-source-native-sections.md)
+
+ADR-014 separates exact provider display titles from frozen generic LOINC
+names and preserves repeated same-code SPL occurrences by source location and
+content. It is additive to ADR-011, authorizes no medical-source request, and
+does not complete or rerun the stopped M2-003 Gold-10 work item.

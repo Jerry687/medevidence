@@ -7,7 +7,7 @@ from datetime import date
 from enum import StrEnum
 from typing import Any, Final, Literal, Self
 
-from pydantic import ConfigDict, Field, ValidationInfo, model_validator
+from pydantic import ConfigDict, Field, ValidationError, ValidationInfo, model_validator
 
 from .identifiers import (
     AcquisitionId,
@@ -45,6 +45,7 @@ from .identifiers import (
     WarningCode,
     canonical_json,
     derive_identity,
+    sha256_digest,
 )
 from .scope import (
     GI_PT_SET_M1B_V1,
@@ -55,6 +56,8 @@ from .scope import (
     FaersInclusiveDateRangeV1,
     SourceType,
 )
+
+DOMAIN_MODEL_VALIDATION_ERROR: Final[type[ValidationError]] = ValidationError
 
 
 class PlanningStatus(StrEnum):
@@ -2583,6 +2586,76 @@ DAILYMED_LOINC_SECTION_ORACLE: Final = DailyMedLoincSectionOracle(
 )
 DAILYMED_LOINC_SECTION_ALLOWLIST: Final = DAILYMED_LOINC_SECTION_ORACLE.entries
 _LOINC_TITLE_BY_CODE: Final = {item.code: item.title for item in DAILYMED_LOINC_SECTION_ALLOWLIST}
+
+
+class DailyMedSourceNativeSectionV1(DurableModel):
+    """One source-located DailyMed section occurrence without code deduplication."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
+
+    schema_version: Literal["m2.dailymed.source-native-section.v1"] = (
+        "m2.dailymed.source-native-section.v1"
+    )
+    source: Literal[SourceType.DAILYMED] = SourceType.DAILYMED
+    setid: CanonicalSetId
+    spl_version: CanonicalSplVersion
+    section_occurrence_id: SectionId
+    code_system_oid: Literal["2.16.840.1.113883.6.1"]
+    section_code: Literal["34084-4", "43685-7", "34066-1", "34067-9"]
+    normalized_section_name: NonBlankText
+    provider_title: NonBlankText
+    section_ordinal: int = Field(ge=0, lt=50_000)
+    parent_section_ordinal: int | None = Field(default=None, ge=0, lt=50_000)
+    xml_path: NonBlankText
+    extracted_text: str = Field(max_length=262_144)
+    text_sha256: Sha256Digest
+    is_structural_container: bool
+    retrieval_eligible: bool
+
+    @classmethod
+    def create(cls, **values: Any) -> Self:
+        """Derive text disposition, digest, and identity from the exact occurrence."""
+
+        data = dict(values)
+        text = data.get("extracted_text")
+        if not isinstance(text, str):
+            raise ValueError("source-native extracted_text must be a string")
+        data["text_sha256"] = sha256_digest(text)
+        data["is_structural_container"] = not text.strip()
+        data["retrieval_eligible"] = bool(text.strip())
+        payload = {
+            "schema_version": "m2.dailymed.source-native-section.v1",
+            "source": SourceType.DAILYMED,
+            **data,
+        }
+        data["section_occurrence_id"] = derive_identity("dailymed-source-native-section", payload)
+        return cls.model_validate(data)
+
+    @model_validator(mode="after")
+    def validate_source_native_occurrence(self) -> Self:
+        """Reject normalized-name, text, hierarchy, and occurrence-identity drift."""
+
+        if self.normalized_section_name != _LOINC_TITLE_BY_CODE[self.section_code]:
+            raise ValueError("normalized section name must equal the frozen LOINC name")
+        if self.parent_section_ordinal is not None and (
+            self.parent_section_ordinal >= self.section_ordinal
+        ):
+            raise ValueError("parent section ordinal must precede the section occurrence")
+        expected_structural = not self.extracted_text.strip()
+        if (
+            self.is_structural_container != expected_structural
+            or self.retrieval_eligible == expected_structural
+        ):
+            raise ValueError("source-native section text disposition is inconsistent")
+        if self.text_sha256 != sha256_digest(self.extracted_text):
+            raise ValueError("source-native section text digest differs from exact text")
+        expected = derive_identity(
+            "dailymed-source-native-section",
+            self.model_dump(mode="python", exclude={"section_occurrence_id"}),
+        )
+        if self.section_occurrence_id != expected:
+            raise ValueError("section_occurrence_id does not match source location/content")
+        return self
 
 
 class LabelSection(DurableModel):
