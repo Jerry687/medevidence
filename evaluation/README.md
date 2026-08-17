@@ -22,6 +22,55 @@ uv run --locked --no-sync python -m evaluation.run_evaluation `
   --jsonl tests/fixtures/retrieval/harness_smoke.json
 ```
 
+## M2-006 Dev-40 benchmark adapter
+
+The M2-006 adapter is an offline-only, exact-byte-bound runner for the
+Owner-confirmed `MEDEVIDENCE_DEV40` development corpus. It runs exactly BM25
+(`k1=0.9`, `b=0.4`), the existing local CPU MedCPT configuration, and
+RRF(BM25,MedCPT) (`k=60`). It performs no tuning and uses no reranker. The
+output is a new external-only `benchmark-001` directory; an existing output or
+pending transaction fails before any corpus or model load.
+
+The adapter reconciles all 23 retrieval-contract questions against the frozen
+inputs, but executes retrieval for exactly the ordered 20 ranking-evaluable
+questions. Each mode retains 20 records with complete 214-entry deterministic
+rankings, component ranks/scores, per-question metrics, and timing. The
+authoritative metric denominators are 20 for nDCG@10, Recall@5, Recall@10, and
+MRR@10, and 17 for DirectHit@10 and DirectMRR@10. Q26/Q28/Q29 remain visible
+only as manifest-level source-state metadata with their authoritative reasons
+and explicit declarations that no ranking, component rank/score, metric, or
+query timing was executed. Q2/Q16/Q18 retain broad metrics but have null direct
+metrics.
+
+The canonical invocation is:
+
+```powershell
+uv run --locked --no-sync python -m evaluation.run_dev40_benchmark `
+  --corpus-manifest "D:\Projects\medevidence-external-evidence\M2-006-MEDEVIDENCE-DEV40\corpus-freeze-001\corpus-manifest.json" `
+  --blinded-packet "D:\Projects\medevidence-external-evidence\M2-006-MEDEVIDENCE-DEV40\corpus-freeze-001\blinded-adjudication-packet.json" `
+  --qrels "D:\Projects\medevidence-external-evidence\M2-006-MEDEVIDENCE-DEV40\owner-confirmed-bundle-001\dev40-owner-confirmed-qrels-v1.tsv" `
+  --nonzero-qrels "D:\Projects\medevidence-external-evidence\M2-006-MEDEVIDENCE-DEV40\owner-confirmed-bundle-001\dev40-owner-confirmed-nonzero-qrels-v1.tsv" `
+  --adjudication "D:\Projects\medevidence-external-evidence\M2-006-MEDEVIDENCE-DEV40\owner-confirmed-bundle-001\dev40-owner-confirmed-ai-adjudication-v1.json" `
+  --metric-contract "D:\Projects\medevidence-external-evidence\M2-006-MEDEVIDENCE-DEV40\owner-confirmed-bundle-001\dev40-owner-confirmed-metric-contract-v1.json" `
+  --bundle-manifest "D:\Projects\medevidence-external-evidence\M2-006-MEDEVIDENCE-DEV40\owner-confirmed-bundle-001\dev40-owner-confirmed-bundle-manifest.json" `
+  --model-manifest "D:\Projects\medevidence-m2-002-model-evidence\medcpt-artifact-acquisition-r1.json" `
+  --model-cache "D:\Projects\medevidence-m2-002-model-cache" `
+  --output-root "D:\Projects\medevidence-external-evidence\M2-006-MEDEVIDENCE-DEV40\benchmark-001"
+```
+
+The immutable freeze source-state inventory remains historical evidence. Its
+repository-source binding predates a merged unit-test change, so the current
+generic freeze verifier no longer equals current repository source bytes. The
+benchmark independently validates exact canonical corpus/packet bytes,
+schemas, text hashes, candidate coverage, qrels/adjudication pair
+reconciliation, and immutable freeze evidence identities, then binds current
+benchmark source bytes separately. It does not alter corpus, questions, qrels,
+or the historical source-state record.
+
+Dev-40 results are descriptive development-set evidence only. They do not
+support statistical superiority, clinical, causal, incidence, product-safety,
+release, or Holdout-20 claims.
+
 Final NFCorpus evidence uses a deterministic tracked run directory while the
 archive and extracted dataset remain outside Git:
 
