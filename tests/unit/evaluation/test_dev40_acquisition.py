@@ -24,6 +24,35 @@ EXPECTED_SEARCH_HASHES = (
 FIXED_NOW = datetime(2026, 8, 16, 18, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_frozen_git_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the exact Owner-frozen baseline and ten-path candidate."""
+    repository = Path(acquisition.__file__).resolve().parents[1]
+    baseline_tracked = set(acquisition.SOURCE_STATE_PATHS[:4])
+    candidate_status = {
+        relative: (b" M" if relative in baseline_tracked else b"??")
+        for relative in acquisition.SOURCE_STATE_PATHS
+    }
+    status_output = b"".join(
+        status + b" " + relative.encode("ascii") + b"\0"
+        for relative, status in candidate_status.items()
+    )
+    original = acquisition._run_git
+
+    def deterministic(arguments: tuple[str, ...], *, stdout_limit: int) -> bytes:
+        if arguments == ("rev-parse", "--verify", "HEAD"):
+            return (acquisition.BASELINE_COMMIT + "\n").encode("ascii")
+        if arguments == ("branch", "--show-current"):
+            return (acquisition.EXPECTED_BRANCH + "\n").encode("ascii")
+        if arguments == ("rev-parse", "--show-toplevel"):
+            return (str(repository) + "\n").encode("ascii")
+        if arguments == ("status", "--porcelain=v1", "-z", "--untracked-files=all"):
+            return status_output
+        return original(arguments, stdout_limit=stdout_limit)
+
+    monkeypatch.setattr(acquisition, "_run_git", deterministic)
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -443,7 +472,8 @@ def test_loaded_runtime_origin_drift_fails_before_live_root_or_client(
 def test_coordination_venv_cli_bootstraps_exact_worktree_src_without_pythonpath() -> None:
     repository = Path(acquisition.__file__).resolve().parents[1]
     coordination_python = Path(r"D:\Projects\medevidence\.venv\Scripts\python.exe")
-    assert coordination_python.is_file()
+    if not coordination_python.is_file():
+        pytest.skip("machine-local coordination interpreter is unavailable")
     cli = repository / "evaluation" / "run_dev40_acquisition.py"
     code = (
         "import inspect,runpy;"
