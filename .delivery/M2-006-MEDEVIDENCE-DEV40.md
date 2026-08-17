@@ -2,11 +2,19 @@
 
 Updated: `2026-08-17`
 
-Status: **TERMINAL_AUDIT_PASS_AWAITING_GIT_INTEGRATION**
+Status: **M2-006_COMPLETE**
 
-Branch: `codex/m2-006-dev40-benchmark`
+Feature branch: `codex/m2-006-dev40-benchmark`
 
-Approved baseline: `6d7a06520e1749069e2fa22be5105588dfc0e09f`
+Feature commit: `82213b86590ec755ce4b19d9349e5bf2516933da`
+
+PR: `#32` (merged)
+
+M2-006 benchmark merge/current-main snapshot:
+`fc57fae26fb17cfad5cbc2cf776bbc3b7209e11b`
+
+Post-merge workflow: `32000685143` (`windows-quality`: **PASS**;
+`compose-config`: **PASS**)
 
 ## Frozen scope
 
@@ -195,8 +203,12 @@ causal, incidence, comparative-safety, or Holdout-20 claim.
 Network operations for implementation, validation, and benchmark execution:
 `0` medical-source operations and `0` model downloads.
 
-Git operations so far: branch creation only. No stage, commit, push, PR, merge,
-rebase, reset, clean, or remote-state change has occurred.
+Git operations completed for benchmark integration: feature commit
+`82213b86590ec755ce4b19d9349e5bf2516933da`, push, PR `#32`, merge commit
+`fc57fae26fb17cfad5cbc2cf776bbc3b7209e11b`, and post-merge workflow
+`32000685143`. The workflow's `windows-quality` and `compose-config` jobs both
+passed. No amend, rebase, reset, clean, force-push, history rewrite, or branch
+deletion occurred.
 
 ## Terminal evidence audit
 
