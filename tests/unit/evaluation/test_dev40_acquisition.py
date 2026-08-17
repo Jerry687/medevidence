@@ -25,6 +25,63 @@ FIXED_NOW = datetime(2026, 8, 16, 18, 0, tzinfo=UTC)
 
 
 @pytest.fixture(autouse=True)
+def _deterministic_external_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    """Bind the production identity checks to deterministic external fixtures."""
+    root = tmp_path / "external-evidence"
+    fixture_paths: dict[str, Path] = {}
+    primary_artifacts = (
+        ("INVENTORY", "evidence-gap-inventory/evidence-gap-inventory-001.json"),
+        (
+            "ACCEPTED_REVIEW",
+            "evidence-gap-inventory/independent-evidence-gap-review-004.json",
+        ),
+        ("FREEZE_V1", "acquisition-freeze/request-freeze-001.json"),
+        ("FREEZE_V2", "acquisition-freeze/request-freeze-002.json"),
+        ("FREEZE_V3", "acquisition-freeze/request-freeze-003.json"),
+        (
+            "REVIEW_V3",
+            "acquisition-freeze/independent-pre-network-review-003.json",
+        ),
+    )
+    artifacts_with_sidecars = {"FREEZE_V1", "FREEZE_V2", "FREEZE_V3", "REVIEW_V3"}
+
+    for identity, relative in primary_artifacts:
+        path = root / relative
+        raw = (
+            '{"fixture_schema":"medevidence.dev40.test-external-evidence.v1",'
+            f'"identity":"{identity}"}}\n'
+        ).encode("ascii")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        monkeypatch.setattr(acquisition, f"{identity}_PATH", path)
+        monkeypatch.setattr(acquisition, f"{identity}_BYTES", len(raw))
+        monkeypatch.setattr(acquisition, f"{identity}_SHA256", digest)
+        fixture_paths[f"{identity}_PATH"] = path
+
+        if identity in artifacts_with_sidecars:
+            sidecar_path = path.with_suffix(path.suffix + ".sha256")
+            sidecar_raw = f"{digest}  {path.name}\n".encode("ascii")
+            sidecar_path.write_bytes(sidecar_raw)
+            monkeypatch.setattr(
+                acquisition,
+                f"{identity}_SIDECAR_BYTES",
+                len(sidecar_raw),
+            )
+            monkeypatch.setattr(
+                acquisition,
+                f"{identity}_SIDECAR_SHA256",
+                hashlib.sha256(sidecar_raw).hexdigest(),
+            )
+            fixture_paths[f"{identity}_SIDECAR_PATH"] = sidecar_path
+
+    return fixture_paths
+
+
+@pytest.fixture(autouse=True)
 def _deterministic_frozen_git_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Model the exact Owner-frozen baseline and ten-path candidate."""
     repository = Path(acquisition.__file__).resolve().parents[1]
@@ -400,6 +457,26 @@ def test_prepare_writes_exact_freeze_without_constructing_clients(
         "tests/unit/evaluation/test_dev40_corpus.py",
     )
     assert len(value["source_state"]["files"]) == 10
+
+
+@pytest.mark.parametrize("drift", ["bytes", "expected_hash"])
+def test_external_evidence_fixture_identity_drift_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _deterministic_external_evidence: dict[str, Path],
+    drift: str,
+) -> None:
+    inventory_path = _deterministic_external_evidence["INVENTORY_PATH"]
+    if drift == "bytes":
+        inventory_path.write_bytes(inventory_path.read_bytes() + b"tampered")
+    else:
+        monkeypatch.setattr(acquisition, "INVENTORY_SHA256", "0" * 64)
+
+    freeze_root = tmp_path / "freeze"
+    freeze_root.mkdir()
+    with pytest.raises(acquisition.Dev40AcquisitionError, match="identity drifted"):
+        acquisition.prepare_request_freeze(freeze_root, _allow_test_root=True)
+    assert not (freeze_root / acquisition.FREEZE_PATH.name).exists()
 
 
 def test_wrong_freeze_or_source_state_fails_before_client_construction(
