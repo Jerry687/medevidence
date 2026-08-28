@@ -167,6 +167,185 @@ conclusion; the draft remains research-only, non-exportable, and non-clinical.
 | [`V1-NFR-007`](PRD.md#v1-nfr-007--local-public-data-boundary) | [§15 Deployment boundary](ARCHITECTURE.md#15-deployment-boundary) | [§8.1 Git boundary](DATA_SOURCES.md#81-git-boundary) | [§1 V1 boundary](SECURITY.md#1-v1-boundary), [§11 PHI boundary](SECURITY.md#11-secrets-and-operational-phi-boundary) | [§8 Safety evaluation](EVALUATION_PLAN.md#8-agent-and-safety-evaluation), [§12 E3](EVALUATION_PLAN.md#gate-e3--threshold-and-release-candidate-freeze) | [ADR-001](decisions/ADR-001-v1-reference-domain.md), [ADR-008](decisions/ADR-008-v1-technology-stack.md) | M0/M3/M4 | No-upload/schema inspection; synthetic name/date/record/address/narrative rejection; log/persistence audit | Suspected PHI fails closed before planning, raw input is not persisted/logged, and no certified de-identification/compliance claim is made |
 | [`V1-NFR-008`](PRD.md#v1-nfr-008--measured-claims-only) | [§13 Observability](ARCHITECTURE.md#13-observability) | [§10 Report reproducibility](DATA_SOURCES.md#10-freshness-and-report-reproducibility) | [§14 Audit](SECURITY.md#14-observability-and-audit) | [§11 Artifacts](EVALUATION_PLAN.md#11-reproducibility-and-artifact-policy), [§12 gates](EVALUATION_PLAN.md#12-evaluation-sequence-and-gates) | [ADR-006](decisions/ADR-006-evaluation-split-and-reproducibility.md) | M2–M4 | Metric recomputation, public-claim audit, contamination report | Every published number recomputes from raw results with denominators/failures; no manual metric entry |
 
+### M3-002 successor-002 durable validation-receipt design mapping
+
+ADR-016 is Owner-accepted design authority. Independent Reviews 004–008 remain
+immutable below. Review 008 returned `FAIL — P0 0 / P1 0 / P2 2`; documentation-
+only Round 8/10 aligned ADR-016 with the implemented canonical/pending/receipt
+ordering and distinguished the 19-path allowlist from 18 changed paths.
+Independent Review 009 then returned `PASS — P0 0 / P1 0 / P2 0`, findings
+none. Current status is `AWAITING_TERMINAL_EVIDENCE_AUDIT`; review PASS is not
+terminal or integration PASS.
+
+| Requirement | Frozen receipt/aggregation mapping | Required executable evidence |
+|---|---|---|
+| `V1-FR-009` | Receipt binds exact claim/citation/evidence and ordered per-citation Stage-2 results; `supports`, `contradicts`, and `context_only` remain explicit. | Supporting-only, confirmed-contradiction, context-only, and governed human-resolution regressions. |
+| `V1-FR-013` | Canonical assessment executes Stage 1 then Stage 2 and persists `M3_VALIDATION_RECEIPT_V1`. Every formal progression route first completes local durable/topology/request reconstruction and evaluator-free `VERIFY_BINDING`, then binds the exact durable pending draft when present, then loads and binds the receipt. | Forged, missing, inline-only, foreign-run, stale-content, different-input, edit-invalidation, pending substitution, and valid persisted-receipt cases. |
+| `V1-FR-014` | Save, approval, export/finalization, idempotent exported return, and terminal trusted return perform canonical preflight before pending/receipt-store capabilities. Pending-bearing routes bind the exact durable draft before receipt binding; save publishes no pending checkpoint until immediate durable read-back succeeds. | Direct call-graph and zero-effect negatives at every boundary; post-save missing/foreign/stale/malformed read-back cases; one valid idempotent progression. |
+| `V1-FR-016` | Receipt identity includes the exact selected-source/task/outcome binding for the current run. | Missing, extra, duplicate, nonterminal, foreign-run, and reordered source/task/outcome receipt bindings fail closed. |
+| `V1-NFR-001` | Receipt binds the Stage-1 safety result and policy/configuration versions; it cannot weaken the research-only boundary. | Safety-policy drift and prohibited-scope receipts fail before progression. |
+| `V1-NFR-002` | Deterministic receipt identity binds run, report, content, canonical inputs, evaluator version, aggregate result, and policy versions. | Canonical identity recomputation, immutable exact replay, stale/foreign binding, and audit-lineage tests. |
+| `V1-NFR-003` | Evaluator, pending-store, or receipt-store failure creates no passing receipt, pending-review checkpoint, effect, or trusted return; pure verification performs no evaluator call. | Evaluator failure, receipt-save failure, pending/receipt not-found or malformed load, post-save read-back failure, and bounded adapter-error tests. |
+| `V1-NFR-005` | Receipt and pending-draft contracts and their store ports are source-neutral; trusted static application composition selects replaceable durable adapters while every returned value remains untrusted data. | Dependency-boundary tests prohibit SQLAlchemy/PostgreSQL/provider-native objects in orchestration/tool contracts. |
+
+Round-3 evidence: focused receipt/validator/workflow/persistence tests
+`488 passed`; combined tools/workflow/contracts `272 passed`; persistence unit
+`123 passed`; full socket-disabled unit/contract suite `2293 passed`, two
+expected warnings, `81%` coverage in `63.50s`; Ruff and format PASS across 151
+files; strict MyPy PASS across 58 source files; offline lock PASS with 87
+packages; dependency-boundary suite `93 passed`. Conditional offline
+integration produced `4 passed, 10 skipped` before database availability. The
+existing local PostgreSQL 18.4 image `1961f96e6029` was used without pull;
+migration plus receipt integration produced `14 passed`, including
+upgrade/downgrade/upgrade, and the container was removed and Docker stopped.
+Migration offline `--sql` remains unavailable because the pre-existing FAERS
+migration calls `MockConnection.exec_driver_sql`; actual PostgreSQL and fake-DDL
+evidence cover the new receipt migration. Exact scope/diff/secret/dependency
+checks passed, external network operations were zero, and Review 004,
+exact-byte rebind, terminal audit, staging, commit, push, PR, and merge were
+unperformed at that candidate gate.
+
+Review 004 P1 reproduced a forged passing save checkpoint reaching pending
+persistence with `semantic_calls=0`, `save_receipt_calls=0`,
+`load_receipt_calls=1`, and `pending_persistence_calls=1` by supplying a fake
+store that manufactured self-consistent unsaved data under the delivery
+record's incorrect “every injected capability is untrusted” wording. The Owner
+corrects the boundary: trusted static application composition selects a trusted
+independently durable `ValidationReceiptStorePort`; all runtime/checkpoint/
+receipt payloads and every store return remain untrusted and strictly
+reconstructed. A fake store manufacturing unsaved data violates the trusted
+capability contract and is outside ordinary runtime DATA injection. The adapter
+remains replaceable through trusted composition; no origin token, binder, or
+runtime authentication is introduced. Review 004 P2 found missing executable
+coverage for successful save followed by missing reload and for a receipt-load
+exception, although manual reproduction failed closed with zero later effects.
+Round 4 is limited to the port docstring and those two tests; source-authority
+semantics do not change. The port now documents trusted application-owned
+independent durability while treating every returned mapping as untrusted.
+The post-save missing-reload regression proves no receipt reference or later
+effect is produced. A five-route load-exception matrix covers save, approval,
+export, idempotent exported return, and terminal resume with zero evaluator
+replay and unchanged effect counts.
+
+Fresh Round-4 evidence: focused `494 passed`; Round-4 workflow selection
+`81 passed`; tools/workflow/contracts `278 passed`; full socket-disabled suite
+`2299 passed`, two expected warnings, `81%` coverage in `60.49s`; Ruff and
+format PASS across 151 files; strict MyPy PASS across 58 source files; offline
+lock PASS with 87 packages; exact scope/diff/secret/dependency checks PASS.
+The fresh offline inventory contains 86 packages, advisory status
+`not_run_offline`, external network `0`, and manifest SHA-256
+`c4dbfdd3be05c1a42682750ba2cd717c1c7c427aff06f3cdc697f975b0b8707b`.
+The previously executed actual PostgreSQL 18.4 migration/receipt result remains
+`14 passed` and is reusable because the persistence and migration bytes are
+unchanged in Round 4.
+
+Review 005 returned `FAIL — P0 0 / P1 1 / P2 2`: confirmed-contradiction
+adjudication lacked exact governed comparison/conflict binding; three reachable
+workflow defenses lacked public executable coverage; and compactness/scope
+accounting drifted. Round 5 binds a contradiction resolution to the exact
+existing comparison and conflict with governed
+`APPARENT_DIFFERENCE_SCOPE_MISMATCH`, rejects missing/extraneous/drifted
+bindings, and adds zero-effect public regressions for DRAFT finalization,
+foreign receipt-reference substitution, and duplicate cross-task evidence.
+The repaired exact-maximum citation fixture PASSes and max+1 fails for its
+cardinality reason.
+
+Fresh Round-5 evidence: focused `516 passed`; full socket-disabled unit/
+contract `2321 passed`, two expected warnings, `81%` coverage in `65.33s`;
+Ruff, format, strict MyPy, offline lock, exact 19-path/18-changed-path scope,
+diff, secret, dependency-file, and offline dependency-inventory gates PASS.
+The validator is `1296 <= 1300` physical lines and exact tools/ports/workflow
+growth is `1765 <= 1800`. Inventory contains 86 packages, advisory status
+`not_run_offline`, external network `0`, and manifest SHA-256
+`a6918b1572e730c45fe0978d92d37e6a1b9ac0e238b3d9f5da1391e9bd2acfd8`.
+The unchanged persistence/migration bytes retain the actual PostgreSQL 18.4
+`14 passed` evidence. Fresh Review 006, exact-byte rebind, terminal audit, and
+Git integration remain pending.
+
+Review 006 returned `FAIL — P0 0 / P1 2 / P2 0`. It reproduced subclass
+instance-dictionary shadowing of `_verify_binding` reaching pending
+persistence, receipt loading before invalid finalization topology was rejected,
+and substituted pending-draft persistence identities reaching approval/export/
+idempotent return. It independently verified all Review-005 closures, including
+the valid exact-maximum graph and twelve intended max+1 boundary reasons.
+
+Round 6 makes non-capability durable/topology/application/request validation
+dominate every receipt load and later effect, and uses lexically fixed critical
+helper dispatch rather than replaceable instance lookup. Internal durable
+`ReviewRecord` is versioned to `m3.review-record.v2` and binds
+`pending_draft_persistence_id`; persistence, approval, export, and idempotent
+return reconstruct and verify that exact identity. Public regressions cover
+subclass shadowing and all three pending-identity substitution times with zero
+capability calls. No public API/OpenAPI or PostgreSQL schema changed.
+
+Fresh Round-6 evidence: focused `521 passed`; full socket-disabled unit/
+contract `2326 passed`, two expected warnings, `81%` coverage in `67.93s`;
+Ruff, format, strict MyPy, offline lock, exact 19-path/18-changed-path scope,
+diff, secret, dependency-file, and inventory gates PASS. Validator LOC is
+`1296 <= 1300`; tools/ports/workflow growth is `1798 <= 1800`. Inventory has
+86 packages, advisory status `not_run_offline`, external network `0`, and
+manifest SHA-256
+`869a63fa9ff14246057fa53b3694ea5bb28c37576cbccd534656816635edcf29`.
+Unchanged persistence/migration bytes retain actual PostgreSQL `14 passed`
+evidence. Fresh Review 007, exact-byte rebind, terminal audit, and Git
+integration remain pending.
+
+Review 007 returned `FAIL — P0 0 / P1 2 / P2 1`: canonical verification
+followed receipt load; predictable pending identity did not prove persistence;
+and the intended instance-shadow regression was rejected before reaching the
+helper. Round 7 moves evaluator-free canonical VERIFY before receipt load,
+adds trusted-store `load_pending` with untrusted exact reconstruction, requires
+post-save durable read-back, and re-loads/binds pending state before approval,
+export, idempotent export, and terminal return. The repaired shadow regression
+uses valid SAVE topology and reaches the exact lexical implementation.
+
+Fresh Round-7 evidence: focused `545 passed`; full socket-disabled unit/
+contract `2350 passed`, two expected warnings, `81%` coverage in `66.72s`;
+Ruff, format, strict MyPy, offline lock, exact scope/diff/secret/dependency and
+inventory gates PASS. Validator LOC is `1296 <= 1300`; tools/ports/workflow
+growth is `1796 <= 1800`. Inventory has 86 packages, advisory status
+`not_run_offline`, external network `0`, and manifest SHA-256
+`c907ee33cbe2120df7a40b644af4757a3f828d9b87f3aa541860931d1596082e`.
+Persistence/migration bytes remain unchanged with actual PostgreSQL `14 passed`
+evidence. Fresh Review 008, exact-byte rebind, terminal audit, and Git
+integration remain pending.
+
+Review 008 returned immutable `FAIL — P0 0 / P1 0 / P2 2`. It independently
+verified focused `545 passed`, full socket-disabled unit/contract `2350 passed`
+with two expected warnings, exact-max PASS and intended max+1 boundary failures,
+`git diff --check`, validator LOC `1296 <= 1300`, tools/ports/workflow growth
+`1796 <= 1800`, the frozen 19-path allowlist with exactly 18 changed paths, and
+zero network/Git operations. Its two P2 findings were documentation drift:
+ADR-016 retained receipt-load-before-VERIFY wording and omitted the durable
+pending-draft binding contract, while one delivery sentence conflated the
+19-path allowlist with the 18 paths actually changed.
+
+Documentation-only Round 8 aligns ADR-016 and the current mapping with the
+already-implemented order: complete local durable/topology/request
+reconstruction, evaluator-free canonical `VERIFY_BINDING`, exact durable pending
+load/reconstruction/binding when present, exact receipt load/reconstruction/
+binding, then effect or trusted return. Trusted static application composition
+selects `DraftPersistencePort` and `ValidationReceiptStorePort`; every returned
+`PendingDraftRef` and receipt mapping remains untrusted data. Pending save
+immediately reloads and binds the exact durable row before publishing a pending-
+review checkpoint. The frozen allowlist remains 19 paths and exactly 18 differ
+from baseline because persistence `__init__.py` remains unchanged. No code/test
+byte changed in Round 8, so Review-008 executable evidence is reused for those
+exact bytes; fresh Markdown/reference/search and diff checks cover the three
+documentation edits.
+
+Independent Review 009 returned `PASS — P0 0 / P1 0 / P2 0`, findings none.
+Fresh reviewer execution produced `313 passed`, plus boundary/shadow `14
+passed` and effect/terminal fail-closed `26 passed`, all socket-disabled. It
+bound canonical 19-path manifest
+`4f3c4f42af1960e24f04fc5bb11c6636f181031171300de3322f9899dd3a2712`
+and 18-changed-path manifest
+`2ba31b116dfba7fb1eef697bb10295acaed722e4d07013eca3627c75517d273c`.
+The final verdict-recording delivery/traceability edits require external exact-
+byte rebind across all 19 allowlisted paths. Status is
+`AWAITING_TERMINAL_EVIDENCE_AUDIT`; terminal audit and Git integration remain
+pending.
+
 ## 4. Invariant acceptance scenarios
 
 ### M1B-DM-001 Review 009 status

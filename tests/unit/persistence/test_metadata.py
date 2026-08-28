@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
@@ -16,6 +17,7 @@ import sqlalchemy as sa
 from sqlalchemy import Connection
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
+from tests.unit.tools import test_report_validation as validation_fixtures
 
 from medevidence.domain import (
     FAERS_MANDATORY_LIMITATIONS,
@@ -45,8 +47,13 @@ from medevidence.persistence.repositories import (
     ValidatedManifest,
     ValidatedManifestFile,
 )
+from medevidence.tools.report_validation import (
+    ValidationReceipt,
+    canonical_validation_receipt_payload,
+    validation_receipt_from_payload,
+)
 
-EXPECTED_TABLES = (
+M1A_EXPECTED_TABLES = (
     "artifact",
     "source_snapshot",
     "snapshot_file",
@@ -61,6 +68,7 @@ EXPECTED_TABLES = (
     "artifact_integrity_event",
     "registration_observation",
 )
+EXPECTED_TABLES = (*M1A_EXPECTED_TABLES, "m3_validation_receipts")
 
 EXPECTED_IDENTITY_CONSTRAINTS = {
     "artifact": "pk_artifact",
@@ -76,6 +84,7 @@ EXPECTED_IDENTITY_CONSTRAINTS = {
     "research_report": "pk_research_report",
     "artifact_integrity_event": "uq_integrity_event_natural",
     "registration_observation": "uq_registration_observation_natural",
+    "m3_validation_receipts": "pk_m3_validation_receipts",
 }
 
 
@@ -115,15 +124,199 @@ def _faers_migration_module() -> ModuleType:
     return module
 
 
+def _m3_validation_receipt_migration_module() -> ModuleType:
+    path = Path("alembic/versions/20260827_01_m3_validation_receipt.py")
+    spec = importlib.util.spec_from_file_location("m3validationreceipt_revision", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_exact_object_counts_and_names() -> None:
     assert tuple(table.name for table in models.TABLE_ORDER) == EXPECTED_TABLES
-    assert len(models.metadata.tables) == 30
-    assert len(_constraints(sa.CheckConstraint)) == 62
+    assert len(models.metadata.tables) == 31
+    assert len(_constraints(sa.CheckConstraint)) == 67
     assert len(_constraints(sa.ForeignKeyConstraint)) == 17
-    assert len(_constraints(sa.PrimaryKeyConstraint)) == 13
-    assert len(_constraints(sa.UniqueConstraint)) == 22
+    assert len(_constraints(sa.PrimaryKeyConstraint)) == 14
+    assert len(_constraints(sa.UniqueConstraint)) == 23
     assert sum(len(table.indexes) for table in models.TABLE_ORDER) == 12
     assert _constraints(sa.CheckConstraint) == set(models.EXPECTED_CHECK_NAMES)
+
+
+def _passing_validation_receipt() -> ValidationReceipt:
+    audit, provider = validation_fixtures._assess(validation_fixtures._empty_request())
+    assert audit.summary.passed
+    assert provider.calls == []
+    assert audit.receipt is not None
+    return audit.receipt
+
+
+def test_validation_receipt_table_is_exact_and_immutable() -> None:
+    table = models.m3_validation_receipts
+    assert tuple(column.name for column in table.columns) == (
+        "receipt_id",
+        "schema_version",
+        "receipt_content_hash",
+        "run_id",
+        "report_id",
+        "report_content_hash",
+        "validation_input_hash",
+        "task_binding_hash",
+        "evaluator_method",
+        "evaluator_version",
+        "policy_version",
+        "configuration_version",
+        "receipt_payload",
+        "persisted_at_utc",
+    )
+    assert tuple(str(column.type) for column in table.columns) == (
+        "VARCHAR(128)",
+        "VARCHAR(32)",
+        "CHAR(71)",
+        "VARCHAR(128)",
+        "VARCHAR(128)",
+        "CHAR(71)",
+        "CHAR(71)",
+        "CHAR(71)",
+        "VARCHAR(512)",
+        "VARCHAR(512)",
+        "VARCHAR(512)",
+        "VARCHAR(512)",
+        "JSONB",
+        "DATETIME",
+    )
+    assert all(not column.nullable for column in table.columns)
+    assert all(column.server_default is None for column in table.columns[:-1])
+    assert str(table.c.persisted_at_utc.server_default.arg) == "CURRENT_TIMESTAMP"
+    assert isinstance(table.c.receipt_payload.type, postgresql.JSONB)
+    assert isinstance(table.c.persisted_at_utc.type, sa.DateTime)
+    assert table.c.persisted_at_utc.type.timezone is True
+
+    primary_key = next(
+        constraint
+        for constraint in table.constraints
+        if isinstance(constraint, sa.PrimaryKeyConstraint)
+    )
+    unique = next(
+        constraint
+        for constraint in table.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+    )
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in table.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    assert primary_key.name == "pk_m3_validation_receipts"
+    assert tuple(column.name for column in primary_key.columns) == ("receipt_id",)
+    assert unique.name == "uq_m3_validation_receipts_content_hash"
+    assert tuple(column.name for column in unique.columns) == ("receipt_content_hash",)
+    assert checks == {
+        name: models.CHECK_SQL[name]
+        for name in models.EXPECTED_CHECK_NAMES
+        if name.startswith("ck_m3_validation_receipts_")
+    }
+
+
+def test_validation_receipt_migration_embeds_exact_application_metadata() -> None:
+    module = _m3_validation_receipt_migration_module()
+    expected = str(CreateTable(models.m3_validation_receipts).compile(dialect=postgresql.dialect()))
+    assert module.revision == "m3validationreceipt001"
+    assert module.down_revision == "m1bfaers002001"
+    assert module.TABLE_ORDER == ("m3_validation_receipts",)
+    assert module._ddl_statements() == (expected,)
+    assert "medevidence.persistence" not in Path(module.__file__).read_text(encoding="utf-8")
+
+
+def test_validation_receipt_spec_excludes_operational_timestamp_from_semantics() -> None:
+    spec = repository_module._SPECS["m3_validation_receipts"]
+    receipt = _passing_validation_receipt()
+    payload = canonical_validation_receipt_payload(receipt)
+    values = PersistenceRepository._validation_receipt_values(payload)
+    assert spec.table is models.m3_validation_receipts
+    assert spec.identity_columns == ("receipt_id",)
+    assert spec.capacity == 1_000
+    assert spec.generated_id is None
+    assert set(spec.comparison_columns) == set(values)
+    assert "persisted_at_utc" not in spec.comparison_columns
+
+    stored = {**values, "persisted_at_utc": datetime(2026, 8, 27, tzinfo=UTC)}
+    assert repository_module._same_persisted_row(spec, stored, values)
+    stored["persisted_at_utc"] = datetime(2026, 8, 28, tzinfo=UTC)
+    assert repository_module._same_persisted_row(spec, stored, values)
+    stored["evaluator_version"] = "different"
+    assert not repository_module._same_persisted_row(spec, stored, values)
+
+
+def test_validation_receipt_projection_roundtrips_exact_canonical_payload() -> None:
+    receipt = _passing_validation_receipt()
+    payload = canonical_validation_receipt_payload(receipt)
+    values = PersistenceRepository._validation_receipt_values(payload)
+    assert set(values) == {
+        column.name
+        for column in models.m3_validation_receipts.columns
+        if column.name != "persisted_at_utc"
+    }
+    assert values["receipt_payload"] == payload
+    returned = PersistenceRepository._receipt_payload_from_persisted_row(values)
+    assert returned == payload
+    assert validation_receipt_from_payload(returned) == receipt
+
+
+def test_validation_receipt_helpers_fail_closed_on_noncanonical_input() -> None:
+    receipt = _passing_validation_receipt()
+    payload = canonical_validation_receipt_payload(receipt)
+    invalid_hash = {**payload, "receipt_content_hash": f"sha256:{'g' * 64}"}
+    with pytest.raises(ValueError, match="receipt_content_hash is invalid"):
+        PersistenceRepository._validation_receipt_values(invalid_hash)
+
+    with pytest.raises(
+        repository_module.PersistenceIntegrityError,
+        match="payload violates the bounded storage contract",
+    ):
+        PersistenceRepository._receipt_payload_from_persisted_row({})
+
+    values = PersistenceRepository._validation_receipt_values(payload)
+    malformed = {**values, "receipt_payload": {"marker": "M3_VALIDATION_RECEIPT_V1"}}
+    with pytest.raises(
+        repository_module.PersistenceIntegrityError,
+        match="payload violates the bounded storage contract",
+    ):
+        PersistenceRepository._receipt_payload_from_persisted_row(malformed)
+
+    drifted = {**values, "configuration_version": "different"}
+    with pytest.raises(
+        repository_module.PersistenceIntegrityError,
+        match="projections differ from canonical payload",
+    ):
+        PersistenceRepository._receipt_payload_from_persisted_row(drifted)
+
+
+def test_persistence_package_does_not_import_the_tools_layer() -> None:
+    violations: list[tuple[str, int, str]] = []
+    for path in sorted(Path("src/medevidence/persistence").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                absolute_tools = module == "medevidence.tools" or module.startswith(
+                    "medevidence.tools."
+                )
+                relative_tools = node.level > 0 and (
+                    module == "tools"
+                    or module.startswith("tools.")
+                    or (not module and any(alias.name == "tools" for alias in node.names))
+                )
+                if absolute_tools or relative_tools:
+                    violations.append((path.name, node.lineno, module))
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "medevidence.tools" or alias.name.startswith(
+                        "medevidence.tools."
+                    ):
+                        violations.append((path.name, node.lineno, alias.name))
+    assert violations == []
 
 
 def test_every_foreign_key_is_restrict_and_only_run_report_is_deferred() -> None:
@@ -146,10 +339,10 @@ def test_migration_embeds_equivalent_private_metadata_without_application_import
 
     assert module.revision == "m1a003b0001"
     assert module.down_revision is None
-    assert tuple(module._ORDER) == EXPECTED_TABLES
+    assert tuple(module._ORDER) == M1A_EXPECTED_TABLES
     inherited = {
         f"{models.SCHEMA}.{name}": models.metadata.tables[f"{models.SCHEMA}.{name}"]
-        for name in EXPECTED_TABLES
+        for name in M1A_EXPECTED_TABLES
     }
     assert set(private.tables) == set(inherited)
     for key, table in inherited.items():

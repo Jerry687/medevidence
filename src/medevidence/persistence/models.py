@@ -74,6 +74,11 @@ EXPECTED_CHECK_NAMES = (
     "ck_registration_observation_expected_binding",
     "ck_registration_observation_shape",
     "ck_registration_observation_detail",
+    "ck_m3_validation_receipts_schema",
+    "ck_m3_validation_receipts_identities",
+    "ck_m3_validation_receipts_hashes",
+    "ck_m3_validation_receipts_versions",
+    "ck_m3_validation_receipts_payload",
 )
 
 OUTCOME = """(execution_status, coverage_status, result_status) IN (
@@ -193,6 +198,11 @@ CHECK_SQL = {
     "ck_registration_observation_expected_binding": "(expected_artifact_id IS NULL AND expected_content_hash IS NULL AND expected_artifact_kind IS NULL AND expected_source_partition IS NULL) OR (expected_artifact_id IS NOT NULL AND expected_content_hash IS NOT NULL AND expected_artifact_kind IS NOT NULL AND expected_source_partition IS NOT NULL AND expected_artifact_id=expected_content_hash AND (expected_artifact_kind,expected_source_partition) IN (('pubmed_http_response','pubmed'),('snapshot_manifest','pubmed'),('publication_record','pubmed'),('acquisition_registration_envelope','pubmed'),('run_registration_envelope','global'),('research_report','global')))",
     "ck_registration_observation_shape": "(observation_kind='missing_expected_artifact' AND observed_relative_path IS NOT NULL AND expected_artifact_id IS NOT NULL AND expected_artifact_kind IS NOT NULL AND expected_source_partition IS NOT NULL AND expected_content_hash IS NOT NULL AND expected_byte_size IS NOT NULL AND expected_envelope_id IS NULL AND observed_artifact_id IS NULL AND observed_envelope_id IS NULL AND observed_content_hash IS NULL AND observed_byte_size IS NULL) OR (observation_kind='corrupt_content' AND observed_relative_path IS NOT NULL AND expected_artifact_id IS NOT NULL AND expected_artifact_kind IS NOT NULL AND expected_source_partition IS NOT NULL AND expected_content_hash IS NOT NULL AND expected_byte_size IS NOT NULL AND observed_artifact_id IS NOT NULL AND observed_content_hash IS NOT NULL AND observed_byte_size IS NOT NULL AND observed_artifact_id=observed_content_hash AND (expected_content_hash<>observed_content_hash OR expected_byte_size<>observed_byte_size) AND expected_envelope_id IS NULL AND observed_envelope_id IS NULL) OR (observation_kind='invalid_envelope' AND observed_relative_path IS NOT NULL AND expected_artifact_id IS NULL AND expected_artifact_kind IS NULL AND expected_source_partition IS NULL AND expected_content_hash IS NULL AND observed_artifact_id IS NULL AND observed_content_hash IS NULL AND expected_byte_size IS NULL AND observed_byte_size IS NULL) OR (observation_kind='unregistered_orphan' AND observed_relative_path IS NOT NULL AND expected_artifact_id IS NULL AND expected_artifact_kind IS NULL AND expected_source_partition IS NULL AND expected_content_hash IS NULL AND expected_envelope_id IS NULL AND observed_content_hash IS NOT NULL AND observed_byte_size IS NOT NULL AND NOT (observed_artifact_id IS NOT NULL AND observed_envelope_id IS NOT NULL) AND (observed_artifact_id IS NULL OR observed_artifact_id=observed_content_hash))",
     "ck_registration_observation_detail": "char_length(btrim(redacted_detail)) BETWEEN 1 AND 512",
+    "ck_m3_validation_receipts_schema": "schema_version='M3_VALIDATION_RECEIPT_V1'",
+    "ck_m3_validation_receipts_identities": f"receipt_id ~ '^validation-receipt:sha256:[0-9a-f]{{64}}$' AND run_id ~ '^run:{UUID4.replace('-4', '-[1-5]')}$' AND report_id ~ '^report:sha256:[0-9a-f]{{64}}$'",
+    "ck_m3_validation_receipts_hashes": "receipt_content_hash ~ '^sha256:[0-9a-f]{64}$' AND report_content_hash ~ '^sha256:[0-9a-f]{64}$' AND validation_input_hash ~ '^sha256:[0-9a-f]{64}$' AND task_binding_hash ~ '^sha256:[0-9a-f]{64}$'",
+    "ck_m3_validation_receipts_versions": "char_length(btrim(evaluator_method)) BETWEEN 1 AND 512 AND char_length(btrim(evaluator_version)) BETWEEN 1 AND 512 AND char_length(btrim(policy_version)) BETWEEN 1 AND 512 AND char_length(btrim(configuration_version)) BETWEEN 1 AND 512",
+    "ck_m3_validation_receipts_payload": "jsonb_typeof(receipt_payload)='object'",
 }
 
 CHECK_SQL["ck_publication_version_payload"] = f"""
@@ -247,7 +257,7 @@ AND ((version_payload#>'{{publication_status,relationship}}')='null'::jsonb OR
 AND schema_version='1.0'
 """
 
-assert len(CHECK_SQL) == 62
+assert len(CHECK_SQL) == 67
 
 
 def ck(name: str) -> sa.CheckConstraint:
@@ -810,6 +820,37 @@ registration_observation = sa.Table(
         postgresql_nulls_not_distinct=True,
     ),
     *(ck(name) for name in EXPECTED_CHECK_NAMES[54:62]),
+    schema=SCHEMA,
+)
+
+m3_validation_receipts = sa.Table(
+    "m3_validation_receipts",
+    metadata,
+    sa.Column("receipt_id", sa.String(128), nullable=False),
+    sa.Column("schema_version", sa.String(32), nullable=False),
+    sa.Column("receipt_content_hash", sa.CHAR(71), nullable=False),
+    sa.Column("run_id", sa.String(128), nullable=False),
+    sa.Column("report_id", sa.String(128), nullable=False),
+    sa.Column("report_content_hash", sa.CHAR(71), nullable=False),
+    sa.Column("validation_input_hash", sa.CHAR(71), nullable=False),
+    sa.Column("task_binding_hash", sa.CHAR(71), nullable=False),
+    sa.Column("evaluator_method", sa.String(512), nullable=False),
+    sa.Column("evaluator_version", sa.String(512), nullable=False),
+    sa.Column("policy_version", sa.String(512), nullable=False),
+    sa.Column("configuration_version", sa.String(512), nullable=False),
+    sa.Column("receipt_payload", postgresql.JSONB(), nullable=False),
+    sa.Column(
+        "persisted_at_utc",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.PrimaryKeyConstraint("receipt_id", name="pk_m3_validation_receipts"),
+    sa.UniqueConstraint(
+        "receipt_content_hash",
+        name="uq_m3_validation_receipts_content_hash",
+    ),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[62:67]),
     schema=SCHEMA,
 )
 
@@ -2242,4 +2283,5 @@ TABLE_ORDER = (
     research_report,
     artifact_integrity_event,
     registration_observation,
+    m3_validation_receipts,
 )

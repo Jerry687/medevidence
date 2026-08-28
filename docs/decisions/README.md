@@ -122,3 +122,14 @@ two exact deletion-only safe-parsing transformations, and admits M2-004
 source-native retrieval occurrences without deduplication. Its new one-shot
 MOUNJARO authority is gated by a fresh independent pre-network PASS and exact
 live acknowledgement; it never transfers authority from M2-003.
+
+## Owner-accepted M3 durable validation-receipt record
+
+- [ADR-016: Durable validation receipt and pure binding verification](ADR-016-durable-validation-receipt-and-pure-binding-verification.md)
+
+ADR-016 preserves evaluator-free deterministic `VERIFY_BINDING` and requires
+formal workflow progression to load and bind an independently persisted
+`M3_VALIDATION_RECEIPT_V1` receipt created only by canonical assessment. It
+authorizes one minimal PostgreSQL receipt migration and relationship-aware
+Stage-2 aggregation for successor-002. It does not rewrite ADR-005 or ADR-007,
+authorize public API changes, or claim implementation, review, audit, or PASS.

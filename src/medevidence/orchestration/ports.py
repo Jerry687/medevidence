@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol
 
 from medevidence.domain import M1BSourcePlanEntryV1, ReportId, ResearchScope, RunId
@@ -12,7 +13,6 @@ from .contracts import (
     ExportDestinationRef,
     ExportRecord,
     PendingDraftRef,
-    ReportValidationState,
     ReviewRecord,
     SafetyDecision,
     ScopeSafetyEvaluation,
@@ -67,18 +67,15 @@ class SynthesisPort(Protocol):
     ) -> SynthesisState: ...
 
 
-class ReportValidationPort(Protocol):
-    """Evaluate citation and safety gates outside prompts and graph nodes."""
+class ValidationReceiptStorePort(Protocol):
+    """Access trusted durable storage whose returned mappings remain untrusted."""
 
-    def validate(
+    def save_receipt(
         self,
-        *,
-        run_id: RunId,
-        report_id: ReportId,
-        scope: ResearchScope,
-        source_tasks: tuple[SourceTaskState, ...],
-        synthesis: SynthesisState,
-    ) -> ReportValidationState: ...
+        receipt_payload: Mapping[str, object],
+    ) -> Mapping[str, object]: ...
+
+    def load_receipt(self, receipt_id: str) -> Mapping[str, object] | None: ...
 
 
 class DraftPersistencePort(Protocol):
@@ -87,9 +84,12 @@ class DraftPersistencePort(Protocol):
     def save_pending(
         self,
         *,
+        pending_draft_persistence_id: str,
         report_id: ReportId,
         report_content_hash: Sha256Digest,
     ) -> PendingDraftRef: ...
+
+    def load_pending(self, persistence_id: str) -> PendingDraftRef | None: ...
 
 
 class ExportApprovalPort(Protocol):
@@ -100,6 +100,7 @@ class ExportApprovalPort(Protocol):
         *,
         report_id: ReportId,
         report_content_hash: Sha256Digest,
+        pending_draft_persistence_id: str,
         destination: ExportDestinationRef,
         source_tasks: tuple[SourceTaskState, ...],
         warning_codes: tuple[str, ...],
