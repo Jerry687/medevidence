@@ -2,7 +2,7 @@
 
 Updated: `2026-08-28`
 
-Status: **AWAITING_TERMINAL_EVIDENCE_AUDIT_CI_REMEDIATION_1**
+Status: **AWAITING_TERMINAL_EVIDENCE_AUDIT_CI_REMEDIATION_2**
 
 Branch: `codex/m3-003-development-safety-evaluation`
 
@@ -11,6 +11,75 @@ Approved baseline: `3f82b5d701586cfdb4da6ec65cce28e5f61a5ddc`
 This record reports implementation-node evidence only. It does not claim an
 independent review, terminal audit, Git lifecycle completion, full proposal
 approval, release readiness, or Holdout authority.
+
+## Immutable second hosted CI failure and CI-only remediation 2/5
+
+PR `#37`, hosted run `33196254188`, had exactly one failure with `2438 passed`:
+`test_windows_output_gate_is_lexical_and_platform_safe` at line 975. All other
+tests and static/Compose gates passed. The root cause was test-oracle drift:
+`validate_paths` correctly returned canonical LF bytes, but the assertion
+compared them to physical `FIXTURE.read_bytes()`, which is CRLF on hosted
+Windows.
+
+The minimal remediation compares the returned bytes to
+`canonical_repository_text_bytes(...)`, verifies the approved canonical byte
+count and SHA-256, and separately proves that simulated CRLF physical bytes
+differ while canonicalizing to the same LF identity. On an actual CRLF
+checkout the test also asserts physical bytes differ from validated bytes;
+POSIX behavior remains unchanged.
+
+Evaluator, CLI, fixture, external successor-005, and canonical source snapshot
+remain byte-for-byte unchanged. Review006 and any prior audit PASS evidence
+remain immutable historical records, but their exact-byte candidate manifest
+is superseded by this test/delivery-only candidate and requires fresh review
+and audit before another CI commit.
+
+CI-remediation-2 node-local evidence:
+
+- focused socket-disabled evaluation suite: `89 passed`;
+- full socket-disabled unit/contract suite: `2439 passed`, two expected
+  warnings, `31.80s`;
+- Ruff check and format on the changed test: PASS;
+- strict MyPy on the owned evaluation modules: PASS;
+- offline lock: PASS, 87 packages;
+- exact canonical byte count/SHA, simulated CRLF inequality, LF canonical
+  equality, Windows-conditional physical inequality, and POSIX path behavior:
+  PASS;
+- only the test and this delivery record changed; evaluator, CLI, fixture,
+  source snapshot, and successor-005 remain unchanged;
+- network, medical-source, model, package-download, Holdout, external-artifact,
+  and Git operations: `0`.
+
+Fresh supervisor validation on the same test/delivery-only bytes produced
+focused `89 passed` and full socket-disabled unit/contract `2439 passed` with
+two expected warnings. `git diff --check` passed; the evaluator, CLI, fixture,
+source snapshot, successor-005 artifact, dependencies, and production bytes
+remained unchanged. Current status is `AWAITING_INDEPENDENT_REVIEW_007`;
+replacement exact-byte rebind, terminal audit, and CI-only commit 2/5 remain
+pending.
+
+## CI-remediation independent Review 007 — PASS
+
+Fresh independent Review 007 returned:
+
+`PASS — P0 0 / P1 0 / P2 0`
+
+Findings: none. It verified the repaired assertion uses the production
+canonical-text function, binds canonical 3,151-byte/SHA identity, proves
+physical CRLF inequality plus canonical equality, passes simulated CRLF through
+the actual CLI gate, and rejects a one-byte canonical mutation. Evaluator,
+CLI, fixture, production validator/workflow, source snapshot, and successor-005
+identities remained unchanged.
+
+Fresh reviewer gates: focused `89 passed`; full socket-disabled `2439 passed`,
+two expected warnings and 81% coverage; dependency-boundary `94 passed`; Ruff,
+format across 154 files, strict MyPy across 60 files, offline lock, exact scope,
+diff, secret, and dependency-file checks PASS. No network, medical-source,
+model/download, Holdout, external-artifact, or Git mutation occurred.
+
+Current status is `AWAITING_TERMINAL_EVIDENCE_AUDIT_CI_REMEDIATION_2`. Review
+PASS authorizes replacement exact-byte rebind only; terminal audit and the
+second CI-only follow-up commit remain pending.
 
 ## Immutable hosted CI failure and CI-only remediation 1/5
 
@@ -263,7 +332,7 @@ and renamed only after the artifact and SHA-256 sidecar are complete.
 |---|---:|---|
 | `evaluation/m3_003_development_safety.py` | 91,513 | `fe4ce2ff5ef226b3c395846e92ac6124e668c130609fe1a181b77382dd04422d` |
 | `evaluation/run_m3_003_development_safety.py` | 4,048 | `f259db0d4856a721e185fbeacac4c5ac3ba409513f962501f91005730f1e4f72` |
-| `tests/unit/evaluation/test_m3_003_development_safety.py` | 37,601 | `b45fa71421bd599df500bb99b7840939f712fb2faf18cdc4cbb8ccec917d2666` |
+| `tests/unit/evaluation/test_m3_003_development_safety.py` | 38,125 | `5a77b904f1a39ff153eb9eaefc37df6ea14ccf568ea436bf007f4c9ce1d1c826` |
 | `tests/fixtures/evaluation/m3_003_development_safety/cases.json` | 3,151 | `5ad45867a58b7aa1746120a7bef4a8a2cf5d4a3cad9458a7db953fdc4e72a4c2` |
 
 Production code executed unchanged at the approved baseline:

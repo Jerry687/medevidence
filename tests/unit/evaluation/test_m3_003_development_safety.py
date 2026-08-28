@@ -972,7 +972,17 @@ def test_cli_path_gate_accepts_only_exact_fixture_and_external_output(
 
 def test_windows_output_gate_is_lexical_and_platform_safe() -> None:
     supplied = Path(str(cli.APPROVED_OUTPUT_ROOT))
-    assert cli.validate_paths(FIXTURE, supplied) == FIXTURE.read_bytes()
+    physical = FIXTURE.read_bytes()
+    canonical = module.canonical_repository_text_bytes(physical, label="fixture")
+    validated = cli.validate_paths(FIXTURE, supplied)
+    simulated_crlf = canonical.replace(b"\n", b"\r\n")
+    assert simulated_crlf != canonical
+    assert module.canonical_repository_text_bytes(simulated_crlf, label="fixture") == canonical
+    assert validated == canonical
+    assert len(validated) == cli.APPROVED_FIXTURE_BYTES
+    assert hashlib.sha256(validated).hexdigest() == cli.APPROVED_FIXTURE_SHA256
+    if b"\r\n" in physical:
+        assert physical != validated
     assert str(cli.APPROVED_OUTPUT_ROOT).endswith("run-001-successor-005")
 
 
