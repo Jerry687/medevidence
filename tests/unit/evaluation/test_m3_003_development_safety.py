@@ -73,6 +73,45 @@ def test_fixture_has_exact_categories_and_required_subcases() -> None:
     assert len({item.case_id for item in cases}) == len(cases) == 25
 
 
+def test_repository_text_identity_normalizes_crlf_to_lf() -> None:
+    fixture_lf = module.canonical_repository_text_bytes(FIXTURE.read_bytes(), label="fixture")
+    fixture_crlf = fixture_lf.replace(b"\n", b"\r\n")
+    assert module.canonical_repository_text_bytes(fixture_crlf, label="fixture") == fixture_lf
+    source_lf = module.canonical_repository_text_bytes(
+        Path(module.__file__).read_bytes(), label="source"
+    )
+    assert (
+        module.canonical_repository_text_bytes(source_lf.replace(b"\n", b"\r\n"), label="source")
+        == source_lf
+    )
+
+
+@pytest.mark.parametrize(
+    "data,message",
+    [
+        (b"\xef\xbb\xbf{}\n", "BOM"),
+        (b"a\x00b\n", "NUL"),
+        (b"a\rb\n", "lone CR"),
+        (b"\xff\xfe", "strict UTF-8"),
+    ],
+)
+def test_repository_text_identity_rejects_unsafe_encoding(data: bytes, message: str) -> None:
+    with pytest.raises(DevelopmentSafetyError, match=message):
+        module.canonical_repository_text_bytes(data, label="synthetic")
+
+
+def test_crlf_fixture_builds_identical_semantic_artifact(fixture_bytes: bytes) -> None:
+    canonical = module.canonical_repository_text_bytes(fixture_bytes, label="fixture")
+    cases = load_case_definitions(FIXTURE)
+    first = build_artifact(cases, fixture_bytes=canonical, generated_at_utc=NOW)
+    second = build_artifact(
+        cases,
+        fixture_bytes=canonical.replace(b"\n", b"\r\n"),
+        generated_at_utc=NOW,
+    )
+    assert first == second
+
+
 def test_artifact_executes_all_categories_with_zero_events(
     artifact: dict[str, object],
 ) -> None:
@@ -584,7 +623,9 @@ def test_source_snapshot_binds_uncommitted_evaluator_and_production_bytes(
     assert snapshot["code_identity"] == f"source-snapshot:sha256:{expected_hash}"
 
 
-@pytest.mark.parametrize("mutation", ["hash", "bytes", "reorder", "extra", "baseline"])
+@pytest.mark.parametrize(
+    "mutation", ["hash", "bytes", "normalization", "reorder", "extra", "baseline"]
+)
 def test_source_snapshot_artifact_drift_is_rejected(
     artifact: dict[str, object], mutation: str
 ) -> None:
@@ -594,6 +635,8 @@ def test_source_snapshot_artifact_drift_is_rejected(
         snapshot["files"][0]["sha256"] = "0" * 64
     elif mutation == "bytes":
         snapshot["files"][0]["bytes"] += 1
+    elif mutation == "normalization":
+        snapshot["files"][0]["normalization"] = "physical_bytes"
     elif mutation == "reorder":
         snapshot["files"][0], snapshot["files"][1] = (
             snapshot["files"][1],
@@ -622,6 +665,27 @@ def test_source_snapshot_recomputed_from_current_files(
     monkeypatch.setattr(Path, "read_bytes", drift_one_file)
     with pytest.raises(DevelopmentSafetyError, match="binding drift"):
         validate_artifact(artifact)
+
+
+def test_source_snapshot_is_stable_under_simulated_crlf_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = module.source_snapshot_manifest()
+    original = Path.read_bytes
+    approved = {
+        (module.REPOSITORY_ROOT / relative).resolve() for relative in module.SOURCE_SNAPSHOT_PATHS
+    }
+
+    def crlf_checkout(path: Path) -> bytes:
+        data = original(path)
+        if path.resolve() in approved:
+            canonical = module.canonical_repository_text_bytes(data, label=str(path))
+            return canonical.replace(b"\n", b"\r\n")
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", crlf_checkout)
+    assert module.source_snapshot_manifest() == expected
+    assert all(row["normalization"] == "utf8_lf_v1" for row in expected["files"])
 
 
 def test_raw_secret_and_phi_sentinels_never_enter_artifact(
@@ -909,7 +973,22 @@ def test_cli_path_gate_accepts_only_exact_fixture_and_external_output(
 def test_windows_output_gate_is_lexical_and_platform_safe() -> None:
     supplied = Path(str(cli.APPROVED_OUTPUT_ROOT))
     assert cli.validate_paths(FIXTURE, supplied) == FIXTURE.read_bytes()
-    assert str(cli.APPROVED_OUTPUT_ROOT).endswith("run-001-successor-004")
+    assert str(cli.APPROVED_OUTPUT_ROOT).endswith("run-001-successor-005")
+
+
+def test_cli_positive_fixture_gate_accepts_simulated_crlf_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = Path.read_bytes
+    canonical = module.canonical_repository_text_bytes(FIXTURE.read_bytes(), label="fixture")
+
+    def crlf_fixture(path: Path) -> bytes:
+        if path.resolve() == FIXTURE.resolve():
+            return canonical.replace(b"\n", b"\r\n")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", crlf_fixture)
+    assert cli.validate_paths(FIXTURE, cli.APPROVED_OUTPUT_ROOT) == canonical
 
 
 def test_static_metrics_are_bound_and_not_reexecuted(artifact: dict[str, object]) -> None:

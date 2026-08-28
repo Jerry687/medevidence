@@ -2,7 +2,7 @@
 
 Updated: `2026-08-28`
 
-Status: **AWAITING_TERMINAL_EVIDENCE_AUDIT**
+Status: **AWAITING_TERMINAL_EVIDENCE_AUDIT_CI_REMEDIATION_1**
 
 Branch: `codex/m3-003-development-safety-evaluation`
 
@@ -11,6 +11,26 @@ Approved baseline: `3f82b5d701586cfdb4da6ec65cce28e5f61a5ddc`
 This record reports implementation-node evidence only. It does not claim an
 independent review, terminal audit, Git lifecycle completion, full proposal
 approval, release readiness, or Holdout authority.
+
+## Immutable hosted CI failure and CI-only remediation 1/5
+
+PR `#37`, hosted run `33193482272`, failed on Windows with `4 failed` and
+`54 errors`. Ruff, format, strict MyPy, and Compose checks passed. The exact
+root cause was checkout line-ending conversion: repository text became CRLF,
+while fixture and source-snapshot identities incorrectly bound physical LF
+bytes, producing `fixture exact identity drift` and dependent collection/setup
+errors. This is a CI portability defect, not a new E3 semantic finding.
+
+The remediation introduces one strict `utf8_lf_v1` repository-text identity:
+reject UTF-8 BOM, non-UTF8, NUL, and lone CR; normalize CRLF to LF; then bind
+canonical UTF-8 LF bytes/count/SHA. Fixture identity, CLI input validation, and
+all five ordered source-snapshot rows use that canonical form. External raw
+artifact and sidecar bytes remain physical and are never normalized.
+
+Review005 and terminal-audit PASS history for the prior exact bytes remains
+immutable historical evidence. The old exact-byte manifest and successor-004
+candidate are superseded by this CI-remediation candidate and cannot authorize
+integration without fresh review/audit. No prior external evidence was changed.
 
 ## Immutable Review004 and remediation Round 4/12
 
@@ -230,8 +250,8 @@ counts, nonzero critical events, unexercised cases, execution-error records,
 case/artifact hash drift, aggregate drift, contamination drift, and
 proposal/code/configuration/metric binding drift.
 
-The Round-1 CLI accepts only the exact committed synthetic fixture and exact
-external `run-001-successor-001` output. It rejects repository or
+The CI-remediation CLI accepts only the exact committed synthetic fixture and
+exact external `run-001-successor-005` output. It rejects repository or
 Holdout-looking output and any
 alternate input. Publication is append-only: an existing output or pending
 path fails closed; the absent directory is populated through a pending sibling
@@ -241,9 +261,9 @@ and renamed only after the artifact and SHA-256 sidecar are complete.
 
 | Path | Bytes | SHA-256 |
 |---|---:|---|
-| `evaluation/m3_003_development_safety.py` | 90,438 | `d70c70231273679ed2c7a8e846d13ec1b661e2886d9fa2bd3e876ea86f702337` |
-| `evaluation/run_m3_003_development_safety.py` | 3,928 | `92c4b57150bc0e7b795068b0f5ebf7f169ba245e2e614a2519545104c48aa4ca` |
-| `tests/unit/evaluation/test_m3_003_development_safety.py` | 34,662 | `22876c6094aa97d7f301b2b55e1f80b4a09c30460b76a9f3884a3f49602e7ba2` |
+| `evaluation/m3_003_development_safety.py` | 91,513 | `fe4ce2ff5ef226b3c395846e92ac6124e668c130609fe1a181b77382dd04422d` |
+| `evaluation/run_m3_003_development_safety.py` | 4,048 | `f259db0d4856a721e185fbeacac4c5ac3ba409513f962501f91005730f1e4f72` |
+| `tests/unit/evaluation/test_m3_003_development_safety.py` | 37,601 | `b45fa71421bd599df500bb99b7840939f712fb2faf18cdc4cbb8ccec917d2666` |
 | `tests/fixtures/evaluation/m3_003_development_safety/cases.json` | 3,151 | `5ad45867a58b7aa1746120a7bef4a8a2cf5d4a3cad9458a7db953fdc4e72a4c2` |
 
 Production code executed unchanged at the approved baseline:
@@ -295,12 +315,18 @@ Round-4 successor root:
 | `m3-003-development-safety.json` | 43,166 | `93a5fcb7c34a454035ef64010b3ce01b924ce4650871f4364318bccd8573277e` |
 | `m3-003-development-safety.sha256` | 98 | `83ceda712ddfa6d0470312481d66bbbbbb8dbe6353e2c05e57bc16b1cebdcab4` |
 
-All four prior roots remain unchanged as failed candidate evidence. The
-Round-4 successor contains 25 exercised cases, exact type-sensitive cause
-inputs, requested-state/permissions/attempt hashes, and the reconciled actual
-bool permission inputs. Neither raw sentinel occurs in the artifact or
-sidecar. It awaits fresh supervisor validation and is not yet an independently
-reviewed or audited PASS.
+CI-remediation successor root:
+`D:\Projects\medevidence-external-evidence\M3-003-DEVELOPMENT-SAFETY-EVALUATION\run-001-successor-005`
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `m3-003-development-safety.json` | 43,340 | `ba0ee4f29f83ae945f49bbfca6e49837efdbcbc1c637b3798b9a9f1eb78400a4` |
+| `m3-003-development-safety.sha256` | 98 | `c252cf24b6a5edd7dd88208bd9233f0f981412749839922f9da592d896ef0e6c` |
+
+All prior roots remain unchanged. The CI-remediation successor contains 25
+exercised cases and the cross-platform `utf8_lf_v1` fixture/source snapshot.
+Neither raw sentinel occurs in the artifact or sidecar. It awaits fresh review
+and audit and is not yet a Git-integration PASS.
 
 ## Node-local evidence to date
 
@@ -552,9 +578,87 @@ byte rebind; it is not terminal-audit or Git-integration PASS. These verdict-
 recording delivery bytes must be included in the external final manifest, then
 the five repository paths and successor-004 evidence must remain frozen.
 
-Current status is `AWAITING_TERMINAL_EVIDENCE_AUDIT`. No terminal PASS,
-staging, commit, push, PR, CI, merge, post-merge verification, control-plane
-reconciliation, M3-004 start, or Holdout authority is claimed.
+That exact-byte snapshot proceeded through review/audit and PR creation, then
+the immutable hosted CI failure above superseded it. Its PASS evidence remains
+historical and is not claimed for the current bytes.
+
+## CI-remediation node-local evidence
+
+- focused socket-disabled evaluation suite: `89 passed`;
+- full socket-disabled unit/contract suite: `2439 passed`, two expected
+  warnings, `32.78s`;
+- in-memory LF-to-CRLF fixture and source-snapshot simulations: identical
+  canonical identities and artifact semantic content;
+- BOM, NUL, lone-CR, and non-UTF8 repository text: fail closed;
+- CLI exact-path positive gate with simulated CRLF fixture: PASS;
+- ordered source-snapshot rows bind `normalization=utf8_lf_v1`; normalization,
+  path, byte-count, hash, order, extra/missing, and baseline drift remain
+  rejected;
+- raw external artifact and sidecar physical hashes remain unnormalized;
+- Ruff check/format, strict MyPy, and offline lock (87 packages): PASS;
+- exact five-path scope, diff, and secret scan: PASS;
+- prior external roots including successor-004: unchanged;
+- successor-005 existence gate: absent before the single CLI run;
+- successor-005 artifact/sidecar strict validation: PASS;
+- canonical source-snapshot manifest SHA-256:
+  `b24801b6b0ca826b1d0927b30a3fb1c63312d2bac1a3a2ed811eeeeb3d20f6db`;
+- medical-source, other network, model, package-download, Holdout, and Git
+  operations by this node: `0`.
+
+Fresh supervisor CI-remediation validation produced:
+
+- focused socket-disabled evaluation suite: `89 passed`, runner coverage
+  `92%`;
+- full socket-disabled unit/contract suite: `2439 passed`, two expected
+  warnings, repository coverage `81%`;
+- Ruff and format PASS across 154 files; strict MyPy PASS across 60 required
+  source/owned evaluation files; offline lock PASS with 87 packages;
+- one deliberately broader `mypy src evaluation` probe surfaced six existing
+  errors in unrelated evaluation modules including protected
+  `evaluation/metrics.py`; the required/owned scope then passed and no unrelated
+  file was modified;
+- exact four follow-up changed paths within the five-path allowlist, diff,
+  secret, dependency-file, canonical CRLF/LF simulation, and successor-005
+  artifact/source-snapshot recomputation: PASS;
+- fresh offline dependency inventory: 86 packages, advisory status
+  `not_run_offline`, external network `0`, manifest SHA-256
+  `e4d6f74280c1da764be13f5a88ddeda94b3644799e8953cf7e9254f7c89dcf91`;
+  and
+- medical-source, other network, model, package-download, Holdout, and Git
+  operations during remediation validation: `0`.
+
+Current status is `AWAITING_INDEPENDENT_REVIEW_006`. The previous exact-byte
+manifest remains superseded; fresh review/audit and a parent-created CI-only
+commit are required before hosted CI can be retried.
+
+## CI-remediation independent Review 006 — PASS
+
+Fresh independent Review 006 returned:
+
+`PASS — P0 0 / P1 0 / P2 0`
+
+Findings: none. The reviewer created a real temporary CRLF checkout of all five
+source-snapshot rows and rebuilt successor-005 exactly, including source
+manifest `b24801b6b0ca826b1d0927b30a3fb1c63312d2bac1a3a2ed811eeeeb3d20f6db`
+and its semantic artifact hash. Missing/extra/reordered/path/hash/count/
+normalization/baseline forgeries and BOM/non-UTF8/NUL/lone-CR inputs all failed
+closed. POSIX lexical path validation passed and non-Windows publication failed
+closed.
+
+Independent gates: focused `89 passed`; full offline `2439 passed`, two
+expected warnings; dependency boundary `93 passed`; Ruff, format, strict MyPy
+across 60 required files, offline lock, exact scope, and diff checks PASS. The
+successor-005 artifact/sidecar remained exact, prior external roots remained
+unchanged, and no network, medical-source, model, package-download, Holdout,
+audit, or Git operation occurred.
+
+The review-created CRLF simulation directory remains outside repository and
+evidence scope because platform policy rejected its verified recursive cleanup.
+It is not candidate or completion evidence and is not modified by this work.
+
+Current status is `AWAITING_TERMINAL_EVIDENCE_AUDIT_CI_REMEDIATION_1`. Review
+PASS authorizes a replacement exact-byte rebind; it does not authorize a PASS
+claim until a fresh terminal audit binds the new bytes.
 
 ## Manual verification
 

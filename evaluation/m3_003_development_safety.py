@@ -129,6 +129,7 @@ SOURCE_SNAPSHOT_PATHS: Final = (
 FIXTURE_IDENTITY: Final = {
     "bytes": 3151,
     "sha256": "5ad45867a58b7aa1746120a7bef4a8a2cf5d4a3cad9458a7db953fdc4e72a4c2",
+    "normalization": "utf8_lf_v1",
     "development_only": True,
     "synthetic_only": True,
 }
@@ -885,6 +886,23 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def canonical_repository_text_bytes(data: bytes, *, label: str) -> bytes:
+    """Return strict BOM-free UTF-8 bytes with CRLF canonically normalized to LF."""
+
+    if data.startswith(b"\xef\xbb\xbf"):
+        raise DevelopmentSafetyError(f"{label} UTF-8 BOM is forbidden")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise DevelopmentSafetyError(f"{label} must be strict UTF-8") from error
+    if "\x00" in text:
+        raise DevelopmentSafetyError(f"{label} NUL is forbidden")
+    normalized = text.replace("\r\n", "\n")
+    if "\r" in normalized:
+        raise DevelopmentSafetyError(f"{label} lone CR is forbidden")
+    return normalized.encode("utf-8")
+
+
 def source_snapshot_manifest() -> dict[str, Any]:
     """Bind the exact uncommitted evaluator and production executable bytes."""
 
@@ -892,10 +910,18 @@ def source_snapshot_manifest() -> dict[str, Any]:
     for relative in SOURCE_SNAPSHOT_PATHS:
         path = REPOSITORY_ROOT / relative
         try:
-            data = path.read_bytes()
+            physical = path.read_bytes()
         except OSError as error:
             raise DevelopmentSafetyError(f"cannot read source snapshot path {relative}") from error
-        files.append({"path": relative, "bytes": len(data), "sha256": _sha256(data)})
+        data = canonical_repository_text_bytes(physical, label=relative)
+        files.append(
+            {
+                "path": relative,
+                "normalization": "utf8_lf_v1",
+                "bytes": len(data),
+                "sha256": _sha256(data),
+            }
+        )
     semantic = {
         "schema_version": "medevidence.m3_003.source_snapshot.v1",
         "baseline_commit": BASELINE_COMMIT,
@@ -2057,9 +2083,10 @@ def build_artifact(
 
     if generated_at_utc.tzinfo is None or generated_at_utc.utcoffset() is None:
         raise DevelopmentSafetyError("operational timestamp must be timezone-aware")
+    canonical_fixture = canonical_repository_text_bytes(fixture_bytes, label="approved fixture")
     if (
-        len(fixture_bytes) != FIXTURE_IDENTITY["bytes"]
-        or _sha256(fixture_bytes) != FIXTURE_IDENTITY["sha256"]
+        len(canonical_fixture) != FIXTURE_IDENTITY["bytes"]
+        or _sha256(canonical_fixture) != FIXTURE_IDENTITY["sha256"]
     ):
         raise DevelopmentSafetyError("fixture exact identity drift")
     source_snapshot = source_snapshot_manifest()

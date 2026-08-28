@@ -13,6 +13,7 @@ from pathlib import Path, PureWindowsPath
 from evaluation.m3_003_development_safety import (
     DevelopmentSafetyError,
     build_artifact,
+    canonical_repository_text_bytes,
     load_case_definitions,
     write_artifact,
 )
@@ -29,7 +30,7 @@ APPROVED_FIXTURE = (
 APPROVED_FIXTURE_BYTES = 3151
 APPROVED_FIXTURE_SHA256 = "5ad45867a58b7aa1746120a7bef4a8a2cf5d4a3cad9458a7db953fdc4e72a4c2"
 APPROVED_OUTPUT_ROOT = Path(
-    r"D:\Projects\medevidence-external-evidence\M3-003-DEVELOPMENT-SAFETY-EVALUATION\run-001-successor-004"
+    r"D:\Projects\medevidence-external-evidence\M3-003-DEVELOPMENT-SAFETY-EVALUATION\run-001-successor-005"
 )
 OFFLINE_ENVIRONMENT = {
     "HF_HUB_OFFLINE": "1",
@@ -63,9 +64,10 @@ def validate_paths(fixture: Path, output_root: Path) -> bytes:
     ):
         raise DevelopmentSafetyError("repository and Holdout-looking output is forbidden")
     try:
-        data = fixture.read_bytes()
+        physical = fixture.read_bytes()
     except OSError as error:
         raise DevelopmentSafetyError("cannot read approved fixture") from error
+    data = canonical_repository_text_bytes(physical, label="approved fixture")
     if (
         len(data) != APPROVED_FIXTURE_BYTES
         or hashlib.sha256(data).hexdigest() != APPROVED_FIXTURE_SHA256
