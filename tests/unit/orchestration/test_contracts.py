@@ -34,12 +34,16 @@ from medevidence.orchestration import (
     PendingDraftRef,
     ReportStatus,
     ReportValidationState,
+    ReviewDecision,
+    ReviewRecord,
     SafetyDecision,
     SafetyOutcome,
     SafetyReason,
     SourceTaskState,
     SourceTaskStatus,
+    SynthesisState,
     TerminalSourceOutcomeRef,
+    ValidationReceiptRef,
     WorkflowDisposition,
     WorkflowNode,
     WorkflowPermissions,
@@ -154,6 +158,51 @@ def _evidence(source: SourceType) -> EvidenceReference:
     )
 
 
+def _validated_state() -> OrchestrationState:
+    scope = _scope()
+    base = _state(scope)
+    task = SourceTaskState(
+        task_id=_task_id(SourceType.PUBMED),
+        source=SourceType.PUBMED,
+        status=SourceTaskStatus.TERMINAL,
+        attempts=1,
+        terminal_outcome_ref=_terminal_ref(SourceType.PUBMED),
+        evidence_refs=(_evidence(SourceType.PUBMED),),
+    )
+    return OrchestrationState.model_validate(
+        {
+            **base.model_dump(mode="python"),
+            "interpreted_scope": scope,
+            "safety_decision": SafetyDecision(
+                outcome=SafetyOutcome.PERMITTED,
+                reason=SafetyReason.PERMITTED_RESEARCH_SCOPE,
+                policy_version="policy:test",
+            ),
+            "source_plan": (_plan(SourceType.PUBMED, PlanningStatus.SELECTED),),
+            "source_tasks": (task,),
+            "synthesis": SynthesisState(
+                report_content_hash=DIGEST,
+                claims=(),
+                citations=(),
+                comparability_refs=(),
+                conflict_refs=(),
+                warning_codes=(),
+            ),
+            "validation": ReportValidationState(
+                structural_citation_gate=GateStatus.PASSED,
+                semantic_support_gate=GateStatus.PASSED,
+                safety_policy_gate=GateStatus.PASSED,
+            ),
+            "validation_receipt_ref": ValidationReceiptRef(
+                receipt_id="validation-receipt:sha256:" + "d" * 64,
+                receipt_content_hash="sha256:" + "e" * 64,
+            ),
+            "completed_nodes": WORKFLOW_TOPOLOGY[:5],
+            "current_node": WorkflowNode.SAVE_PENDING_DRAFT,
+        }
+    )
+
+
 def test_topology_and_permissions_are_exact_and_closed() -> None:
     assert tuple(node.value for node in WORKFLOW_TOPOLOGY) == (
         "scope_and_safety",
@@ -177,7 +226,7 @@ def test_topology_and_permissions_are_exact_and_closed() -> None:
 
 def test_initial_state_is_versioned_immutable_and_reference_only() -> None:
     state = _state()
-    assert state.schema_version == "m3.orchestration-state.v1"
+    assert state.schema_version == "m3.orchestration-state.v2"
     assert state.current_node is WorkflowNode.SCOPE_AND_SAFETY
     assert state.report_status is ReportStatus.DRAFT
     with pytest.raises(ValidationError):
@@ -189,6 +238,96 @@ def test_initial_state_is_versioned_immutable_and_reference_only() -> None:
             locator_ref="locator:test",
             raw_payload=b"forbidden",
         )
+
+    with pytest.raises(ValidationError, match=r"m3\.orchestration-state\.v2"):
+        OrchestrationState.model_validate(
+            {**state.model_dump(mode="python"), "schema_version": "m3.orchestration-state.v1"}
+        )
+
+
+def test_validation_receipt_reference_is_exact_and_cannot_inline_authority() -> None:
+    state = _validated_state()
+    receipt_ref = state.validation_receipt_ref
+    assert receipt_ref is not None
+    assert receipt_ref.schema_version == "m3.validation-receipt-ref.v1"
+    assert set(type(receipt_ref).model_fields) == {
+        "schema_version",
+        "receipt_id",
+        "receipt_content_hash",
+    }
+    inline_looking_receipt = {
+        "marker": "M3_VALIDATION_RECEIPT_V1",
+        "receipt_id": receipt_ref.receipt_id,
+        "receipt_content_hash": receipt_ref.receipt_content_hash,
+        "run_id": RUN_ID,
+        "report_id": REPORT_ID,
+        "report_content_hash": DIGEST,
+        "validation_input_hash": "sha256:" + "f" * 64,
+        "structural_passed": True,
+        "semantic_passed": True,
+        "safety_passed": True,
+    }
+
+    with pytest.raises(ValidationError):
+        ValidationReceiptRef(
+            receipt_id="validation-receipt:sha256:" + "d" * 64,
+            receipt_content_hash="sha256:" + "e" * 64,
+            receipt=inline_looking_receipt,
+        )
+    with pytest.raises(ValidationError):
+        ValidationReceiptRef(
+            receipt_id="receipt:caller-asserted",
+            receipt_content_hash="sha256:" + "e" * 64,
+        )
+    with pytest.raises(ValidationError):
+        OrchestrationState.model_validate(
+            {
+                **state.model_dump(mode="python"),
+                "validation_receipt": inline_looking_receipt,
+            }
+        )
+
+
+def test_completed_assessment_and_receipt_reference_must_coexist_exactly() -> None:
+    state = _validated_state()
+    with pytest.raises(ValidationError, match="persisted receipt reference"):
+        OrchestrationState.model_validate(
+            {**state.model_dump(mode="python"), "validation_receipt_ref": None}
+        )
+    initial = _state()
+    with pytest.raises(ValidationError, match="completed assessment"):
+        OrchestrationState.model_validate(
+            {
+                **initial.model_dump(mode="python"),
+                "validation_receipt_ref": state.validation_receipt_ref,
+            }
+        )
+
+
+def test_review_record_v2_requires_exact_pending_draft_identity() -> None:
+    review = ReviewRecord(
+        review_id="review:test",
+        report_id=REPORT_ID,
+        report_content_hash=DIGEST,
+        pending_draft_persistence_id="pending-draft:test",
+        destination=_destination(),
+        source_outcome_refs=(_terminal_ref(SourceType.PUBMED),),
+        warning_codes=(),
+        decision=ReviewDecision.APPROVE,
+        reviewer_id="reviewer:test",
+        decided_at_utc=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert review.schema_version == "m3.review-record.v2"
+    assert review.pending_draft_persistence_id == "pending-draft:test"
+    with pytest.raises(ValidationError, match=r"m3\.review-record\.v2"):
+        ReviewRecord.model_validate(
+            {**review.model_dump(mode="python"), "schema_version": "m3.review-record.v1"}
+        )
+    payload = review.model_dump(mode="python")
+    payload.pop("pending_draft_persistence_id")
+    with pytest.raises(ValidationError):
+        ReviewRecord.model_validate(payload)
 
 
 def test_safety_contract_has_internal_codes_without_message_text() -> None:

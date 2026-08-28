@@ -33,6 +33,10 @@ type PolicyReasonCode = Annotated[
     str,
     StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,127}$"),
 ]
+type ValidationReceiptId = Annotated[
+    str,
+    StringConstraints(pattern=r"^validation-receipt:sha256:[0-9a-f]{64}$"),
+]
 
 
 class WorkflowNode(StrEnum):
@@ -407,6 +411,14 @@ class ReportValidationState(DurableModel):
         return self
 
 
+class ValidationReceiptRef(DurableModel):
+    """Checkpoint reference to independently persisted validation authority."""
+
+    schema_version: Literal["m3.validation-receipt-ref.v1"] = "m3.validation-receipt-ref.v1"
+    receipt_id: ValidationReceiptId
+    receipt_content_hash: Sha256Digest
+
+
 class ReportStatus(StrEnum):
     """The governed report review/export states."""
 
@@ -445,10 +457,11 @@ class PendingDraftRef(DurableModel):
 class ReviewRecord(DurableModel):
     """Auditable export decision bound to exact report bytes and destination."""
 
-    schema_version: Literal["m3.review-record.v1"] = "m3.review-record.v1"
+    schema_version: Literal["m3.review-record.v2"] = "m3.review-record.v2"
     review_id: StableWorkflowId
     report_id: ReportId
     report_content_hash: Sha256Digest
+    pending_draft_persistence_id: StableWorkflowId
     destination: ExportDestinationRef
     source_outcome_refs: tuple[TerminalSourceOutcomeRef, ...] = Field(max_length=4)
     warning_codes: tuple[PolicyReasonCode, ...] = Field(max_length=100)
@@ -495,7 +508,7 @@ class WorkflowDisposition(StrEnum):
 class OrchestrationState(DurableModel):
     """Versioned, framework-neutral checkpoint state for the bounded workflow."""
 
-    schema_version: Literal["m3.orchestration-state.v1"] = "m3.orchestration-state.v1"
+    schema_version: Literal["m3.orchestration-state.v2"] = "m3.orchestration-state.v2"
     workflow_id: StableWorkflowId
     checkpoint_id: StableWorkflowId
     run_id: RunId
@@ -508,6 +521,7 @@ class OrchestrationState(DurableModel):
     source_tasks: tuple[SourceTaskState, ...] = ()
     synthesis: SynthesisState | None = None
     validation: ReportValidationState = Field(default_factory=ReportValidationState)
+    validation_receipt_ref: ValidationReceiptRef | None = None
     report_status: ReportStatus = ReportStatus.DRAFT
     destination: ExportDestinationRef
     pending_draft: PendingDraftRef | None = None
@@ -595,6 +609,24 @@ class OrchestrationState(DurableModel):
                 "to have a terminal SourceOutcome reference"
             )
 
+        validation_completed = WorkflowNode.VALIDATE_REPORT in self.completed_nodes
+        validation_gates = (
+            self.validation.structural_citation_gate,
+            self.validation.semantic_support_gate,
+            self.validation.safety_policy_gate,
+        )
+        if validation_completed and (
+            self.synthesis is None
+            or self.validation_receipt_ref is None
+            or GateStatus.NOT_RUN in validation_gates
+        ):
+            raise ValueError("completed validation requires its persisted receipt reference")
+        if not validation_completed and (
+            self.validation_receipt_ref is not None
+            or any(item is not GateStatus.NOT_RUN for item in validation_gates)
+        ):
+            raise ValueError("validation result and receipt require a completed assessment")
+
         if self.pending_draft is not None:
             if self.synthesis is None or not self.validation.passed:
                 raise ValueError("pending draft requires a validated synthesis")
@@ -616,6 +648,9 @@ class OrchestrationState(DurableModel):
             if (
                 self.active_approval.report_id != self.report_id
                 or self.active_approval.report_content_hash != self.synthesis.report_content_hash
+                or self.pending_draft is None
+                or self.active_approval.pending_draft_persistence_id
+                != self.pending_draft.persistence_id
                 or self.active_approval.destination != self.destination
             ):
                 raise ValueError("approval must bind the current report and destination")
@@ -670,6 +705,7 @@ class OrchestrationState(DurableModel):
             or self.synthesis is not None
             or self.pending_draft is not None
             or self.active_approval is not None
+            or self.validation_receipt_ref is not None
         ):
             raise ValueError("edit state must re-enter synthesis with approval invalidated")
         return self

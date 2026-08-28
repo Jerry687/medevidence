@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -40,6 +41,38 @@ from .session import _create_engine
 logger = logging.getLogger(__name__)
 
 PUBLICATION_BYTE_CAPACITY = 31_457_280
+_VALIDATION_RECEIPT_MARKER = "M3_VALIDATION_RECEIPT_V1"
+_VALIDATION_RECEIPT_ID = re.compile(r"validation-receipt:sha256:[0-9a-f]{64}")
+_VALIDATION_STAGE1_ID = re.compile(r"validation-stage1-result:sha256:[0-9a-f]{64}")
+_VALIDATION_RUN_ID = re.compile(
+    r"run:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
+_VALIDATION_REPORT_ID = re.compile(r"report:sha256:[0-9a-f]{64}")
+_SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_VALIDATION_RECEIPT_KEYS = frozenset(
+    {
+        "marker",
+        "receipt_id",
+        "receipt_content_hash",
+        "run_id",
+        "report_id",
+        "report_content_hash",
+        "validation_input_hash",
+        "task_binding_hash",
+        "stage1_result_id",
+        "evaluator_method",
+        "evaluator_version",
+        "claim_results",
+        "structural_passed",
+        "semantic_passed",
+        "safety_passed",
+        "reason_codes",
+        "policy_version",
+        "configuration_version",
+    }
+)
+_VALIDATION_RECEIPT_MAX_CANONICAL_BYTES = 4_194_304
+_VALIDATION_RECEIPT_MAX_JSON_NODES = 100_000
 _SPECIALIZED_M1B_TABLES = frozenset(
     {
         "m1b_dailymed_selection_decisions",
@@ -579,6 +612,15 @@ _SPECS = {
         13_056,
         "observation_id",
     ),
+    "m3_validation_receipts": _TableSpec(
+        models.m3_validation_receipts,
+        ("receipt_id",),
+        _columns(
+            models.m3_validation_receipts,
+            exclude=frozenset({"persisted_at_utc"}),
+        ),
+        1_000,
+    ),
 }
 
 
@@ -742,6 +784,152 @@ class PersistenceRepository:
             },
         )
         return result
+
+    @staticmethod
+    def _copy_validation_receipt_payload(
+        receipt_payload: Mapping[str, object],
+    ) -> dict[str, object]:
+        source = dict(receipt_payload)
+        if set(source) != _VALIDATION_RECEIPT_KEYS:
+            raise ValueError("validation receipt payload must contain the exact top-level keys")
+        budget = [_VALIDATION_RECEIPT_MAX_JSON_NODES]
+
+        def copy_json(value: object, depth: int = 0) -> object:
+            budget[0] -= 1
+            if budget[0] < 0 or depth > 8:
+                raise ValueError("validation receipt payload exceeds the JSON structure bound")
+            if value is None or type(value) in (bool, str):
+                if type(value) is str and len(value) > 4096:
+                    raise ValueError("validation receipt payload string exceeds 4096 characters")
+                return value
+            if type(value) is list:
+                return [copy_json(item, depth + 1) for item in value]
+            if type(value) is dict:
+                copied: dict[str, object] = {}
+                for key, item in value.items():
+                    if type(key) is not str or len(key) > 512:
+                        raise ValueError("validation receipt payload contains an invalid JSON key")
+                    copied[key] = copy_json(item, depth + 1)
+                return copied
+            raise ValueError("validation receipt payload must contain only JSON data")
+
+        copied = cast(dict[str, object], copy_json(source))
+
+        def text(name: str, pattern: re.Pattern[str] | None = None) -> str:
+            value = copied[name]
+            if type(value) is not str or not value.strip() or len(value) > 512:
+                raise ValueError(f"validation receipt {name} is invalid")
+            if pattern is not None and pattern.fullmatch(value) is None:
+                raise ValueError(f"validation receipt {name} is invalid")
+            return value
+
+        if copied["marker"] != _VALIDATION_RECEIPT_MARKER:
+            raise ValueError("validation receipt marker is unsupported")
+        text("receipt_id", _VALIDATION_RECEIPT_ID)
+        text("receipt_content_hash", _SHA256_DIGEST)
+        text("run_id", _VALIDATION_RUN_ID)
+        text("report_id", _VALIDATION_REPORT_ID)
+        for name in (
+            "report_content_hash",
+            "validation_input_hash",
+            "task_binding_hash",
+        ):
+            text(name, _SHA256_DIGEST)
+        text("stage1_result_id", _VALIDATION_STAGE1_ID)
+        for name in (
+            "evaluator_method",
+            "evaluator_version",
+            "policy_version",
+            "configuration_version",
+        ):
+            text(name)
+        for name in ("structural_passed", "semantic_passed", "safety_passed"):
+            if type(copied[name]) is not bool:
+                raise ValueError(f"validation receipt {name} is invalid")
+        reasons = copied["reason_codes"]
+        claims = copied["claim_results"]
+        if type(reasons) is not list or len(reasons) > 100:
+            raise ValueError("validation receipt reason cardinality exceeds 100")
+        if type(claims) is not list or len(claims) > 200:
+            raise ValueError("validation receipt claim cardinality exceeds 200")
+        if len(canonical_json(copied).encode("utf-8")) > _VALIDATION_RECEIPT_MAX_CANONICAL_BYTES:
+            raise ValueError("validation receipt payload exceeds 4,194,304 canonical bytes")
+        return copied
+
+    @staticmethod
+    def _validation_receipt_values(
+        receipt_payload: Mapping[str, object],
+    ) -> dict[str, object]:
+        payload = PersistenceRepository._copy_validation_receipt_payload(receipt_payload)
+        return {
+            "receipt_id": payload["receipt_id"],
+            "schema_version": payload["marker"],
+            "receipt_content_hash": payload["receipt_content_hash"],
+            "run_id": payload["run_id"],
+            "report_id": payload["report_id"],
+            "report_content_hash": payload["report_content_hash"],
+            "validation_input_hash": payload["validation_input_hash"],
+            "task_binding_hash": payload["task_binding_hash"],
+            "evaluator_method": payload["evaluator_method"],
+            "evaluator_version": payload["evaluator_version"],
+            "policy_version": payload["policy_version"],
+            "configuration_version": payload["configuration_version"],
+            "receipt_payload": payload,
+        }
+
+    @staticmethod
+    def _receipt_payload_from_persisted_row(
+        row: Mapping[str, object],
+    ) -> dict[str, object]:
+        try:
+            raw_payload = row["receipt_payload"]
+            if type(raw_payload) is not dict:
+                raise ValueError("persisted validation receipt payload is not a JSON object")
+            payload = PersistenceRepository._copy_validation_receipt_payload(raw_payload)
+            expected = PersistenceRepository._validation_receipt_values(payload)
+        except (KeyError, TypeError, ValueError) as error:
+            raise PersistenceIntegrityError(
+                "persisted validation receipt payload violates the bounded storage contract"
+            ) from error
+        if not all(
+            _normalize(row.get(name)) == _normalize(value) for name, value in expected.items()
+        ):
+            raise PersistenceIntegrityError(
+                "persisted validation receipt projections differ from canonical payload"
+            )
+        return payload
+
+    def save_receipt(self, receipt_payload: Mapping[str, object]) -> dict[str, object]:
+        """Persist one bounded immutable receipt payload or verify exact replay."""
+
+        values = self._validation_receipt_values(receipt_payload)
+        with self._engine.begin() as connection:
+            stored = self._insert_or_verify(
+                connection,
+                _SPECS["m3_validation_receipts"],
+                values,
+                method="save_receipt",
+            )
+        return self._receipt_payload_from_persisted_row(stored)
+
+    def load_receipt(self, receipt_id: str) -> dict[str, object] | None:
+        """Load one bounded immutable M3 validation receipt payload."""
+
+        if type(receipt_id) is not str or _VALIDATION_RECEIPT_ID.fullmatch(receipt_id) is None:
+            raise ValueError("receipt_id must be an exact validation-receipt identity")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m3_validation_receipts).where(
+                        models.m3_validation_receipts.c.receipt_id == receipt_id
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return None
+        return self._receipt_payload_from_persisted_row(dict(row))
 
     def insert_or_verify_artifact(self, artifact: ArtifactRow) -> ArtifactRow:
         """Insert immutable artifact metadata or verify an identical replay."""
