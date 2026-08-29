@@ -15,6 +15,7 @@ from tests.unit.orchestration.test_workflow import (
     _initial,
     _run_until_node,
     _run_until_terminal,
+    _self_consistent_terminal_child_forgery,
     _validation_registry,
 )
 
@@ -133,6 +134,10 @@ def test_start_interrupts_before_approval_then_resume_exports_exactly_once() -> 
     assert interrupted.state.current_node is WorkflowNode.REQUEST_EXPORT_APPROVAL
     assert harness.approval.calls == 0
     assert harness.export.calls == 0
+    assert harness.collector.replay_calls
+    replay_count = len(harness.collector.replay_calls)
+    assert runtime.inspect(initial.run_id) == interrupted
+    assert len(harness.collector.replay_calls) == replay_count + 1
     assert tuple(saver.storage[initial.run_id]) == (CHECKPOINT_NAMESPACE,)
     assert (
         saver.get_tuple({"configurable": {"thread_id": initial.run_id, "checkpoint_ns": ""}})
@@ -149,6 +154,38 @@ def test_start_interrupts_before_approval_then_resume_exports_exactly_once() -> 
     assert harness.approval.calls == 1
     assert harness.export.calls == 1
     assert harness.collector.calls == [initial.original_scope.selected_sources[0]]
+
+
+def test_pending_review_inspect_rejects_forged_terminal_source_before_effect() -> None:
+    harness, saver, runtime = _runtime()
+    initial = _initial()
+    interrupted = runtime.start(initial)
+    assert interrupted.state.current_node is WorkflowNode.REQUEST_EXPORT_APPROVAL
+    forged = _self_consistent_terminal_child_forgery(interrupted.state)
+    _swap_latest_stored_payload(saver, initial.run_id, forged.model_dump(mode="json"))
+    before = (
+        tuple(harness.events),
+        harness.receipts.save_calls,
+        harness.receipts.load_calls,
+        harness.persistence.calls,
+        harness.persistence.load_calls,
+        harness.approval.calls,
+        harness.export.calls,
+        deepcopy(saver.storage),
+    )
+
+    with pytest.raises(WorkflowTransitionError, match="source terminal replay failed"):
+        runtime.inspect(initial.run_id)
+    assert before == (
+        tuple(harness.events),
+        harness.receipts.save_calls,
+        harness.receipts.load_calls,
+        harness.persistence.calls,
+        harness.persistence.load_calls,
+        harness.approval.calls,
+        harness.export.calls,
+        saver.storage,
+    )
 
 
 def test_collection_loops_existing_attempt_and_selected_tasks_remain_exact() -> None:
@@ -176,11 +213,13 @@ def test_edit_routes_back_to_synthesis_and_stops_at_same_interrupt() -> None:
         def synthesize(self, **kwargs: Any) -> Any:
             if kwargs["prior_report_content_hash"] is not None:
                 self.registry = alternate_registry
-                harness.workflow._validation_registry = alternate_registry
+                harness.registry = alternate_registry
+                harness.workflow = harness.new_workflow()
+                runtime._workflow = harness.workflow
             return super().synthesize(**kwargs)
 
     harness.synthesis = EditingSynthesis(harness.events, harness.registry)
-    harness.workflow._synthesis = harness.synthesis
+    harness.workflow = harness.new_workflow()
     _, _, runtime = _runtime(harness)
     run_id = _initial().run_id
 
@@ -773,7 +812,6 @@ def test_concurrent_duplicate_start_is_serialized_across_runtime_instances() -> 
 
     assert first_result.interrupted_before is WorkflowNode.REQUEST_EXPORT_APPROVAL
     assert harness.events.count("scope_and_safety") == 1
-    assert harness.events.count("plan_sources") == 1
     assert len(harness.collector.calls) == 1
     assert len(harness.synthesis.prior_hashes) == 1
     assert len(harness.semantic.calls) == 1

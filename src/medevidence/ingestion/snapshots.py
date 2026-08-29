@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 from collections.abc import Callable, Iterator
@@ -10,22 +11,39 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Final, Literal
+from typing import BinaryIO, Final, Literal, final
 from uuid import uuid4
 
 from medevidence.domain.identifiers import Sha256Digest
 
-PERSISTENT_FILE_CAPACITY: Final = 1_214
-PERSISTENT_WITH_LOCK_CAPACITY: Final = 1_215
-TEMPORARY_FILE_PEAK_CAPACITY: Final = 1_216
-COMMITTED_BYTE_CAPACITY: Final = 8_425_963_520
-TEMPORARY_PEAK_BYTE_CAPACITY: Final = 12_720_930_816
+PERSISTENT_FILE_CAPACITY: Final = 1_232
+PERSISTENT_WITH_LOCK_CAPACITY: Final = 1_233
+TEMPORARY_FILE_PEAK_CAPACITY: Final = 1_234
+COMMITTED_BYTE_CAPACITY: Final = 8_430_436_352
+TEMPORARY_PEAK_BYTE_CAPACITY: Final = 12_725_403_648
 RAW_RUN_BYTE_CAPACITY: Final = 529_530_880
 RAW_RESPONSE_BYTE_CAPACITY: Final = 5_242_880
+PUBMED_SEARCH_PROGRESS_BYTE_CAPACITY: Final = 16_384
+PUBMED_TERMINAL_PROGRESS_BYTE_CAPACITY: Final = 262_144
+SOURCE_REPLAY_RECORD_BYTE_CAPACITY: Final = 262_144
 INITIAL_FREE_SPACE_FLOOR_BYTES: Final = 13_958_643_712
 PER_WRITE_FREE_SPACE_RESERVE_BYTES: Final = 1_073_741_824
 ROOT_LOCK_FILENAME: Final = ".m1a-constrained-v1.lock"
 TEMP_PREFIX: Final = ".m1a-incomplete-"
+_RUN_ID_PATTERN: Final = re.compile(
+    r"^run:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
+)
+_SOURCE_TASK_ATTEMPT_PATTERN: Final = re.compile(r"^source-task-attempt:sha256:([0-9a-f]{64})$")
+
+type SourceReplayKind = Literal["dailymed-discovery", "dailymed-fetch", "faers-aggregate"]
+
+_SOURCE_REPLAY_LAYOUT: Final[dict[SourceReplayKind, tuple[str, str]]] = {
+    "dailymed-discovery": ("dailymed", "discovery"),
+    "dailymed-fetch": ("dailymed", "fetch"),
+    "faers-aggregate": ("faers", "aggregate"),
+}
+_SOURCE_REPLAY_RUN_CAPACITY: Final = {"dailymed": 8, "faers": 8}
+_SOURCE_REPLAY_KEY_BYTE_CAPACITY: Final = 256
 
 type ArtifactClass = Literal["raw", "journal", "manifest"]
 
@@ -102,8 +120,40 @@ def _is_reparse(path: Path) -> bool:
     )
 
 
+@final
 class SnapshotStore:
     """One-writer immutable store with fail-closed on-disk capacity accounting."""
+
+    _authority_frozen: bool
+    _committed_bytes_probe: Callable[[], int] | None
+    _committed_files_probe: Callable[[], int] | None
+    _dailymed_spl_validator: DailyMedSplValidator | None
+    _free_bytes: Callable[[Path], int]
+    _initialized: bool
+    _lock_handle: BinaryIO | None
+    _raw_bytes_probe: Callable[[], int] | None
+    _root: Path
+
+    __slots__ = (
+        "_authority_frozen",
+        "_committed_bytes_probe",
+        "_committed_files_probe",
+        "_dailymed_spl_validator",
+        "_free_bytes",
+        "_initialized",
+        "_lock_handle",
+        "_raw_bytes_probe",
+        "_root",
+    )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("SnapshotStore is a sealed concrete persistence authority")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_authority_frozen", False):
+            raise AttributeError("SnapshotStore authority is frozen after construction")
+        object.__setattr__(self, name, value)
 
     def __init__(
         self,
@@ -115,14 +165,22 @@ class SnapshotStore:
         raw_bytes: Callable[[], int] | None = None,
         dailymed_spl_validator: DailyMedSplValidator | None = None,
     ) -> None:
-        self.root = root.absolute()
-        self._free_bytes = free_bytes
-        self._committed_bytes_probe = committed_bytes
-        self._committed_files_probe = committed_files
-        self._raw_bytes_probe = raw_bytes
-        self._dailymed_spl_validator = dailymed_spl_validator
-        self._lock_handle: BinaryIO | None = None
-        self._initialized = False
+        object.__setattr__(self, "_authority_frozen", False)
+        object.__setattr__(self, "_root", root.absolute())
+        object.__setattr__(self, "_free_bytes", free_bytes)
+        object.__setattr__(self, "_committed_bytes_probe", committed_bytes)
+        object.__setattr__(self, "_committed_files_probe", committed_files)
+        object.__setattr__(self, "_raw_bytes_probe", raw_bytes)
+        object.__setattr__(self, "_dailymed_spl_validator", dailymed_spl_validator)
+        object.__setattr__(self, "_lock_handle", None)
+        object.__setattr__(self, "_initialized", False)
+        object.__setattr__(self, "_authority_frozen", True)
+
+    @property
+    def root(self) -> Path:
+        """Return the exact absolute immutable snapshot root."""
+
+        return self._root
 
     @property
     def has_writer_lock(self) -> bool:
@@ -149,7 +207,7 @@ class SnapshotStore:
         self._require_safe_path(lock_path, allow_missing_leaf=False)
         if not lock_path.is_file() or lock_path.stat().st_size != 0:
             raise SnapshotIntegrityError("root writer lock must be a zero-byte regular file")
-        self._initialized = True
+        object.__setattr__(self, "_initialized", True)
 
     @contextmanager
     def writer(self) -> Iterator[SnapshotStore]:
@@ -206,6 +264,121 @@ class SnapshotStore:
             if temporary.exists():
                 self._require_safe_path(temporary, allow_missing_leaf=False)
                 temporary.unlink()
+
+    def read_pubmed_search_progress(self, run_id: str) -> bytes:
+        """Read only the bounded immutable PubMed search-progress journal record."""
+
+        match = _RUN_ID_PATTERN.fullmatch(run_id)
+        if match is None:
+            raise SnapshotContainmentError("invalid PubMed search-progress run identity")
+        if not self._initialized:
+            self.initialize()
+        relative = f"journal/{match.group(1)}/acquisition-0000/search-progress.json"
+        target = self.root.joinpath(*PurePosixPath(relative).parts)
+        self._require_safe_path(target, allow_missing_leaf=True)
+        if not target.is_file():
+            raise SnapshotIntegrityError("PubMed search-progress record is missing")
+        size = target.stat().st_size
+        if size <= 0 or size > PUBMED_SEARCH_PROGRESS_BYTE_CAPACITY:
+            raise SnapshotIntegrityError("PubMed search-progress record has invalid size")
+        raw = target.read_bytes()
+        self._require_safe_path(target, allow_missing_leaf=False)
+        if len(raw) != size:
+            raise SnapshotIntegrityError("PubMed search-progress record changed during read")
+        return raw
+
+    def read_pubmed_terminal_progress(self, run_id: str, attempt_id: str) -> bytes:
+        """Read only one bounded immutable PubMed terminal replay receipt."""
+
+        run_match = _RUN_ID_PATTERN.fullmatch(run_id)
+        attempt_match = _SOURCE_TASK_ATTEMPT_PATTERN.fullmatch(attempt_id)
+        if run_match is None or attempt_match is None:
+            raise SnapshotContainmentError("invalid PubMed terminal-progress identity")
+        if not self._initialized:
+            self.initialize()
+        relative = (
+            f"journal/{run_match.group(1)}/orchestration/pubmed/"
+            f"{attempt_match.group(1)}/terminal-progress.json"
+        )
+        target = self.root.joinpath(*PurePosixPath(relative).parts)
+        self._require_safe_path(target, allow_missing_leaf=True)
+        if not target.is_file():
+            raise SnapshotIntegrityError("PubMed terminal-progress record is missing")
+        size = target.stat().st_size
+        if size <= 0 or size > PUBMED_TERMINAL_PROGRESS_BYTE_CAPACITY:
+            raise SnapshotIntegrityError("PubMed terminal-progress record has invalid size")
+        raw = target.read_bytes()
+        self._require_safe_path(target, allow_missing_leaf=False)
+        if len(raw) != size:
+            raise SnapshotIntegrityError("PubMed terminal-progress record changed during read")
+        return raw
+
+    def publish_source_replay(
+        self,
+        kind: SourceReplayKind,
+        data: bytes,
+        *,
+        run_id: str,
+        task_id: str,
+        attempt_id: str,
+        query_id: str,
+        acquisition_intent_id: str,
+    ) -> PublishedFile:
+        """Insert or verify one exact bounded DailyMed/FAERS replay record."""
+
+        if not data or len(data) > SOURCE_REPLAY_RECORD_BYTE_CAPACITY:
+            raise SnapshotCapacityError("source replay record has invalid size")
+        relative, source, run_uuid = self._source_replay_relative_path(
+            kind,
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            query_id=query_id,
+            acquisition_intent_id=acquisition_intent_id,
+        )
+        target = self.root.joinpath(*relative.parts)
+        self._require_safe_path(target, allow_missing_leaf=True)
+        if (
+            not target.exists()
+            and self._source_replay_count(run_uuid, source) >= _SOURCE_REPLAY_RUN_CAPACITY[source]
+        ):
+            raise SnapshotCapacityError(f"{source} replay records exceed the frozen run ceiling")
+        return self.publish_bytes(relative.as_posix(), data, artifact_class="journal")
+
+    def read_source_replay(
+        self,
+        kind: SourceReplayKind,
+        *,
+        run_id: str,
+        task_id: str,
+        attempt_id: str,
+        query_id: str,
+        acquisition_intent_id: str,
+    ) -> bytes:
+        """Read one exact bounded DailyMed/FAERS replay record and no arbitrary path."""
+
+        if not self._initialized:
+            self.initialize()
+        relative, _source, _run_uuid = self._source_replay_relative_path(
+            kind,
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            query_id=query_id,
+            acquisition_intent_id=acquisition_intent_id,
+        )
+        target = self.root.joinpath(*relative.parts)
+        self._require_safe_path(target, allow_missing_leaf=True)
+        if not target.is_file():
+            raise SnapshotIntegrityError("source replay record is missing")
+        size = target.stat().st_size
+        if size <= 0 or size > SOURCE_REPLAY_RECORD_BYTE_CAPACITY:
+            raise SnapshotIntegrityError("source replay record has invalid size")
+        raw = target.read_bytes()
+        self._require_safe_path(target, allow_missing_leaf=False)
+        if len(raw) != size:
+            raise SnapshotIntegrityError("source replay record changed during read")
+        return raw
 
     def store_raw_body(self, body: bytes) -> SnapshotWrite:
         """Publish one exact bounded PubMed response body."""
@@ -387,6 +560,67 @@ class SnapshotStore:
         if self._free_bytes(self.root) < size + PER_WRITE_FREE_SPACE_RESERVE_BYTES:
             raise SnapshotCapacityError("write would consume the frozen 1 GiB reserve")
 
+    def _source_replay_relative_path(
+        self,
+        kind: SourceReplayKind,
+        *,
+        run_id: str,
+        task_id: str,
+        attempt_id: str,
+        query_id: str,
+        acquisition_intent_id: str,
+    ) -> tuple[PurePosixPath, str, str]:
+        run_match = _RUN_ID_PATTERN.fullmatch(run_id)
+        if run_match is None or kind not in _SOURCE_REPLAY_LAYOUT:
+            raise SnapshotContainmentError("invalid source replay identity")
+        source, operation = _SOURCE_REPLAY_LAYOUT[kind]
+        keys = tuple(
+            self._source_replay_key_digest(value)
+            for value in (task_id, attempt_id, query_id, acquisition_intent_id)
+        )
+        run_uuid = run_match.group(1)
+        relative = PurePosixPath(
+            "journal",
+            run_uuid,
+            "orchestration",
+            "source-replay",
+            source,
+            operation,
+            *keys,
+            "projection.json",
+        )
+        return relative, source, run_uuid
+
+    def _source_replay_key_digest(self, value: str) -> str:
+        if not isinstance(value, str):
+            raise SnapshotContainmentError("source replay keys must be strings")
+        encoded = value.encode("utf-8")
+        if not encoded or len(encoded) > _SOURCE_REPLAY_KEY_BYTE_CAPACITY:
+            raise SnapshotContainmentError("source replay key has invalid size")
+        return sha256(encoded).hexdigest()
+
+    def _source_replay_count(self, run_uuid: str, source: str) -> int:
+        source_root = self.root / "journal" / run_uuid / "orchestration" / "source-replay" / source
+        self._require_safe_path(source_root, allow_missing_leaf=True)
+        if not source_root.exists():
+            return 0
+        count = 0
+        for directory, names, filenames in os.walk(source_root, followlinks=False):
+            directory_path = Path(directory)
+            self._require_safe_path(directory_path, allow_missing_leaf=False)
+            for name in names:
+                child = directory_path / name
+                if _is_reparse(child):
+                    raise SnapshotContainmentError("source replay path crosses a reparse point")
+            for filename in filenames:
+                child = directory_path / filename
+                self._require_safe_path(child, allow_missing_leaf=False)
+                if not child.is_file():
+                    raise SnapshotContainmentError("source replay entry is not a regular file")
+                if filename == "projection.json":
+                    count += 1
+        return count
+
     def _ledger(self) -> _Ledger:
         scanned = self._scan_ledger()
         committed_files = (
@@ -549,7 +783,7 @@ class SnapshotStore:
         except Exception:
             handle.close()
             raise
-        self._lock_handle = handle
+        object.__setattr__(self, "_lock_handle", handle)
 
     def _release_lock(self) -> None:
         handle = self._lock_handle
@@ -570,4 +804,4 @@ class SnapshotStore:
                 )
         finally:
             handle.close()
-            self._lock_handle = None
+            object.__setattr__(self, "_lock_handle", None)

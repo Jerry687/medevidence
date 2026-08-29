@@ -484,3 +484,170 @@ redirects. No discovery, history, ZIP, NDC, packaging, PubMed, FAERS, or CADEC
 operation is admitted. Raw MOUNJARO bytes must be retained first. Only the same
 two optional byte-deletion classes may be applied, and all strict source-native
 parser controls remain in force.
+
+## 17. M3-006 source-capability projections
+
+ADR-018 preserves the source roles above and supplies only a later exact M3
+execution boundary. Every selected scope source has one plan row; only a
+`planning_status=selected` row has a task. Skipped rows stay visible and have
+no task or `SourceOutcome`.
+
+Source operations are content-bound and source-specific: PubMed search plus
+zero to 100 exact ordered PMID fetches; DailyMed one to four discoveries plus
+only selection-required fetches; FAERS one to eight bounded aggregate queries;
+and CADEC exact asset verification followed by local search. A task becomes
+terminal only after every required operation does. Multi-operation execution,
+coverage, result, and warnings follow the exact aggregation in ADR-018; in
+particular, no-match requires every operation to be successful, complete, and
+no-match.
+
+The CADEC runtime re-verifies archive
+`4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a`
+and manifest
+`1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa`,
+all 1,248 admitted members, exact membership, encodings, and text hashes. The
+two zero-length documents remain verified members without retrieval chunks;
+the other 1,246 are transient whole-document chunks. The query is the ordered
+drug preferred terms followed by ordered adverse-reaction preferred terms,
+joined by one ASCII space and rejected beyond the existing query bound.
+
+All eligible documents are scored by deterministic BM25 with `k1=0.9` and
+`b=0.4`. Only positive-score top-20 refs are returned, ordered by score then
+UTF-8 document ID. The projection remains complete because all eligible
+documents were scored. Any asset, membership, hash, materialization, or search
+integrity failure exposes no CADEC refs and yields
+`failed / unavailable / indeterminate`. Success yields complete matches or
+complete no-match. The warning identity is always
+`cadec_mandatory_limitations`; FAERS execution always retains
+`faers_mandatory_limitations`.
+
+CADEC output remains whole-document auxiliary evidence, never clinical,
+causal, incidence, regulatory, product-risk, comparative-safety, or ranking
+evidence. No corpus text or chunk is persisted and no M2 router, qrels, corpus,
+or metric contract changes.
+
+### 17.1 Round 3 exact subject and provenance binding
+
+The initial review verdict `FAIL — P0 0 / P1 4 / P2 0` remains immutable.
+Round 3 binds PubMed search to exact scope/query/catalog and each fetch to its
+PMID/query/ordinal; DailyMed discovery and selected fetch to their complete
+request identity; FAERS to the exact aggregate request and canonical query; and
+CADEC verify/search to their exact plan inputs.
+
+The task aggregate no longer substitutes for child provenance: terminal v2
+records the aggregate content identity, every ordered child acquisition ID, and
+one exact representative child acquisition. All children must recompute the
+same four aggregate dimensions. CADEC verification must equal every frozen
+archive/manifest/inventory/membership/count/hash/policy field. Any degraded
+CADEC result carries the exact mandatory limitations and exposes zero
+observations or evidence refs. Fresh independent review remains pending.
+
+### 17.2 Round 4 durable membership and canonical outcome
+
+The fresh Round 3 review remains
+`FAIL — P0 0 / P1 3 / P2 0`. Round 4 replaces opaque subject digests with typed
+role/value input refs and binds scope and acquisition intent. PubMed persists
+and reloads the exact ordered PMID membership before fetch; DailyMed reloads
+the exact durable selected-discovery provenance before fetch. Missing, stale,
+alternate, or corrupt progress fails before a later source effect.
+
+Every terminal `SourceOutcome` field is reconstructed from exact child
+operations: task query identity, bounds, valid count, pages, truncation,
+warnings, failure identity, and the four aggregate dimensions. CADEC input refs
+separately bind exact asset, membership, and query-plan identities, and only the
+sealed infrastructure-owned adapter may execute those bytes. The existing
+archive/document counts, evidence meaning, and no-persistence rules do not
+change. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_4`.
+
+### 17.3 Round 5 durable source replay
+
+The fresh Round 4 review remains immutable:
+`FAIL — P0 0 / P1 3 / P2 0`. Round 5 requires source-specific durable replay,
+not merely self-consistent child identities. PubMed reloads both its search
+membership and attempt-scoped terminal receipt; the latter binds ordered PMIDs,
+operations, acquisition intents, snapshots, child outcomes, evidence,
+limitations, and terminal projection. DailyMed reloads exact discovery and
+fetch progress; FAERS reloads exact aggregate progress. CADEC reruns the frozen
+concrete local asset adapter and compares the complete terminal task.
+
+Missing, substituted, stale, foreign, mutable, or coordinated checkpoint/
+journal data fails before downstream use. Existing source meanings, CADEC
+membership, limitations, and no-persistence rules remain unchanged. Status is
+`AWAITING_FRESH_REVIEW_AFTER_ROUND_5`.
+
+### 17.4 Round 6 prefix and replay-store authority
+
+The fresh Round 5 verdict remains immutable:
+`FAIL — P0 0 / P1 2 / P2 0`. Before the workflow touches a later selected
+source, every earlier terminal source is revalidated against its source-
+specific durable record or concrete local asset.
+
+PubMed's concrete service/acquisition authority is composition-owned.
+DailyMed/FAERS live provenance remains an input only to current execution;
+immutable discovery/fetch/aggregate replay records are written and loaded by
+separate internally constructed snapshot stores that callers cannot inject or
+replace. Frozen class-qualified authorities prevent normal field or method
+replacement. Source meaning, limitations, and evidence semantics remain
+unchanged. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_6`.
+
+### 17.5 Round 7 active replay and CADEC bound separation
+
+The fresh Round 6 verdict remains immutable:
+`FAIL — P0 0 / P1 3 / P2 0`. Active inspection now replays every terminal
+source prefix before returning state. Snapshot and source-replay readers are
+frozen concrete authorities, preventing coordinated durable-record and reader
+replacement through ordinary mutation.
+
+CADEC outcome `configured_bounds` and search-result `scope_bounds` exactly
+equal the request scope, including `max_records=100` in the governed case.
+Top-20 remains only the maximum number of positive auxiliary evidence refs; it
+does not redefine execution coverage or scope. Status is
+`AWAITING_FRESH_REVIEW_AFTER_ROUND_7`.
+
+### 17.6 Round 8 skipped-row preservation
+
+The fresh Round 7 verdict remains immutable:
+`FAIL — P0 0 / P1 2 / P2 0`. Full `scope.selected_sources` continues to record
+every considered source in canonical order, while `selected_task_sources`
+contains exactly the rows selected for execution. Skipped-not-applicable and
+skipped-by-policy sources retain their visible reason and have no task,
+acquisition, evidence, or `SourceOutcome` through formal export.
+
+Composition creates only exact dependency groups for sources selected to run.
+CADEC-only uses explicit local asset paths with no snapshot/replay store;
+PubMed, DailyMed, or FAERS share the exact replay store only when present.
+Source meaning and evidence semantics remain unchanged. Status is
+`AWAITING_FRESH_REVIEW_AFTER_ROUND_8`.
+
+### 17.7 Round 9 exact plan provenance
+
+The fresh Round 8 verdict remains immutable:
+`FAIL — P0 0 / P1 1 / P2 0`. Durable source planning is now replayed from the
+frozen planner and compared row-for-row in canonical scope order. The identity
+binds source, selected/skipped status, machine-readable reason code, human-
+readable reason text, and order.
+
+`source_plan_id` accompanies the report-validation request and receipt, so a
+post-receipt skip-reason change cannot retain validation authority. A selected
+row cannot become a skip by deleting its task, and a skipped row remains visible
+without task/outcome. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_9`.
+
+### 17.8 Final Round 10 canonical plan owner
+
+The fresh Round 9 verdict remains immutable:
+`FAIL — P0 0 / P1 1 / P2 0`. The complete ordered source plan, including all
+visible skips and reasons, is owned by a final immutable
+`CanonicalSourcePlanningAuthority` bound to the exact scope. Caller Protocols,
+mutable callables, and instance shadows cannot supply or change that plan.
+
+Initial planning and every replay use the same class-qualified authority, so a
+selected row cannot become a skip through planner mutation. Status is
+`AWAITING_FINAL_FRESH_REVIEW_AFTER_ROUND_10`; budget 10/10 is exhausted.
+
+### 17.9 Final independent source review
+
+Fresh final Round 10 review returned `PASS — P0 0 / P1 0 / P2 0` with no
+findings. The reviewer verified exact planning, source-specific durable replay,
+skipped-row preservation, all 15 source subsets, mandatory limitations, and
+CADEC exact asset/bounds semantics. All historical FAILs remain preserved.
+Status is `AWAITING_TERMINAL_AUDIT`; terminal PASS is not yet claimed.

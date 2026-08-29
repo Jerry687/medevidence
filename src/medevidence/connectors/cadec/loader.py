@@ -155,6 +155,22 @@ class CadecLoadResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _CadecAdmittedDocumentText:
+    """One exact admitted document and its transient decoded text."""
+
+    document: CadecCorpusDocumentV1
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CadecTextLoadResult:
+    """Internal one-open admission result for transient local search only."""
+
+    admitted: CadecLoadResult
+    document_texts: tuple[_CadecAdmittedDocumentText, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _ManifestPolicy:
     inventory: tuple[Mapping[str, object], ...]
     canonical_ids: tuple[str, ...]
@@ -172,6 +188,34 @@ class _ManifestPolicy:
 def load_cadec_archive(archive_path: str | Path, manifest_path: str | Path) -> CadecLoadResult:
     """Admit only the exact frozen production archive and authoritative manifest."""
 
+    result, _document_texts = _load_cadec_archive_bytes(
+        archive_path,
+        manifest_path,
+        retain_document_text=False,
+    )
+    return result
+
+
+def _load_cadec_archive_with_text(
+    archive_path: str | Path,
+    manifest_path: str | Path,
+) -> _CadecTextLoadResult:
+    """Admit exact inputs once and retain text only in this transient result."""
+
+    admitted, document_texts = _load_cadec_archive_bytes(
+        archive_path,
+        manifest_path,
+        retain_document_text=True,
+    )
+    return _CadecTextLoadResult(admitted=admitted, document_texts=document_texts)
+
+
+def _load_cadec_archive_bytes(
+    archive_path: str | Path,
+    manifest_path: str | Path,
+    *,
+    retain_document_text: bool,
+) -> tuple[CadecLoadResult, tuple[_CadecAdmittedDocumentText, ...]]:
     archive_bytes = _read_regular_input_bytes(archive_path, "archive", MAX_ARCHIVE_INPUT_BYTES)
     manifest_bytes = _read_regular_input_bytes(manifest_path, "manifest", MAX_MANIFEST_INPUT_BYTES)
     manifest_size, manifest_hash = _bytes_identity(manifest_bytes)
@@ -191,7 +235,8 @@ def load_cadec_archive(archive_path: str | Path, manifest_path: str | Path) -> C
         )
     policy = _read_and_validate_manifest(manifest_bytes)
     release = CadecReleaseManifestV1.create()
-    return _admit_archive(
+    document_texts: list[_CadecAdmittedDocumentText] | None = [] if retain_document_text else None
+    result = _admit_archive(
         archive_bytes,
         policy=policy,
         release=release,
@@ -199,7 +244,9 @@ def load_cadec_archive(archive_path: str | Path, manifest_path: str | Path) -> C
         archive_hash=archive_hash,
         manifest_size=manifest_size,
         manifest_hash=manifest_hash,
+        document_texts=document_texts,
     )
+    return result, tuple(document_texts or ())
 
 
 def inspect_zip_inventory(archive_path: str | Path) -> CadecInventorySummary:
@@ -519,6 +566,7 @@ def _admit_archive(
     archive_hash: str,
     manifest_size: int,
     manifest_hash: str,
+    document_texts: list[_CadecAdmittedDocumentText] | None = None,
 ) -> CadecLoadResult:
     documents: list[CadecCorpusDocumentV1] = []
     annotations: list[CadecCorpusAnnotationV1] = []
@@ -597,6 +645,10 @@ def _admit_archive(
                 )
                 document.validate_against(release)
                 documents.append(document)
+                if document_texts is not None:
+                    document_texts.append(
+                        _CadecAdmittedDocumentText(document=document, text=document_text)
+                    )
                 for layer in _LAYERS:
                     member_path = f"cadec/{layer}/{document_id}.ann"
                     payload = _read_member(handle, by_path[member_path])

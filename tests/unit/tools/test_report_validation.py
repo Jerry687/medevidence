@@ -81,6 +81,7 @@ from medevidence.tools.report_validation import (
 RUN_ID = "run:12345678-1234-4234-9234-123456789abc"
 FOREIGN_RUN = "run:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 REPORT_ID = "report:sha256:" + "b" * 64
+SOURCE_PLAN_ID = "source-plan:sha256:" + "d" * 64
 CONTENT_HASH = "sha256:" + "c" * 64
 IDENTITY = EvaluatorIdentityInput("deterministic_test", "v1")
 
@@ -182,6 +183,8 @@ def _outer_exact_max_request() -> CanonicalReportRequest:
             RUN_ID,
             REPORT_ID,
             scope,
+            SOURCE_PLAN_ID,
+            scope.selected_sources,
             tasks,
             synthesis,
             registry,
@@ -325,6 +328,8 @@ def _empty_request(
         RUN_ID,
         REPORT_ID,
         scope,
+        SOURCE_PLAN_ID,
+        scope.selected_sources,
         tasks,
         synthesis,
         registry,
@@ -480,6 +485,8 @@ def _material_request(
         RUN_ID,
         REPORT_ID,
         scope,
+        SOURCE_PLAN_ID,
+        scope.selected_sources,
         (_task(source, outcome, (evidence,)),),
         synthesis,
         registry,
@@ -592,6 +599,8 @@ def _relationship_request(
             RUN_ID,
             REPORT_ID,
             scope,
+            SOURCE_PLAN_ID,
+            scope.selected_sources,
             (_task(SourceType.PUBMED, outcome, evidence),),
             synthesis,
             registry,
@@ -826,6 +835,86 @@ def test_selected_source_task_equality(attack: str) -> None:
     else:
         tasks = (replace(tasks[0], terminal=False), tasks[1])
     _assert_rejected(replace(request, tasks=tasks))
+
+
+def test_scope_sources_may_include_skipped_source_without_task_or_outcome() -> None:
+    request = _empty_request(SourceType.PUBMED, SourceType.DAILYMED)
+    pubmed = next(task for task in request.tasks if task.source is SourceType.PUBMED)
+    projected = _rebind(
+        replace(
+            request,
+            selected_task_sources=(SourceType.PUBMED,),
+            tasks=(pubmed,),
+        )
+    )
+
+    audit, provider = _assess(projected)
+
+    assert audit.summary.passed
+    assert set(projected.scope.selected_sources) == {SourceType.PUBMED, SourceType.DAILYMED}
+    assert projected.selected_task_sources == (SourceType.PUBMED,)
+    assert tuple(task.source for task in projected.tasks) == (SourceType.PUBMED,)
+    assert provider.calls == []
+
+
+@pytest.mark.parametrize("attack", ["missing", "extra"])
+def test_task_equality_is_relative_to_selected_plan_rows(attack: str) -> None:
+    request = _empty_request(SourceType.PUBMED, SourceType.DAILYMED)
+    tasks = () if attack == "missing" else request.tasks
+    projected = _rebind(replace(request, selected_task_sources=(SourceType.PUBMED,), tasks=tasks))
+
+    audit, provider = _assess(projected)
+
+    assert not audit.summary.passed
+    assert "selected_source_task_mismatch" in audit.summary.reason_codes
+    assert provider.calls == []
+
+
+@pytest.mark.parametrize("attack", ["duplicate", "order", "foreign", "not_subset"])
+def test_selected_task_sources_must_be_unique_canonical_scope_subset(attack: str) -> None:
+    request = _empty_request(SourceType.PUBMED, SourceType.DAILYMED)
+    first, second = request.scope.selected_sources
+    foreign = next(source for source in SourceType if source not in request.scope.selected_sources)
+    selected = {
+        "duplicate": (first, first),
+        "order": (second, first),
+        "foreign": (foreign,),
+        "not_subset": (first, foreign),
+    }[attack]
+
+    with pytest.raises(CanonicalValidationError, match="selected_task_sources_invalid"):
+        canonical_validate_report(
+            replace(request, selected_task_sources=selected),
+            mode=ValidationMode.ASSESS,
+        )
+
+
+@pytest.mark.parametrize(
+    "source_plan_id",
+    ["", "source-plan:sha256:" + "g" * 64, "source-plan:sha256:" + "A" * 64],
+)
+def test_source_plan_identity_is_strict(source_plan_id: str) -> None:
+    request = _empty_request()
+
+    with pytest.raises(CanonicalValidationError, match="source_plan_id_invalid"):
+        canonical_validate_report(
+            replace(request, source_plan_id=source_plan_id),
+            mode=ValidationMode.ASSESS,
+        )
+
+
+def test_validation_receipt_binds_exact_source_plan_identity() -> None:
+    request = _empty_request()
+    audit, _ = _assess(request)
+    assert audit.receipt is not None
+    drifted = replace(request, source_plan_id="source-plan:sha256:" + "e" * 64)
+    verified = canonical_validate_report(
+        replace(drifted, stored_validation=_stored(audit)),
+        mode=ValidationMode.VERIFY_BINDING,
+    )
+
+    with pytest.raises(CanonicalValidationError, match="validation_receipt_binding_drift"):
+        verify_validation_receipt(audit.receipt, request=drifted, audit=verified)
 
 
 @pytest.mark.parametrize(
@@ -1248,7 +1337,16 @@ def _maximum_request() -> CanonicalReportRequest:
         ),
         ("cadec_mandatory_limitations", "faers_mandatory_limitations"),
     )
-    request = CanonicalReportRequest(RUN_ID, REPORT_ID, scope, tasks, synthesis, registry)
+    request = CanonicalReportRequest(
+        RUN_ID,
+        REPORT_ID,
+        scope,
+        SOURCE_PLAN_ID,
+        scope.selected_sources,
+        tasks,
+        synthesis,
+        registry,
+    )
     return _rebind(request)
 
 
@@ -2922,6 +3020,8 @@ def _claim_citation_exact_max_request() -> CanonicalReportRequest:
         RUN_ID,
         REPORT_ID,
         scope,
+        SOURCE_PLAN_ID,
+        scope.selected_sources,
         (_task(SourceType.PUBMED, outcome, evidence),),
         synthesis,
         registry,

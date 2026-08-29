@@ -476,3 +476,184 @@ emergency-guidance, and individualized-medical-advice contexts. They also
 closed-revalidate identity, policy, span, release, split, and exact parent
 lineage. CADEC-002 requires new Owner authorization for any loader, execution,
 persistence, search, index, report, or API boundary.
+
+## 22. M3-006 source-capability trust boundary
+
+ADR-018 is the later exact Owner authorization for local M3 CADEC execution;
+the M1B statement above remains immutable historical scope. The authorization
+does not include a medical-source network call, model/provider, public API,
+schema/migration, dependency, or Holdout access.
+
+Untrusted plan rows, checkpoints, source projections, persisted acquisition
+echoes, CADEC paths, archive/manifest bytes, admitted document text, and search
+results are reconstructed before use. Plan rows must equal selected scope
+sources; tasks must equal selected plan rows. Required operations bind run,
+task, attempt, source, ordinal, kind, and query and are checkpointed before
+their effects. Resume must reproduce the same plan. Terminal admission requires
+every final required operation and exact acquisition/outcome/observation
+binding.
+
+The dispatcher is sealed, statically branches over the four approved sources,
+and accepts explicit injected application ports. It contains no mutable
+dispatch table, dynamic private-helper authority, provider fallback, or
+concrete infrastructure construction. Tools expose source-neutral contracts;
+only infrastructure owns CADEC filesystem paths and concrete BM25 behavior.
+
+CADEC local search fails closed on any archive, manifest, membership, encoding,
+hash, materialization, duplicate, foreign result, non-finite score, ordering,
+or result-binding drift. Failure returns no partial evidence and maps to
+`failed / unavailable / indeterminate`. Zero positive results become no-match
+only after all 1,246 eligible documents were validly scored. Text and chunks
+are transient and must not enter Git, PostgreSQL, Qdrant, logs, checkpoints, or
+durable application contracts.
+
+Every executed FAERS task carries `faers_mandatory_limitations`; every CADEC
+success or failure carries `cadec_mandatory_limitations`. Those limitations and
+the auxiliary-only CADEC role prevent incidence, causality, regulatory,
+clinical, product-risk, comparative-safety, or ranking claims. Holdout-20
+remains sealed.
+
+### 22.1 Round 3 fail-closed closures
+
+The initial independent verdict is preserved exactly as
+`FAIL — P0 0 / P1 4 / P2 0`. Round 3 closes the demonstrated trust-boundary
+bypasses by making the operation's complete input subject part of its durable
+identity, binding terminal aggregate content separately from all child
+acquisitions, and requiring the representative acquisition to equal one exact
+child binding.
+
+`CadecVerifiedCorpus` now reconstructs the complete frozen verification tuple;
+no caller-supplied count/hash/policy subset can stand in for the exact asset.
+Every CADEC failure or unavailable/indeterminate result has exact governed
+limitations and zero observations/evidence refs. Sealed concrete DailyMed and
+FAERS authorities own request construction, persisted provenance validation,
+terminal projection, and limitations; the static dispatcher rejects structural
+fakes and subclasses by requiring exact authority types. The candidate awaits
+fresh independent review and has no PASS/Git authority from these closures.
+
+### 22.2 Round 4 durable-stage and composition controls
+
+The fresh Round 3 review is preserved exactly as
+`FAIL — P0 0 / P1 3 / P2 0`. Round 4 closes its three trust-boundary findings:
+
+- typed v3 refs bind operation role/value inputs, scope, derived input identity,
+  and acquisition intent;
+- a RUNNING task stores only an exact completed-result prefix, and the workflow
+  checkpoints each source stage before a dynamic fetch suffix can execute;
+- PubMed and DailyMed must reload immutable persisted progress and reject
+  missing, stale, alternate, or corrupt membership/provenance;
+- terminal validation reconstructs every `SourceOutcome` field from child
+  operations, preventing self-consistent query/count/intent/operation forgery;
+  and
+- CADEC is removed from the structural dispatcher. Only the sealed final
+  infrastructure wrapper can internally construct the concrete adapter from
+  explicit archive/manifest paths; production composition has the sole route.
+
+The CADEC operation also binds exact asset and membership identities, so an
+asset-free fake cannot satisfy planning. Fresh review, rebind, and audit remain
+required; no PASS or Git claim is made.
+
+### 22.4 Round 6 replay-before-next-source controls
+
+The fresh Round 5 review is preserved exactly:
+`FAIL — P0 0 / P1 2 / P2 0`. `collect_evidence` now replays every existing
+terminal task before its source loop, so a forged terminal prefix cannot be
+carried into planning or effects for another source.
+
+All critical source composition instances freeze normal replacement of trusted
+fields and use class-qualified dispatch. Production composition internally
+constructs PubMed service/acquisition authority and immutable snapshot-backed
+DailyMed/FAERS replay stores. Caller-supplied live provenance is kept separate
+and cannot act as or replace replay authority. Replay before synthesis,
+validation, save, approval, export, trusted/idempotent returns, and terminal
+inspection remains intact. Fresh review, rebind, and audit remain required; no
+PASS or Git claim is made.
+
+### 22.9 Final independent security review
+
+Fresh final Round 10 independent review returned
+`PASS — P0 0 / P1 0 / P2 0` with no findings. Planner shadow attacks passed
+`5/5`; workflow/runtime/composition, projection/replay, authority/subset, and
+static boundary checks all passed. Historical FAIL findings remain immutable.
+Exact-byte rebind and terminal audit remain required; status is
+`AWAITING_TERMINAL_AUDIT` and no overall PASS/Git claim is made.
+
+### 22.5 Round 7 inspect and underlying-authority controls
+
+The fresh Round 6 review is preserved exactly:
+`FAIL — P0 0 / P1 3 / P2 0`. LangGraph reconstructs scheduling/topology and
+then invokes `validate_terminal_sources` before every active or terminal result
+can leave `inspect`, `start`, or `resume`.
+
+`SnapshotStore` is sealed, final, slotted, root-read-only, and freezes internal
+probes/state after construction. Acquisition, DailyMed/FAERS replay, and CADEC
+authorities likewise reject normal field/method replacement and are invoked
+class-qualified. Coordinated checkpoint/store substitution therefore fails
+before trusted return or effects.
+
+CADEC's top-20 result cap is not accepted as an execution bound. Exact scope
+bounds are reconstructed for success and failure, preserving the governed
+`max_records=100`. Fresh review, rebind, and audit remain required; no PASS or
+Git claim is made.
+
+### 22.7 Round 9 checkpoint plan authority
+
+The fresh Round 8 review is preserved exactly:
+`FAIL — P0 0 / P1 1 / P2 0`. Every trusted workflow entry now invokes the
+frozen planner and requires byte-semantic equality of the full canonical plan
+before terminal replay or effects. The derived `source_plan_id` is strict and
+bound into canonical report and validation receipt identities.
+
+The final/slotted workflow rejects normal planner/dependency replacement.
+Selected-to-skip plus task removal and post-receipt reason drift fail before
+source I/O, evaluator, persistence, approval, export, inspection, or trusted
+return. Fresh review, rebind, and audit remain required; no PASS or Git claim is
+made.
+
+### 22.8 Final Round 10 planner-shadow control
+
+The fresh Round 9 review is preserved exactly:
+`FAIL — P0 0 / P1 1 / P2 0`. Workflow accepts only the exact final, slotted,
+no-dictionary `CanonicalSourcePlanningAuthority`. Its strict scope and complete
+canonical plan are reconstructed during construction and fields cannot be
+replaced afterward.
+
+Initial and replay calls are class-qualified, so an instance-level method
+shadow, mutable Protocol implementation, subclass, or foreign scope cannot
+authorize plan drift. The demonstrated coordinated attack reaches zero source,
+semantic, persistence, approval, and export effects. Fresh final review,
+rebind, and audit remain required; remediation budget 10/10 is exhausted and no
+PASS or Git claim is made.
+
+### 22.6 Round 8 skipped-source and dependency-group controls
+
+The fresh Round 7 review is preserved exactly:
+`FAIL — P0 0 / P1 2 / P2 0`. Canonical validation now treats full scope and
+plan-selected task sources as separate bound identities. A skipped row remains
+auditable but cannot gain a task/outcome; a missing, extra, reordered, duplicate,
+or noncanonical selected-task subset fails closed.
+
+Production composition accepts an authority group iff its source is selected,
+requires every member of that group, and rejects partial or extraneous groups.
+All 15 nonempty source subsets are covered. CADEC-only cannot be forced to
+accept a replay store, while selected network sources require one shared exact
+store. Fresh review, rebind, and audit remain required; no PASS or Git claim is
+made.
+
+### 22.3 Round 5 replay-before-trust controls
+
+The fresh Round 4 verdict is preserved exactly:
+`FAIL — P0 0 / P1 3 / P2 0`. Round 5 freezes normal replacement of the CADEC
+wrapper's delegate/search and the concrete adapter paths, then reruns the exact
+configured asset for every CADEC terminal task. PubMed's terminal receipt binds
+the search receipt and entire terminal projection, defeating coordinated
+journal/checkpoint substitution; production composition accepts no prebuilt
+PubMed service or fake snapshot-store route.
+
+DailyMed and FAERS replay exact persisted operation provenance.
+`EvidenceCollectionPort.validate_terminal_task` is invoked before every
+post-collection trusted/effect path and terminal inspection, including
+synthesis, deterministic/semantic validation, pending save, approval, export,
+and idempotent returns. A self-consistent but non-replayable child therefore
+fails before any later capability. Fresh review, rebind, and audit remain
+required; no PASS or Git claim is made.

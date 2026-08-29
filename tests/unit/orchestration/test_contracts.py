@@ -8,6 +8,8 @@ import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    CADEC_MANDATORY_LIMITATIONS,
+    FAERS_MANDATORY_LIMITATIONS,
     AcquisitionOutcomeRef,
     AdverseEventConcept,
     ComparisonIntent,
@@ -24,6 +26,7 @@ from medevidence.domain import (
     SourceOutcome,
     SourcePlanReasonCode,
     SourceType,
+    derive_identity,
 )
 from medevidence.orchestration import (
     WORKFLOW_TOPOLOGY,
@@ -47,15 +50,74 @@ from medevidence.orchestration import (
     WorkflowDisposition,
     WorkflowNode,
     WorkflowPermissions,
+    source_task_attempt,
+)
+from medevidence.orchestration.contracts import (
+    SourceOperationInputRef,
+    SourceOperationInputRole,
+    SourceOperationKind,
+    TerminalSourceOperationResult,
+)
+from medevidence.orchestration.source_task_projection import (
+    canonical_terminal_source_outcome,
+    required_source_operation,
+    source_operation_acquisition,
+    source_operation_observation,
 )
 
 RUN_ID = "run:12345678-1234-4234-9234-123456789abc"
 REPORT_ID = "report:sha256:" + "a" * 64
 DIGEST = "sha256:" + "b" * 64
+SCOPE_ID = "scope:sha256:" + "d" * 64
 
 
 def _task_id(source: SourceType) -> str:
     return f"source-task:{RUN_ID.removeprefix('run:')}:{source.value}"
+
+
+def _required_operations(source: SourceType):
+    kinds = {
+        SourceType.PUBMED: (SourceOperationKind.PUBMED_SEARCH,),
+        SourceType.DAILYMED: (SourceOperationKind.DAILYMED_DISCOVERY,),
+        SourceType.FAERS: (SourceOperationKind.FAERS_AGGREGATE,),
+        SourceType.CADEC: (SourceOperationKind.CADEC_VERIFY, SourceOperationKind.CADEC_SEARCH),
+    }[source]
+    return tuple(
+        required_source_operation(
+            run_id=RUN_ID,
+            scope_id=SCOPE_ID,
+            source=source,
+            ordinal=index,
+            kind=kind,
+            query_id=f"query:{source.value}:{index}",
+            input_refs=_input_refs(kind, index),
+        )
+        for index, kind in enumerate(kinds)
+    )
+
+
+def _input_refs(kind: SourceOperationKind, index: int):
+    roles = {
+        SourceOperationKind.PUBMED_SEARCH: (SourceOperationInputRole.QUERY_PLAN,),
+        SourceOperationKind.PUBMED_FETCH: (SourceOperationInputRole.PUBMED_PMID,),
+        SourceOperationKind.DAILYMED_DISCOVERY: (SourceOperationInputRole.REQUEST,),
+        SourceOperationKind.DAILYMED_FETCH: (
+            SourceOperationInputRole.DAILYMED_DECISION,
+            SourceOperationInputRole.CANDIDATE,
+            SourceOperationInputRole.SETID,
+            SourceOperationInputRole.SPL_VERSION,
+        ),
+        SourceOperationKind.FAERS_AGGREGATE: (SourceOperationInputRole.REQUEST,),
+        SourceOperationKind.CADEC_VERIFY: (
+            SourceOperationInputRole.ASSET,
+            SourceOperationInputRole.MEMBERSHIP,
+        ),
+        SourceOperationKind.CADEC_SEARCH: (SourceOperationInputRole.QUERY_PLAN,),
+    }[kind]
+    return tuple(
+        SourceOperationInputRef(role=role, value=f"input:{kind.value}:{role.value}:{index}")
+        for role in roles
+    )
 
 
 def _scope(*sources: SourceType) -> ResearchScope:
@@ -145,7 +207,129 @@ def _terminal_ref(
         source_outcome_id=f"source-outcome:{source.value}",
         snapshot_id=f"snapshot:{source.value}",
     )
-    return TerminalSourceOutcomeRef(acquisition=acquisition, outcome=outcome)
+    return TerminalSourceOutcomeRef(
+        terminal_outcome_id=derive_identity("source-task-terminal-outcome", outcome),
+        operation_acquisition_ids=(acquisition.acquisition_id,),
+        acquisition=acquisition,
+        outcome=outcome,
+    )
+
+
+def _terminal_task(
+    source: SourceType,
+    *,
+    coverage: CoverageStatus = CoverageStatus.COMPLETE,
+    execution: ExecutionStatus = ExecutionStatus.SUCCEEDED,
+    result: ResultStatus = ResultStatus.MATCHES,
+) -> SourceTaskState:
+    operations = _required_operations(source)
+    if source is SourceType.PUBMED and result is ResultStatus.MATCHES:
+        search = operations[0]
+        operations = (
+            search,
+            required_source_operation(
+                run_id=RUN_ID,
+                scope_id=SCOPE_ID,
+                source=SourceType.PUBMED,
+                ordinal=1,
+                kind=SourceOperationKind.PUBMED_FETCH,
+                query_id=search.query_id,
+                input_refs=_input_refs(SourceOperationKind.PUBMED_FETCH, 1),
+            ),
+        )
+    attempt = source_task_attempt(_task_id(source), 1)
+    operation_results = []
+    for operation in operations:
+        warnings = () if coverage is CoverageStatus.COMPLETE else ("source_degraded",)
+        operation_outcome = SourceOutcome(
+            source=source,
+            query_id=operation.query_id,
+            execution_status=execution,
+            coverage_status=coverage,
+            result_status=result,
+            configured_bounds=ExecutionBounds(
+                max_query_characters=128,
+                max_pages=2,
+                max_records=20,
+                max_payload_bytes=100_000,
+                max_total_seconds=30,
+            ),
+            valid_result_count=1 if result is ResultStatus.MATCHES else 0,
+            pages_completed=0 if coverage is CoverageStatus.UNAVAILABLE else 1,
+            truncated=coverage is CoverageStatus.PARTIAL,
+            warning_codes=warnings,
+            failure_id="failure:test" if execution is ExecutionStatus.FAILED else None,
+        )
+        acquisition = source_operation_acquisition(
+            operation=operation,
+            attempt_id=attempt.attempt_id,
+            acquisition_intent_id=derive_identity("acquisition-intent", operation.operation_id),
+            outcome=operation_outcome,
+            snapshot_id=f"snapshot:{source.value}:{operation.ordinal}",
+        )
+        observations = ()
+        if result is ResultStatus.MATCHES:
+            observations = (
+                source_operation_observation(
+                    operation=operation,
+                    acquisition=acquisition,
+                    evidence_id=f"evidence:{source.value}:{operation.ordinal}",
+                    content_hash=DIGEST,
+                    locator_ref=f"locator:{source.value}:{operation.ordinal}",
+                ),
+            )
+        operation_results.append(
+            TerminalSourceOperationResult(
+                operation=operation,
+                attempt=attempt,
+                acquisition=acquisition,
+                outcome=operation_outcome,
+                observations=observations,
+            )
+        )
+    terminal_results = tuple(operation_results)
+    aggregate_outcome = canonical_terminal_source_outcome(operations, terminal_results)
+    representative = terminal_results[0].acquisition
+    terminal_ref = TerminalSourceOutcomeRef(
+        terminal_outcome_id=derive_identity("source-task-terminal-outcome", aggregate_outcome),
+        operation_acquisition_ids=tuple(
+            item.acquisition.acquisition_id for item in terminal_results
+        ),
+        acquisition=AcquisitionOutcomeRef(
+            run_id=RUN_ID,
+            source=source,
+            acquisition_id=representative.acquisition_id,
+            acquisition_intent_id=representative.acquisition_intent_id,
+            acquisition_ordinal=representative.ordinal,
+            operation="search",
+            query_id=representative.query_id,
+            source_outcome_id=representative.source_outcome_id,
+            snapshot_id=representative.snapshot_id,
+        ),
+        outcome=aggregate_outcome,
+    )
+    evidence = tuple(
+        observation.evidence_reference
+        for operation_result in terminal_results
+        for observation in operation_result.observations
+    )
+    return SourceTaskState(
+        task_id=_task_id(source),
+        source=source,
+        required_operations=operations,
+        operation_results=terminal_results,
+        status=SourceTaskStatus.TERMINAL,
+        attempts=1,
+        terminal_outcome_ref=terminal_ref,
+        evidence_refs=evidence,
+        limitations=(
+            CADEC_MANDATORY_LIMITATIONS
+            if source is SourceType.CADEC
+            else FAERS_MANDATORY_LIMITATIONS
+            if source is SourceType.FAERS
+            else ()
+        ),
+    )
 
 
 def _evidence(source: SourceType) -> EvidenceReference:
@@ -161,14 +345,7 @@ def _evidence(source: SourceType) -> EvidenceReference:
 def _validated_state() -> OrchestrationState:
     scope = _scope()
     base = _state(scope)
-    task = SourceTaskState(
-        task_id=_task_id(SourceType.PUBMED),
-        source=SourceType.PUBMED,
-        status=SourceTaskStatus.TERMINAL,
-        attempts=1,
-        terminal_outcome_ref=_terminal_ref(SourceType.PUBMED),
-        evidence_refs=(_evidence(SourceType.PUBMED),),
-    )
+    task = _terminal_task(SourceType.PUBMED)
     return OrchestrationState.model_validate(
         {
             **base.model_dump(mode="python"),
@@ -351,6 +528,7 @@ def test_skipped_source_has_no_task_or_fabricated_outcome() -> None:
     pubmed_task = SourceTaskState(
         task_id=_task_id(SourceType.PUBMED),
         source=SourceType.PUBMED,
+        required_operations=_required_operations(SourceType.PUBMED),
     )
     valid = OrchestrationState.model_validate(
         {
@@ -373,9 +551,7 @@ def test_skipped_source_has_no_task_or_fabricated_outcome() -> None:
                     SourceTaskState(
                         task_id=_task_id(SourceType.DAILYMED),
                         source=SourceType.DAILYMED,
-                        status=SourceTaskStatus.TERMINAL,
-                        attempts=1,
-                        terminal_outcome_ref=_terminal_ref(SourceType.DAILYMED),
+                        required_operations=_required_operations(SourceType.DAILYMED),
                     ),
                     pubmed_task,
                 ),
@@ -395,19 +571,11 @@ def test_partial_and_unavailable_source_outcomes_remain_visible(
     coverage: CoverageStatus,
     result: ResultStatus,
 ) -> None:
-    reference = _terminal_ref(
+    task = _terminal_task(
         SourceType.PUBMED,
         execution=execution,
         coverage=coverage,
         result=result,
-    )
-    task = SourceTaskState(
-        task_id="task:pubmed",
-        source=SourceType.PUBMED,
-        status=SourceTaskStatus.TERMINAL,
-        attempts=1,
-        terminal_outcome_ref=reference,
-        evidence_refs=(_evidence(SourceType.PUBMED),) if result is ResultStatus.MATCHES else (),
     )
     assert task.terminal_outcome_ref is not None
     assert task.terminal_outcome_ref.outcome.coverage_status is coverage
@@ -427,28 +595,126 @@ def test_failed_source_can_never_be_no_match() -> None:
 def test_task_requires_terminal_reference_only_after_execution() -> None:
     with pytest.raises(ValidationError, match="must coexist"):
         SourceTaskState(
-            task_id="task:pubmed",
+            task_id=_task_id(SourceType.PUBMED),
             source=SourceType.PUBMED,
+            required_operations=_required_operations(SourceType.PUBMED),
             status=SourceTaskStatus.TERMINAL,
             attempts=1,
         )
     with pytest.raises(ValidationError, match="unexecuted source task"):
         SourceTaskState(
-            task_id="task:pubmed",
+            task_id=_task_id(SourceType.PUBMED),
             source=SourceType.PUBMED,
+            required_operations=_required_operations(SourceType.PUBMED),
             evidence_refs=(_evidence(SourceType.PUBMED),),
+        )
+
+
+def test_pristine_pending_task_may_defer_operation_planning() -> None:
+    task = SourceTaskState(
+        task_id=_task_id(SourceType.PUBMED),
+        source=SourceType.PUBMED,
+    )
+    assert task.status is SourceTaskStatus.PENDING
+    assert task.required_operations == ()
+
+
+def test_nonempty_pending_planned_task_is_valid() -> None:
+    task = SourceTaskState(
+        task_id=_task_id(SourceType.PUBMED),
+        source=SourceType.PUBMED,
+        required_operations=_required_operations(SourceType.PUBMED),
+    )
+    assert len(task.required_operations) == 1
+
+
+def test_running_task_round_trips_durable_operation_progress_prefix() -> None:
+    terminal = _terminal_task(SourceType.PUBMED)
+    first_result = terminal.operation_results[0]
+    running = SourceTaskState(
+        task_id=terminal.task_id,
+        source=terminal.source,
+        required_operations=terminal.required_operations,
+        operation_results=(first_result,),
+        status=SourceTaskStatus.RUNNING,
+        attempts=first_result.attempt.attempt_number,
+        active_attempt=first_result.attempt,
+    )
+
+    assert SourceTaskState.model_validate(running.model_dump(mode="python")) == running
+
+
+def test_running_progress_rejects_foreign_active_attempt() -> None:
+    terminal = _terminal_task(SourceType.PUBMED)
+    first_result = terminal.operation_results[0]
+    foreign_attempt = source_task_attempt(terminal.task_id, 2)
+    with pytest.raises(ValidationError, match="exact active attempt"):
+        SourceTaskState(
+            task_id=terminal.task_id,
+            source=terminal.source,
+            required_operations=terminal.required_operations,
+            operation_results=(first_result,),
+            status=SourceTaskStatus.RUNNING,
+            attempts=foreign_attempt.attempt_number,
+            active_attempt=foreign_attempt,
+        )
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        SourceTaskStatus.PENDING,
+        SourceTaskStatus.RETRY_WAIT,
+        SourceTaskStatus.FAILED,
+    ),
+)
+def test_pending_retry_and_failed_tasks_cannot_retain_operation_progress(
+    status: SourceTaskStatus,
+) -> None:
+    terminal = _terminal_task(SourceType.PUBMED)
+    first_result = terminal.operation_results[0]
+    with pytest.raises(ValidationError, match="only a running task"):
+        SourceTaskState(
+            task_id=terminal.task_id,
+            source=terminal.source,
+            required_operations=terminal.required_operations,
+            operation_results=(first_result,),
+            status=status,
+            attempts=0 if status is SourceTaskStatus.PENDING else 1,
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "status": SourceTaskStatus.RUNNING,
+            "attempts": 1,
+            "active_attempt": source_task_attempt(_task_id(SourceType.PUBMED), 1),
+        },
+        {"status": SourceTaskStatus.RETRY_WAIT, "attempts": 1},
+        {"status": SourceTaskStatus.FAILED, "attempts": 1},
+        {"status": SourceTaskStatus.TERMINAL, "attempts": 1},
+    ),
+)
+def test_nonpending_or_nonpristine_task_requires_operation_plan(payload) -> None:
+    with pytest.raises(ValidationError, match="nonempty operation plan"):
+        SourceTaskState(
+            task_id=_task_id(SourceType.PUBMED),
+            source=SourceType.PUBMED,
+            **payload,
         )
 
 
 def test_terminal_reference_rejects_cross_source_binding() -> None:
     reference = _terminal_ref(SourceType.PUBMED)
+    daily_task = _terminal_task(SourceType.DAILYMED)
     with pytest.raises(ValidationError, match="terminal outcome source"):
-        SourceTaskState(
-            task_id="task:dailymed",
-            source=SourceType.DAILYMED,
-            status=SourceTaskStatus.TERMINAL,
-            attempts=1,
-            terminal_outcome_ref=reference,
+        SourceTaskState.model_validate(
+            {
+                **daily_task.model_dump(mode="python"),
+                "terminal_outcome_ref": reference,
+            }
         )
 
 

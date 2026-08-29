@@ -637,3 +637,198 @@ authority and cannot be retried. A success freezes `MEDEVIDENCE_GOLD10_V2` as
 50 PubMed items, 12 OZEMPIC items, and every retrieval-eligible MOUNJARO
 occurrence, then emits the blinded ten-question packet. Human adjudication is
 required before authoritative qrels or any BM25, MedCPT, or RRF benchmark.
+
+## 19. M3-006 deterministic source-capability evaluation
+
+M3-006 evaluation is offline and does not run a model, contact a medical
+source, or access Holdout-20. Required negative and boundary cases prove:
+
+- plan rows equal `scope.selected_sources` exactly, task sources equal exactly
+  selected plan rows, and skipped rows have neither task nor outcome;
+- required operations are frozen before effects, bind exact run/task/attempt
+  identity, permit only canonical PubMed/DailyMed prefix expansion, and block
+  terminal state until every final required operation is terminal;
+- the four-dimensional aggregate implements any-failed execution, all-
+  complete/all-unavailable/otherwise-partial coverage, any-match/all-exact-no-
+  match/otherwise-indeterminate result, and sorted unique warnings;
+- PubMed uses one search and exact ordered result-dependent fetches; DailyMed
+  uses one to four discoveries and no fabricated fetch; FAERS uses one to eight
+  exact aggregate operations with the mandatory warning; and CADEC uses exact
+  verification then search with its mandatory warning;
+- CADEC verifies the 1,250/1,248 boundary, two exclusions, two zero-length
+  members, and 1,246 eligible transient documents; the canonical preferred-
+  term query rejects max+1; BM25 is exactly `0.9/0.4`; every eligible document
+  is scored; only positive top-20 results survive with bytewise tie-breaking;
+  and zero positives remains complete no-match; and
+- any CADEC archive, manifest, membership, hash, materialization, or search
+  integrity failure yields unavailable indeterminate failure and zero evidence
+  refs, with no persistence or M2 evaluation-contract mutation.
+
+Pre-R3 candidate evidence before the initial independent review was: exact-asset focused
+`20 passed`; integrated focused `589 passed in 10.09s`; full socket-disabled
+unit/contract `2643 passed, 2 warnings`, `82%`, in `86.29s`; Ruff, formatting,
+strict MyPy, offline lock, and diff checks passed. These were candidate
+validation results, not a final review, audit, release, or Holdout claim.
+
+### 19.1 Round 3 regression evidence
+
+The initial independent review remains
+`FAIL — P0 0 / P1 4 / P2 0`. Its exact demonstrated bypass classes are now
+negative regressions: fake CADEC exact-asset/no-match and degraded refs;
+omitted PubMed PMID/DailyMed selection subjects; aggregate/child provenance
+mismatch; and structurally supplied DailyMed/FAERS authorities.
+
+Round 3 handoffs report a combined focused `341 passed`, a workflow/authority
+focus `340 passed`, and the exact approved CADEC asset PASS; their literal
+command text was not retained, so they are node-local handoff evidence rather
+than terminal evidence. The authoritative fresh full command is
+`uv run --locked --no-sync pytest tests/unit tests/contract --disable-socket
+--cov=medevidence --cov-report=term-missing --cov-report=xml`, which returned
+`2662 passed, 2 warnings`, `82%`, in `91.56s`. Static node-local checks passed.
+Fresh independent review, documentation-inclusive reruns, rebind, and terminal
+audit remain required; Holdout-20 remains sealed.
+
+### 19.2 Round 4 regression evidence
+
+The fresh Round 3 review remains immutable:
+`FAIL — P0 0 / P1 3 / P2 0`. Its negative regressions cover an asset-free fake
+CADEC authority, PubMed/DailyMed dynamic suffix execution before durable
+checkpoint, and terminal query/count/intent/operation forgery.
+
+Round 4 tests exercise typed v3 input refs, acquisition intents, RUNNING
+progress prefixes, fresh PubMed journal and DailyMed discovery reload,
+one-stage-per-checkpoint behavior, exact membership handoff, canonical
+all-field terminal outcomes, three-source dispatcher exclusion of CADEC, and
+the sole sealed production CADEC composition route. The authoritative full
+offline command returned `2685 passed, 2 warnings`, `82%`, in `103.16s`.
+Ruff, format (`173` files), strict MyPy (`67` source files), offline lock (`108`
+entries), and diff checks passed; compactness is exactly `1800/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_4`. Fresh independent review,
+documentation-inclusive reruns, exact-byte rebind, and terminal audit remain
+required. Holdout-20 remains sealed.
+
+### 19.9 Final independent review evidence
+
+The fresh final Round 10 verdict is
+`PASS — P0 0 / P1 0 / P2 0` with no findings. Reviewer runs passed planner
+attacks `5/5`, workflow/runtime/composition `264`, projection/replay `89`, and
+authority/subsets `17`; Ruff, format, strict MyPy, scope `43`/manifest `42`,
+validator `1292/1300`, and compactness `1800/1800` passed. The last full offline
+suite remains `2766 passed, 2 warnings`, `82%`, in `82.54s`.
+
+This evidence advances status only to `AWAITING_TERMINAL_AUDIT`. Exact-byte
+rebind and terminal evidence audit remain; no overall PASS, Git lifecycle, or
+Holdout claim is made.
+
+### 19.8 Final Round 10 regression evidence
+
+The fresh Round 9 review remains immutable:
+`FAIL — P0 0 / P1 1 / P2 0`. Its negative replaces or shadows the injected
+planning Protocol and attempts a selected-to-skip export.
+
+Final Round 10 tests exact-type workflow composition, final/slotted/no-dict
+planner shape, strict scope/full-plan construction, immutable fields,
+class-qualified initial/replay calls, Protocol/subclass/shadow rejection, and
+zero source/semantic/persistence/approval/export effects for the coordinated
+attack. Harness, runtime, and M3-003 fixtures use the canonical authority. The
+authoritative full offline command returned
+`2766 passed, 2 warnings`, `82%`, in `82.54s`. Static node checks passed,
+validator size is `1292/1300`, and compactness is `1800/1800`.
+
+Status is `AWAITING_FINAL_FRESH_REVIEW_AFTER_ROUND_10`. Remediation budget is
+exhausted at 10/10. Fresh final review, documentation-inclusive reruns, exact-
+byte rebind, and terminal audit remain required. Holdout-20 remains sealed.
+
+### 19.7 Round 9 regression evidence
+
+The fresh Round 8 review remains immutable:
+`FAIL — P0 0 / P1 1 / P2 0`. Its coordinated negatives change selected to skip
+while removing the task, and drift skip reason metadata after a passing receipt.
+
+Round 9 tests exact full-plan replay before collection, source effects, all
+post-collection effect/trusted/terminal paths, and inspection; order/status/
+reason equality; strict `source_plan_id` request and receipt binding; frozen
+workflow/planner dependencies; and zero effects for both coordinated attacks.
+The authoritative full offline command returned
+`2764 passed, 2 warnings`, `82%`, in `82.51s`. Static node checks passed,
+validator size is `1292/1300`, and compactness is `1800/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_9`. Fresh independent review,
+documentation-inclusive reruns, exact-byte rebind, and terminal audit remain
+required. Holdout-20 remains sealed.
+
+### 19.6 Round 8 regression evidence
+
+The fresh Round 7 review remains immutable:
+`FAIL — P0 0 / P1 2 / P2 0`. Its negatives cover a valid skipped scope row
+blocking report validation and PubMed-only composition failing because
+unselected DailyMed/FAERS authorities were still required.
+
+Round 8 tests full-scope versus plan-selected task equality, canonical subset
+ordering/uniqueness, skipped visibility with zero task/outcome through export,
+all 15 nonempty source subsets, CADEC-only without store, and one shared replay
+store iff a network source is selected. The authoritative full offline command
+returned `2757 passed, 2 warnings`, `82%`, in `81.95s`. Static node checks
+passed; validator size is `1291/1300` and aggregate compactness is `1800/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_8`. Fresh independent review,
+documentation-inclusive reruns, exact-byte rebind, and terminal audit remain
+required. Holdout-20 remains sealed.
+
+### 19.5 Round 7 regression evidence
+
+The fresh Round 6 review remains immutable:
+`FAIL — P0 0 / P1 3 / P2 0`. Its regressions cover active inspect without
+terminal replay, coordinated replacement of durable stores/adapters, and CADEC
+scope `max_records=100` being replaced by top-20.
+
+Round 7 tests active and terminal LangGraph trusted-return replay; final,
+slotted, read-only/guarded `SnapshotStore`; frozen class-qualified acquisition,
+DailyMed/FAERS replay, and CADEC authorities; and exact CADEC scope bounds for
+success/failure with a separate top-20 result projection. The authoritative
+full offline command returned `2727 passed, 2 warnings`, `82%`, in `81.39s`.
+Static node checks passed and compactness is `1799/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_7`. Fresh independent review,
+documentation-inclusive reruns, exact-byte rebind, and terminal audit remain
+required. Holdout-20 remains sealed.
+
+### 19.4 Round 6 regression evidence
+
+The fresh Round 5 review remains immutable:
+`FAIL — P0 0 / P1 2 / P2 0`. Its negative regressions cover a forged terminal
+prefix followed by next-source work and replacement/injection of non-CADEC
+replay authorities.
+
+Round 6 tests require replay before the `collect_evidence` loop and all existing
+post-collection paths; freeze and class-qualified behavior for dispatcher,
+PubMed service, DailyMed/FAERS authorities, and CADEC wrapper/adapter; internally
+constructed PubMed acquisition and DailyMed/FAERS replay stores; and separation
+of live provenance from replay authority. The authoritative full offline
+command returned `2723 passed, 2 warnings`, `82%`, in `81.52s`. Static node
+checks passed and compactness is `1792/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_6`. Fresh independent review,
+documentation-inclusive reruns, exact-byte rebind, and terminal audit remain
+required. Holdout-20 remains sealed.
+
+### 19.3 Round 5 regression evidence
+
+The fresh Round 4 review remains immutable:
+`FAIL — P0 0 / P1 3 / P2 0`. Its executable negatives cover post-construction
+CADEC `_search` replacement, self-consistent durable child forgery without
+source replay, and coordinated PubMed journal/checkpoint substitution.
+
+Round 5 tests freeze CADEC composition and rerun concrete terminal assets;
+round-trip and mutate PubMed search plus terminal receipts through a fresh
+concrete snapshot adapter; reload DailyMed discovery/fetch and FAERS aggregate
+provenance; and require terminal replay before every post-collection trusted,
+effect, inspection, and idempotent-return path. M3-003 evaluation implements
+the replay contract. The authoritative full offline command returned
+`2705 passed, 2 warnings`, `82%`, in `112.81s`. Static node checks passed and
+compactness is `1791/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_5`. Fresh independent review,
+documentation-inclusive reruns, exact-byte rebind, and terminal audit remain
+required. Holdout-20 remains sealed.

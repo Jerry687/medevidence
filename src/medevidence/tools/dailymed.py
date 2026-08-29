@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
-from medevidence.domain import DailyMedCandidateLabel, LabelSelectionDecision
+from typing import Annotated, Literal, Self
+
+from pydantic import Field, StringConstraints, model_validator
+
+from medevidence.domain import (
+    AcquisitionOutcomeRef,
+    DailyMedCandidateLabel,
+    LabelSelectionDecision,
+    RunId,
+    Sha256Digest,
+    SourceType,
+)
+from medevidence.domain.identifiers import DurableModel
 
 from .contracts import (
     DailyMedDiscoveryRequest,
@@ -11,6 +23,148 @@ from .contracts import (
     DailyMedFetchResponse,
 )
 from .ports import DailyMedExecutionPort
+
+type StableProjectionId = Annotated[
+    str,
+    StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"),
+]
+
+
+class DailyMedSectionEvidenceProjection(DurableModel):
+    """Content-free identity for one persisted, retrieval-eligible label section."""
+
+    schema_version: Literal["m3.dailymed-section-evidence-projection.v1"] = (
+        "m3.dailymed-section-evidence-projection.v1"
+    )
+    section_id: StableProjectionId
+    evidence_id: StableProjectionId
+    content_hash: Sha256Digest
+    locator_ref: StableProjectionId
+
+
+class DailyMedDiscoveryProvenanceProjection(DurableModel):
+    """Persisted discovery acquisition identity with no selection authority."""
+
+    schema_version: Literal["m3.dailymed-discovery-provenance.v1"] = (
+        "m3.dailymed-discovery-provenance.v1"
+    )
+    run_id: RunId
+    scope_id: StableProjectionId
+    task_id: StableProjectionId
+    attempt_id: StableProjectionId
+    acquisition: AcquisitionOutcomeRef
+
+    @model_validator(mode="after")
+    def validate_acquisition(self) -> Self:
+        acquisition = AcquisitionOutcomeRef.model_validate(
+            self.acquisition.model_dump(mode="python"), strict=True
+        )
+        if acquisition != self.acquisition or (
+            acquisition.source is not SourceType.DAILYMED or acquisition.operation != "search"
+        ):
+            raise ValueError("DailyMed discovery provenance requires an exact search acquisition")
+        return self
+
+
+class DailyMedFetchProvenanceProjection(DurableModel):
+    """Persisted fetch and section identities with no selection authority."""
+
+    schema_version: Literal["m3.dailymed-fetch-provenance.v1"] = "m3.dailymed-fetch-provenance.v1"
+    run_id: RunId
+    scope_id: StableProjectionId
+    task_id: StableProjectionId
+    attempt_id: StableProjectionId
+    acquisition: AcquisitionOutcomeRef
+    section_evidence: tuple[DailyMedSectionEvidenceProjection, ...] = Field(
+        default=(), max_length=100
+    )
+
+    @model_validator(mode="after")
+    def validate_acquisition(self) -> Self:
+        acquisition = AcquisitionOutcomeRef.model_validate(
+            self.acquisition.model_dump(mode="python"), strict=True
+        )
+        if acquisition != self.acquisition or (
+            acquisition.source is not SourceType.DAILYMED or acquisition.operation != "fetch"
+        ):
+            raise ValueError("DailyMed fetch provenance requires an exact fetch acquisition")
+        evidence_ids = tuple(item.evidence_id for item in self.section_evidence)
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ValueError("DailyMed section provenance identities must be unique")
+        return self
+
+
+class DailyMedDiscoveryExecutionProjection(DurableModel):
+    """Exact discovery response plus its already-persisted acquisition identity."""
+
+    schema_version: Literal["m3.dailymed-discovery-execution-projection.v1"] = (
+        "m3.dailymed-discovery-execution-projection.v1"
+    )
+    run_id: RunId
+    scope_id: StableProjectionId
+    task_id: StableProjectionId
+    attempt_id: StableProjectionId
+    response: DailyMedDiscoveryResponse
+    acquisition: AcquisitionOutcomeRef
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> Self:
+        response = DailyMedDiscoveryResponse.model_validate(self.response.model_dump(mode="python"))
+        acquisition = AcquisitionOutcomeRef.model_validate(
+            self.acquisition.model_dump(mode="python")
+        )
+        if response != self.response or acquisition != self.acquisition:
+            raise ValueError("DailyMed discovery projection contains unvalidated contracts")
+        if (
+            acquisition.source is not SourceType.DAILYMED
+            or acquisition.operation != "search"
+            or acquisition.query_id != response.query_id
+            or acquisition.source_outcome_id != response.source_outcome_id
+            or acquisition.snapshot_id != response.candidate_set_snapshot_id
+        ):
+            raise ValueError("DailyMed discovery projection acquisition identity drift")
+        return self
+
+
+class DailyMedFetchExecutionProjection(DurableModel):
+    """Exact fetch response plus persisted section evidence identities."""
+
+    schema_version: Literal["m3.dailymed-fetch-execution-projection.v1"] = (
+        "m3.dailymed-fetch-execution-projection.v1"
+    )
+    run_id: RunId
+    scope_id: StableProjectionId
+    task_id: StableProjectionId
+    attempt_id: StableProjectionId
+    response: DailyMedFetchResponse
+    acquisition: AcquisitionOutcomeRef
+    section_evidence: tuple[DailyMedSectionEvidenceProjection, ...] = Field(
+        default=(), max_length=100
+    )
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> Self:
+        response = DailyMedFetchResponse.model_validate(self.response.model_dump(mode="python"))
+        acquisition = AcquisitionOutcomeRef.model_validate(
+            self.acquisition.model_dump(mode="python")
+        )
+        if response != self.response or acquisition != self.acquisition:
+            raise ValueError("DailyMed fetch projection contains unvalidated contracts")
+        if (
+            acquisition.source is not SourceType.DAILYMED
+            or acquisition.operation != "fetch"
+            or acquisition.query_id != response.request.query_id
+            or acquisition.source_outcome_id != response.source_outcome_id
+            or acquisition.snapshot_id != response.fetch_snapshot_id
+        ):
+            raise ValueError("DailyMed fetch projection acquisition identity drift")
+        section_ids = tuple(item.section_id for item in self.section_evidence)
+        if section_ids != response.section_ids:
+            raise ValueError("DailyMed section evidence must equal the exact eligible section set")
+        evidence_ids = tuple(item.evidence_id for item in self.section_evidence)
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ValueError("DailyMed section evidence identities must be unique")
+        return self
 
 
 def discover_dailymed_labels(

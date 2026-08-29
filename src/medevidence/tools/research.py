@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, final
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from medevidence.domain import (
     Citation,
@@ -20,6 +20,7 @@ from medevidence.domain import (
     ExecutionStatus,
     FailureCode,
     PlanningStatus,
+    Pmid,
     Provenance,
     PublicationRecord,
     PublicationStatusValue,
@@ -33,8 +34,10 @@ from medevidence.domain import (
     SourcePlanEntry,
     SourcePlanReasonCode,
     SourceType,
+    UtcDateTime,
     derive_identity,
 )
+from medevidence.domain.identifiers import RunIntentId
 
 from .contracts import (
     AcquisitionIntentInput,
@@ -54,6 +57,8 @@ from .ports import (
     PubMedExecutionPort,
     PubMedFetchExecution,
     PubMedSearchExecution,
+    PubMedSearchProgressRecord,
+    PubMedTerminalProgressRecord,
     RunFinalization,
     RunPersistencePort,
     RuntimePort,
@@ -61,8 +66,170 @@ from .ports import (
 from .pubmed import build_pubmed_query, query_identity, validate_query_terms
 
 
+class _PubMedCollectionModel(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        revalidate_instances="always",
+    )
+
+
+class PubMedCollectionPreparation(_PubMedCollectionModel):
+    """Canonical PubMed query context prepared before acquisition effects."""
+
+    request: ResearchPubMedRequest
+    catalog: ResolvedConceptCatalog
+    query: str
+    query_id: str
+    run_intent_id: RunIntentId
+
+    def model_post_init(self, __context: object) -> None:
+        del __context
+        validate_query_terms(self.request.scope)
+        expected_query = build_pubmed_query(self.request.scope, self.catalog)
+        if self.query != expected_query or self.query_id != query_identity(
+            self.request.scope,
+            expected_query,
+        ):
+            raise ValueError("prepared PubMed collection changed canonical query identity")
+
+
+class PubMedSearchCollection(_PubMedCollectionModel):
+    """Persisted search boundary returned before any selected PMID fetch."""
+
+    request: ResearchPubMedRequest
+    catalog: ResolvedConceptCatalog
+    query: str
+    query_id: str
+    run_intent_id: RunIntentId
+    response: SearchPubMedResponse
+    acquisition: PersistedAcquisition
+    progress_record: PubMedSearchProgressRecord
+    completed_at_utc: UtcDateTime
+
+    def model_post_init(self, __context: object) -> None:
+        del __context
+        if self.response.query != self.query or self.response.query_id != self.query_id:
+            raise ValueError("persisted PubMed search boundary changed query identity")
+        if self.acquisition.publication_bindings:
+            raise ValueError("persisted PubMed search boundary cannot contain publications")
+        if (
+            self.progress_record.run_id != self.request.run_id
+            or self.progress_record.scope_id != self.request.scope.scope_id
+            or self.progress_record.query != self.query
+            or self.progress_record.query_id != self.query_id
+            or self.progress_record.acquisition_intent_id != self.acquisition.acquisition_intent_id
+            or self.progress_record.snapshot_id != self.acquisition.snapshot_id
+            or self.progress_record.manifest_id != self.acquisition.manifest_id
+            or self.progress_record.pmids != self.response.pmids
+            or self.progress_record.search_source_outcome_id
+            != derive_identity("source-operation-outcome", self.response.source_outcome)
+            or self.progress_record.valid_result_count
+            != self.response.source_outcome.valid_result_count
+        ):
+            raise ValueError("persisted PubMed search progress changed exact search content")
+
+
+class PubMedCollectedFetch(_PubMedCollectionModel):
+    """One persisted selected-PMID result without transport or raw source bytes."""
+
+    pmid: Pmid
+    source_outcome: SourceOutcome
+    acquisition: PersistedAcquisition
+    publication: PublicationRecord | None = None
+    completed_at_utc: UtcDateTime
+
+    def model_post_init(self, __context: object) -> None:
+        del __context
+        expected_count = 1 if self.publication is not None else 0
+        if self.source_outcome.source is not SourceType.PUBMED:
+            raise ValueError("collected fetch outcome must be PubMed")
+        if self.source_outcome.valid_result_count != expected_count:
+            raise ValueError("collected fetch count must match its publication")
+        if self.publication is None:
+            if self.acquisition.publication_bindings:
+                raise ValueError("empty collected fetch cannot expose a publication binding")
+        elif (
+            self.publication.pmid != self.pmid
+            or len(self.acquisition.publication_bindings) != 1
+            or self.acquisition.publication_bindings[0].publication_version_id
+            != self.publication.publication_version_id
+        ):
+            raise ValueError("collected fetch must bind its exact persisted publication")
+
+
+class PubMedFetchStageCollection(_PubMedCollectionModel):
+    """Persisted fetch suffix reconstructed from an exact prior search."""
+
+    search_response: SearchPubMedResponse
+    fetches: tuple[PubMedCollectedFetch, ...]
+    persisted_acquisitions: tuple[PersistedAcquisition, ...]
+    publications: tuple[PublicationRecord, ...]
+
+    def model_post_init(self, __context: object) -> None:
+        del __context
+        if tuple(item.pmid for item in self.fetches) != self.search_response.pmids:
+            raise ValueError("fetch stage must equal the exact ordered search PMIDs")
+        if self.persisted_acquisitions != tuple(item.acquisition for item in self.fetches):
+            raise ValueError("fetch stage acquisitions must equal persisted fetches")
+        expected_publications = tuple(
+            item.publication for item in self.fetches if item.publication is not None
+        )
+        if self.publications != expected_publications:
+            raise ValueError("fetch stage publications must equal persisted fetch evidence")
+
+
+class PubMedCollection(_PubMedCollectionModel):
+    """Complete persisted PubMed collection with no report or provider-native data."""
+
+    searched: PubMedSearchCollection
+    fetches: tuple[PubMedCollectedFetch, ...]
+    persisted_acquisitions: tuple[PersistedAcquisition, ...]
+    publications: tuple[PublicationRecord, ...]
+    source_outcome: SourceOutcome
+    retrieval_as_of: UtcDateTime
+
+    def model_post_init(self, __context: object) -> None:
+        del __context
+        if tuple(item.pmid for item in self.fetches) != self.searched.response.pmids:
+            raise ValueError("collected fetches must equal the exact ordered search PMIDs")
+        expected_acquisitions = (
+            self.searched.acquisition,
+            *(item.acquisition for item in self.fetches),
+        )
+        if self.persisted_acquisitions != expected_acquisitions:
+            raise ValueError("collection acquisitions must equal search followed by fetches")
+        expected_publications = tuple(
+            item.publication for item in self.fetches if item.publication is not None
+        )
+        if self.publications != expected_publications:
+            raise ValueError("collection publications must equal persisted fetch evidence")
+        if (
+            self.source_outcome.source is not SourceType.PUBMED
+            or self.source_outcome.query_id != self.searched.query_id
+        ):
+            raise ValueError("collection outcome must bind the exact PubMed query")
+
+
+@final
 class PubMedResearchService:
     """Coordinate injected PubMed, catalog, acquisition, and run ports."""
+
+    _acquisitions: AcquisitionPersistencePort
+    _catalog: ConceptCatalogPort
+    _execution: PubMedExecutionPort
+    _runs: RunPersistencePort
+    _runtime: RuntimePort
+    __slots__ = ("_acquisitions", "_catalog", "_execution", "_runs", "_runtime")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("PubMedResearchService is a sealed application authority")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        del name, value
+        raise AttributeError("PubMedResearchService is frozen after construction")
 
     def __init__(
         self,
@@ -73,11 +240,11 @@ class PubMedResearchService:
         runs: RunPersistencePort,
         runtime: RuntimePort,
     ) -> None:
-        self._catalog = catalog
-        self._execution = execution
-        self._acquisitions = acquisitions
-        self._runs = runs
-        self._runtime = runtime
+        object.__setattr__(self, "_catalog", catalog)
+        object.__setattr__(self, "_execution", execution)
+        object.__setattr__(self, "_acquisitions", acquisitions)
+        object.__setattr__(self, "_runs", runs)
+        object.__setattr__(self, "_runtime", runtime)
 
     def search(self, request: SearchPubMedRequest) -> SearchPubMedResponse:
         """Execute one validated search without constructing concrete adapters."""
@@ -97,18 +264,44 @@ class PubMedResearchService:
         execution = self._execution.fetch(pmid=request.pmid, query_id=request.query_id)
         return self._fetch_response(request, execution)
 
-    def research(self, request: ResearchPubMedRequest) -> ResearchReport:
-        """Run search, persist every acquisition, then persist the draft last."""
+    def collect(self, request: ResearchPubMedRequest) -> PubMedCollection:
+        """Persist bounded PubMed acquisitions without constructing a report."""
 
+        searched = self.collect_search(self.prepare_collection(request))
+        return self.collect_fetches(searched)
+
+    def prepare_collection(
+        self,
+        request: ResearchPubMedRequest,
+    ) -> PubMedCollectionPreparation:
+        """Resolve the exact bounded query without acquisition side effects."""
+
+        request = ResearchPubMedRequest.model_validate(request.model_dump(mode="python"))
         catalog, query, query_id = self._prepare_query(request.scope)
         run_intent = self._run_intent(request, catalog, query)
+        return PubMedCollectionPreparation(
+            request=request,
+            catalog=catalog,
+            query=query,
+            query_id=query_id,
+            run_intent_id=self._runs.resolve_run_intent_id(run_intent),
+        )
+
+    def collect_search(
+        self,
+        prepared: PubMedCollectionPreparation,
+    ) -> PubMedSearchCollection:
+        """Persist the exact run intent and search before any PMID fetch."""
+
+        prepared = PubMedCollectionPreparation.model_validate(prepared.model_dump(mode="python"))
+        request = prepared.request
+        catalog = prepared.catalog
+        query = prepared.query
+        query_id = prepared.query_id
+        run_intent = self._run_intent(request, catalog, query)
         run_intent_id = self._runs.persist_run_intent(run_intent)
-
-        persisted: list[PersistedAcquisition] = []
-        child_outcomes: list[SourceOutcome] = []
-        publications: list[PublicationRecord] = []
-        fetch_executions: list[PubMedFetchExecution] = []
-
+        if run_intent_id != prepared.run_intent_id:
+            raise ValueError("persisted PubMed run intent changed its exact identity")
         search_intent = self._acquisition_intent(
             run_id=request.run_id,
             run_intent_id=run_intent_id,
@@ -132,24 +325,151 @@ class PubMedResearchService:
         )
         if persisted_search.publication_bindings:
             raise ValueError("search acquisition must not return publication bindings")
-        persisted.append(persisted_search)
-        child_outcomes.append(search_execution.response.source_outcome)
+        progress_record = PubMedSearchProgressRecord.create(
+            run_id=request.run_id,
+            scope_id=request.scope.scope_id,
+            query=query,
+            query_id=query_id,
+            acquisition_intent_id=persisted_search.acquisition_intent_id,
+            snapshot_id=persisted_search.snapshot_id,
+            manifest_id=persisted_search.manifest_id,
+            pmids=search_execution.response.pmids,
+            search_source_outcome_id=derive_identity(
+                "source-operation-outcome",
+                search_execution.response.source_outcome,
+            ),
+            valid_result_count=search_execution.response.source_outcome.valid_result_count,
+        )
+        persisted_progress = PubMedSearchProgressRecord.model_validate(
+            self._acquisitions.persist_search_progress(progress_record).model_dump(mode="python")
+        )
+        if persisted_progress != progress_record:
+            raise ValueError("persisted PubMed search progress did not echo exact content")
 
-        for ordinal, pmid in enumerate(search_execution.response.pmids, start=1):
+        return PubMedSearchCollection(
+            request=request,
+            catalog=catalog,
+            query=query,
+            query_id=query_id,
+            run_intent_id=run_intent_id,
+            response=search_execution.response,
+            acquisition=persisted_search,
+            progress_record=persisted_progress,
+            completed_at_utc=search_execution.completed_at_utc,
+        )
+
+    def load_search_progress(
+        self,
+        *,
+        run_id: str,
+        acquisition_intent_id: str,
+    ) -> PubMedSearchProgressRecord:
+        """Load and reconstruct one exact persisted search membership record."""
+
+        loaded = self._acquisitions.load_search_progress(
+            run_id=run_id,
+            acquisition_intent_id=acquisition_intent_id,
+        )
+        return PubMedSearchProgressRecord.model_validate(loaded.model_dump(mode="python"))
+
+    def persist_terminal_progress(
+        self,
+        record: PubMedTerminalProgressRecord,
+    ) -> PubMedTerminalProgressRecord:
+        """Persist and reconstruct one exact M3 terminal replay receipt."""
+
+        record = PubMedTerminalProgressRecord.model_validate(record.model_dump(mode="python"))
+        persisted = self._acquisitions.persist_terminal_progress(record)
+        return PubMedTerminalProgressRecord.model_validate(persisted.model_dump(mode="python"))
+
+    def load_terminal_progress(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+    ) -> PubMedTerminalProgressRecord:
+        """Load and reconstruct one exact M3 terminal replay receipt."""
+
+        loaded = self._acquisitions.load_terminal_progress(
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
+        return PubMedTerminalProgressRecord.model_validate(loaded.model_dump(mode="python"))
+
+    def collect_fetches(self, searched: PubMedSearchCollection) -> PubMedCollection:
+        """Persist exactly the ordered PMIDs returned by a validated search."""
+
+        searched = PubMedSearchCollection.model_validate(searched.model_dump(mode="python"))
+        prepared = PubMedCollectionPreparation(
+            request=searched.request,
+            catalog=searched.catalog,
+            query=searched.query,
+            query_id=searched.query_id,
+            run_intent_id=searched.run_intent_id,
+        )
+        stage = self.collect_fetch_stage(prepared=prepared, search_response=searched.response)
+        persisted = (searched.acquisition, *stage.persisted_acquisitions)
+        child_outcomes = (
+            searched.response.source_outcome,
+            *(item.source_outcome for item in stage.fetches),
+        )
+        composite = _composite_outcome(
+            scope=searched.request.scope,
+            query_id=searched.query_id,
+            search=searched.response,
+            children=child_outcomes,
+            valid_publications=len(stage.publications),
+        )
+        retrieval_as_of = max(
+            (searched.completed_at_utc, *(fetch.completed_at_utc for fetch in stage.fetches))
+        )
+        if stage.publications:
+            retrieval_as_of = max(
+                retrieval_as_of,
+                *(item.publication_status.retrieved_as_of for item in stage.publications),
+            )
+        return PubMedCollection(
+            searched=searched,
+            fetches=stage.fetches,
+            persisted_acquisitions=persisted,
+            publications=stage.publications,
+            source_outcome=composite,
+            retrieval_as_of=retrieval_as_of,
+        )
+
+    def collect_fetch_stage(
+        self,
+        *,
+        prepared: PubMedCollectionPreparation,
+        search_response: SearchPubMedResponse,
+    ) -> PubMedFetchStageCollection:
+        """Persist only the fetch suffix reconstructed from checkpointed search state."""
+
+        prepared = PubMedCollectionPreparation.model_validate(prepared.model_dump(mode="python"))
+        search_response = SearchPubMedResponse.model_validate(
+            search_response.model_dump(mode="python")
+        )
+        if search_response.query != prepared.query or search_response.query_id != prepared.query_id:
+            raise ValueError("PubMed fetch stage must bind the exact prepared query")
+        request = prepared.request
+        persisted: list[PersistedAcquisition] = []
+        publications: list[PublicationRecord] = []
+        fetches: list[PubMedCollectedFetch] = []
+
+        for ordinal, pmid in enumerate(search_response.pmids, start=1):
             fetch_intent = self._acquisition_intent(
                 run_id=request.run_id,
-                run_intent_id=run_intent_id,
+                run_intent_id=prepared.run_intent_id,
                 ordinal=ordinal,
                 operation="fetch",
                 pmid=pmid,
             )
-            fetch_execution = self._execution.fetch(pmid=pmid, query_id=query_id)
-            fetch_executions.append(fetch_execution)
+            fetch_execution = self._execution.fetch(pmid=pmid, query_id=prepared.query_id)
             fetch_response = self._fetch_response(
                 FetchPubMedArticleRequest(
                     scope=request.scope,
                     pmid=pmid,
-                    query_id=query_id,
+                    query_id=prepared.query_id,
                 ),
                 fetch_execution,
             )
@@ -165,19 +485,35 @@ class PubMedResearchService:
                 persisted_fetch,
             )
             persisted.append(persisted_fetch)
-            child_outcomes.append(fetch_response.source_outcome)
             if bound_publication is not None:
                 publications.append(bound_publication)
+            fetches.append(
+                PubMedCollectedFetch(
+                    pmid=pmid,
+                    source_outcome=fetch_response.source_outcome,
+                    acquisition=persisted_fetch,
+                    publication=bound_publication,
+                    completed_at_utc=fetch_execution.completed_at_utc,
+                )
+            )
 
-        composite = _composite_outcome(
-            scope=request.scope,
-            query_id=query_id,
-            search=search_execution.response,
-            children=tuple(child_outcomes),
-            valid_publications=len(publications),
+        return PubMedFetchStageCollection(
+            search_response=search_response,
+            fetches=tuple(fetches),
+            persisted_acquisitions=tuple(persisted),
+            publications=tuple(publications),
         )
+
+    def research(self, request: ResearchPubMedRequest) -> ResearchReport:
+        """Run collection, construct claims, then persist the draft last."""
+
+        collection = self.collect(request)
+        catalog = collection.searched.catalog
+        run_intent_id = collection.searched.run_intent_id
+        persisted = collection.persisted_acquisitions
+        composite = collection.source_outcome
         report_publications = tuple(
-            _with_report_outcome(publication, composite) for publication in publications
+            _with_report_outcome(publication, composite) for publication in collection.publications
         )
         citations, claims = _claims_for_publications(
             scope_id=request.scope.scope_id,
@@ -206,18 +542,6 @@ class PubMedResearchService:
             if composite.coverage_status is not CoverageStatus.COMPLETE
             else ()
         )
-        retrieval_as_of = max(
-            [
-                search_execution.completed_at_utc,
-                *(execution.completed_at_utc for execution in fetch_executions),
-            ]
-        )
-        # Publication status as-of times can be later than transport completion in fixtures.
-        if report_publications:
-            retrieval_as_of = max(
-                retrieval_as_of,
-                *(item.publication_status.retrieved_as_of for item in report_publications),
-            )
         report = ResearchReport.create(
             run_id=request.run_id,
             catalog_content_hash=catalog.catalog_content_hash,
@@ -236,7 +560,7 @@ class PubMedResearchService:
             source_status_warnings=source_warnings,
             claim_status_warnings=claim_warnings,
             coverage_limitations=limitations,
-            retrieval_as_of=retrieval_as_of,
+            retrieval_as_of=collection.retrieval_as_of,
         )
         completed_at = self._runtime.utc_now()
         self._runs.persist_run_and_report(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, final
 
 from pydantic import ValidationError
 
@@ -32,10 +32,8 @@ from medevidence.tools.report_validation import (
 )
 
 from .contracts import (
-    MAX_SOURCE_TASK_ATTEMPTS,
     WORKFLOW_TOPOLOGY,
     CollectedEvidenceResult,
-    CollectionFailureClassification,
     ExportRecord,
     GateStatus,
     OrchestrationState,
@@ -47,6 +45,7 @@ from .contracts import (
     SafetyOutcome,
     ScopeSafetyEvaluation,
     SourceTaskFailureRef,
+    SourceTaskProgressResult,
     SourceTaskState,
     SourceTaskStatus,
     SynthesisState,
@@ -62,9 +61,23 @@ from .ports import (
     ExportApprovalPort,
     ExportPort,
     ScopeSafetyPort,
-    SourcePlanningPort,
     SynthesisPort,
     ValidationReceiptStorePort,
+)
+from .source_capabilities import (
+    CanonicalSourcePlanningAuthority,
+    SourceCapabilityContractError,
+    checkpoint_source_task,
+    exact_source_planning_authority,
+    planned_running_source_task,
+    replay_source_plan,
+    replay_terminal_tasks,
+    source_plan_identity,
+    source_task_after_failure,
+    source_task_after_progress,
+    terminal_source_task,
+    verify_running_source_plan,
+    with_source_task,
 )
 
 __class__: type[ControlledOrchestrationWorkflow]
@@ -85,27 +98,23 @@ class WorkflowExecutionError(RuntimeError):
         super().__init__("unexpected collection-port error; automatic retry is prohibited")
 
 
+@final
 class ControlledOrchestrationWorkflow:
     """Coordinate injected capabilities without owning their business logic."""
 
-    __slots__ = (
-        "_draft_persistence",
-        "_evidence_collection",
-        "_export",
-        "_export_approval",
-        "_scope_safety",
-        "_semantic_result_provider",
-        "_source_planning",
-        "_synthesis",
-        "_validation_receipt_store",
-        "_validation_registry",
-    )
+    # fmt: off
+    __slots__ = ("_draft_persistence", "_evidence_collection", "_export", "_export_approval", "_scope_safety", "_semantic_result_provider", "_source_planning", "_synthesis", "_validation_receipt_store", "_validation_registry")  # noqa: E501
+    def __init_subclass__(cls, **kwargs: Any) -> None: raise TypeError("controlled workflow is final")  # noqa: E501
+    def __setattr__(self, name: str, value: object) -> None:
+        if hasattr(self, name): raise AttributeError("controlled workflow authority is immutable after construction")  # noqa: E501, E701
+        object.__setattr__(self, name, value)
+    # fmt: on
 
     def __init__(
         self,
         *,
         scope_safety: ScopeSafetyPort,
-        source_planning: SourcePlanningPort,
+        source_planning: CanonicalSourcePlanningAuthority,
         evidence_collection: EvidenceCollectionPort,
         synthesis: SynthesisPort,
         validation_registry: ValidationRegistryInput,
@@ -116,7 +125,7 @@ class ControlledOrchestrationWorkflow:
         export: ExportPort,
     ) -> None:
         self._scope_safety = scope_safety
-        self._source_planning = source_planning
+        self._source_planning = exact_source_planning_authority(source_planning)
         self._evidence_collection = evidence_collection
         self._synthesis = synthesis
         self._validation_registry = validation_registry
@@ -130,6 +139,8 @@ class ControlledOrchestrationWorkflow:
         """Run exactly the current node, or return an already terminal checkpoint."""
         state = __class__._validate_durable_state(self, state)
         if state.current_node is None:
+            __class__._replay_source_plan(self, state)
+            __class__._replay_terminal_tasks(self, state)
             if state.synthesis is not None:
                 __class__._verify_binding(
                     self,
@@ -154,6 +165,14 @@ class ControlledOrchestrationWorkflow:
         if state.current_node is WorkflowNode.FINALIZE_AND_EXPORT:
             return __class__.finalize_and_export(self, state)
         raise WorkflowTransitionError("current node is outside the frozen topology")
+
+    def validate_terminal_sources(self, state: OrchestrationState) -> OrchestrationState:
+        """Replay terminal source authority without advancing or mutating the workflow."""
+        rebuilt = __class__._validate_durable_state(self, state)
+        __class__._replay_source_plan(self, rebuilt)
+        if any(task.status is SourceTaskStatus.TERMINAL for task in rebuilt.source_tasks):
+            __class__._replay_terminal_tasks(self, rebuilt)
+        return rebuilt
 
     def scope_and_safety(self, state: OrchestrationState) -> OrchestrationState:
         """Interpret and classify the immutable original scope before any source work."""
@@ -188,7 +207,10 @@ class ControlledOrchestrationWorkflow:
         decision = state.safety_decision
         if decision is None or decision.outcome is not SafetyOutcome.PERMITTED:
             raise WorkflowTransitionError("source planning requires a permitted safety decision")
-        plan = tuple(self._source_planning.plan(scope, decision))
+        try:
+            plan = CanonicalSourcePlanningAuthority.plan(self._source_planning, scope, decision)
+        except SourceCapabilityContractError as error:
+            raise WorkflowTransitionError(str(error)) from error
         tasks = tuple(
             SourceTaskState(
                 task_id=source_task_id(state.run_id, row.source),
@@ -207,26 +229,25 @@ class ControlledOrchestrationWorkflow:
 
     def collect_evidence(self, state: OrchestrationState) -> OrchestrationState:
         """Checkpoint or dispatch at most one bounded logical source attempt."""
-        state = __class__._validate_durable_state(self, state)
+        state = __class__.validate_terminal_sources(self, state)
         __class__._require_node(state, WorkflowNode.COLLECT_EVIDENCE)
         scope = __class__._require_interpreted_scope(state)
         for index, task in enumerate(state.source_tasks):
             if task.status is SourceTaskStatus.TERMINAL:
                 continue
-            if task.status in {
-                SourceTaskStatus.PENDING,
-                SourceTaskStatus.RETRY_WAIT,
-            }:
+            if task.status in {SourceTaskStatus.PENDING, SourceTaskStatus.RETRY_WAIT}:
                 attempt = source_task_attempt(task.task_id, task.attempts + 1)
-                running = SourceTaskState(
-                    task_id=task.task_id,
-                    source=task.source,
-                    status=SourceTaskStatus.RUNNING,
-                    attempts=attempt.attempt_number,
-                    active_attempt=attempt,
-                    failure_history=task.failure_history,
-                )
-                return self._checkpoint_source_task(state, index, running)
+                try:
+                    running = planned_running_source_task(
+                        self._evidence_collection, task, scope, attempt, state.run_id
+                    )
+                except SourceCapabilityContractError as error:
+                    raise WorkflowTransitionError(str(error)) from error
+                except Exception as error:
+                    raise WorkflowExecutionError(
+                        task_id=task.task_id, attempt_id=attempt.attempt_id
+                    ) from error
+                return checkpoint_source_task(state, index, running)
             if task.status is SourceTaskStatus.FAILED:
                 return self._replace(
                     state,
@@ -241,37 +262,31 @@ class ControlledOrchestrationWorkflow:
             if running_attempt is None:
                 raise WorkflowTransitionError("running source task lacks its attempt")
             try:
+                verify_running_source_plan(
+                    self._evidence_collection, task, scope, running_attempt, state.run_id
+                )
                 raw = self._evidence_collection.collect(task, scope, running_attempt)
+            except SourceCapabilityContractError as error:
+                raise WorkflowTransitionError(str(error)) from error
             except Exception as error:
                 raise WorkflowExecutionError(
                     task_id=task.task_id,
                     attempt_id=running_attempt.attempt_id,
                 ) from error
+            if isinstance(raw, SourceTaskProgressResult):
+                try:
+                    progress = source_task_after_progress(task, raw, state.run_id)
+                except SourceCapabilityContractError as error:
+                    raise WorkflowTransitionError(str(error)) from error
+                return checkpoint_source_task(state, index, progress)
             if isinstance(raw, SourceTaskFailureRef):
-                failure = SourceTaskFailureRef.model_validate(raw.model_dump(mode="python"))
-                if failure.attempt != running_attempt:
-                    raise WorkflowTransitionError("collection failure belongs to another attempt")
-                failures = (*task.failure_history, failure)
-                if (
-                    failure.classification is CollectionFailureClassification.RETRYABLE
-                    and task.attempts < MAX_SOURCE_TASK_ATTEMPTS
-                ):
-                    retry_wait = SourceTaskState(
-                        task_id=task.task_id,
-                        source=task.source,
-                        status=SourceTaskStatus.RETRY_WAIT,
-                        attempts=task.attempts,
-                        failure_history=failures,
-                    )
-                    return self._checkpoint_source_task(state, index, retry_wait)
-                failed = SourceTaskState(
-                    task_id=task.task_id,
-                    source=task.source,
-                    status=SourceTaskStatus.FAILED,
-                    attempts=task.attempts,
-                    failure_history=failures,
-                )
-                failed_state = self._with_source_task(state, index, failed)
+                try:
+                    failed = source_task_after_failure(task, raw)
+                except SourceCapabilityContractError as error:
+                    raise WorkflowTransitionError(str(error)) from error
+                if failed.status is SourceTaskStatus.RETRY_WAIT:
+                    return checkpoint_source_task(state, index, failed)
+                failed_state = with_source_task(state, index, failed)
                 return self._replace(
                     failed_state,
                     checkpoint_id=self._next_checkpoint_id(
@@ -283,23 +298,11 @@ class ControlledOrchestrationWorkflow:
                 )
             if not isinstance(raw, CollectedEvidenceResult):
                 raise WorkflowTransitionError("collection port returned an unknown contract")
-            result = CollectedEvidenceResult.model_validate(raw.model_dump(mode="python"))
-            if result.attempt != running_attempt:
-                raise WorkflowTransitionError("collection result belongs to another attempt")
-            if result.terminal_outcome_ref.outcome.source is not task.source:
-                raise WorkflowTransitionError("collection result belongs to another source")
-            if result.terminal_outcome_ref.acquisition.run_id != state.run_id:
-                raise WorkflowTransitionError("collection result belongs to another run")
-            terminal = SourceTaskState(
-                task_id=task.task_id,
-                source=task.source,
-                status=SourceTaskStatus.TERMINAL,
-                attempts=task.attempts,
-                failure_history=task.failure_history,
-                terminal_outcome_ref=result.terminal_outcome_ref,
-                evidence_refs=result.evidence_refs,
-            )
-            return self._checkpoint_source_task(state, index, terminal)
+            try:
+                terminal = terminal_source_task(task, raw, state.run_id)
+            except SourceCapabilityContractError as error:
+                raise WorkflowTransitionError(str(error)) from error
+            return checkpoint_source_task(state, index, terminal)
         return self._complete(
             state,
             node=WorkflowNode.COLLECT_EVIDENCE,
@@ -308,7 +311,7 @@ class ControlledOrchestrationWorkflow:
 
     def synthesize_claims(self, state: OrchestrationState) -> OrchestrationState:
         """Invoke the injected synthesis capability only after all selected tasks terminate."""
-        state = __class__._validate_durable_state(self, state)
+        state = __class__.validate_terminal_sources(self, state)
         __class__._require_node(state, WorkflowNode.SYNTHESIZE_CLAIMS)
         scope = __class__._require_interpreted_scope(state)
         if any(task.status is not SourceTaskStatus.TERMINAL for task in state.source_tasks):
@@ -342,7 +345,7 @@ class ControlledOrchestrationWorkflow:
 
     def validate_report(self, state: OrchestrationState) -> OrchestrationState:
         """Apply externally implemented citation and safety gates."""
-        state = __class__._validate_durable_state(self, state)
+        state = __class__.validate_terminal_sources(self, state)
         __class__._require_node(state, WorkflowNode.VALIDATE_REPORT)
         request = __class__._build_validation_request(self, state, include_stored=False)
         try:
@@ -391,7 +394,7 @@ class ControlledOrchestrationWorkflow:
 
     def save_pending_draft(self, state: OrchestrationState) -> OrchestrationState:
         """Persist the validated pending draft through an idempotent capability."""
-        state = __class__._validate_durable_state(self, state)
+        state = __class__.validate_terminal_sources(self, state)
         __class__._require_node(state, WorkflowNode.SAVE_PENDING_DRAFT)
         synthesis = __class__._require_synthesis(state)
         if not state.validation.passed:
@@ -425,7 +428,7 @@ class ControlledOrchestrationWorkflow:
 
     def request_export_approval(self, state: OrchestrationState) -> OrchestrationState:
         """Process the sole human interrupt: approve, reject, or edit."""
-        state = __class__._validate_durable_state(self, state)
+        state = __class__.validate_terminal_sources(self, state)
         __class__._require_node(state, WorkflowNode.REQUEST_EXPORT_APPROVAL)
         synthesis = __class__._require_synthesis(state)
         if state.report_status is not ReportStatus.PENDING_REVIEW:
@@ -505,7 +508,7 @@ class ControlledOrchestrationWorkflow:
 
     def finalize_and_export(self, state: OrchestrationState) -> OrchestrationState:
         """Finalize exactly once after approval and reuse an existing export on resume."""
-        state = __class__._validate_durable_state(self, state)
+        state = __class__.validate_terminal_sources(self, state)
         if state.export_record is None:
             __class__._require_node(state, WorkflowNode.FINALIZE_AND_EXPORT)
         __class__._verify_binding(self, state, require_pass=True)
@@ -584,6 +587,11 @@ class ControlledOrchestrationWorkflow:
             max_records=scope.result_bounds.max_records,
             max_payload_bytes=scope.result_bounds.max_payload_bytes,
         )
+        selected_task_sources = tuple(
+            row.source
+            for row in state.source_plan
+            if row.planning_status is PlanningStatus.SELECTED
+        )
         task_inputs: list[TerminalTaskInput] = []
         for task in state.source_tasks:
             terminal = task.terminal_outcome_ref
@@ -604,8 +612,8 @@ class ControlledOrchestrationWorkflow:
                         acquisition_intent_id=acquisition.acquisition_intent_id,
                         acquisition_ordinal=acquisition.acquisition_ordinal,
                         operation=acquisition.operation,
-                        query_id=acquisition.query_id,
-                        source_outcome_id=acquisition.source_outcome_id,
+                        query_id=outcome.query_id,
+                        source_outcome_id=terminal.terminal_outcome_id,
                         snapshot_id=acquisition.snapshot_id,
                     ),
                     outcome=SourceOutcomeInput(
@@ -675,6 +683,8 @@ class ControlledOrchestrationWorkflow:
             run_id=state.run_id,
             report_id=state.report_id,
             scope=scope_input,
+            source_plan_id=source_plan_identity(state.source_plan),
+            selected_task_sources=selected_task_sources,
             tasks=tuple(task_inputs),
             synthesis=synthesis_input,
             registry=self._validation_registry,
@@ -864,7 +874,6 @@ class ControlledOrchestrationWorkflow:
                 acquisition.run_id != state.run_id
                 or acquisition.source is not task.source
                 or outcome.source is not task.source
-                or acquisition.query_id != outcome.query_id
             ):
                 raise WorkflowTransitionError("terminal task lineage does not bind current run")
             for evidence in task.evidence_refs:
@@ -985,6 +994,18 @@ class ControlledOrchestrationWorkflow:
         if expected not in state.permissions.allowed_nodes:
             raise WorkflowTransitionError("workflow node is not permitted")
 
+    def _replay_terminal_tasks(self, state: OrchestrationState) -> None:
+        try:
+            replay_terminal_tasks(self._evidence_collection, state)
+        except Exception as error:
+            raise WorkflowTransitionError("source terminal replay failed") from error
+
+    def _replay_source_plan(self, state: OrchestrationState) -> None:
+        try:
+            replay_source_plan(self._source_planning, state)
+        except Exception as error:
+            raise WorkflowTransitionError("source plan replay failed") from error
+
     @staticmethod
     def _require_interpreted_scope(state: OrchestrationState) -> ResearchScope:
         if state.interpreted_scope is None:
@@ -1044,34 +1065,6 @@ class ControlledOrchestrationWorkflow:
             raise WorkflowTransitionError(
                 "formal export requires a valid durable checkpoint"
             ) from error
-
-    def _checkpoint_source_task(
-        self,
-        state: OrchestrationState,
-        index: int,
-        task: SourceTaskState,
-    ) -> OrchestrationState:
-        updated = __class__._with_source_task(self, state, index, task)
-        return __class__._replace(
-            updated,
-            checkpoint_id=__class__._next_checkpoint_id(
-                updated,
-                WorkflowNode.COLLECT_EVIDENCE,
-            ),
-        )
-
-    def _with_source_task(
-        self,
-        state: OrchestrationState,
-        index: int,
-        task: SourceTaskState,
-    ) -> OrchestrationState:
-        tasks = list(state.source_tasks)
-        tasks[index] = task
-        return __class__._replace(
-            state,
-            source_tasks=tuple(tasks),
-        )
 
     @staticmethod
     def _next_checkpoint_id(state: OrchestrationState, node: WorkflowNode) -> str:

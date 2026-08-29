@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    AcquisitionOutcomeRef,
     CoverageStatus,
     DailyMedSelectionMode,
     DailyMedSelectionRequestV1,
@@ -26,9 +27,15 @@ from medevidence.tools import (
     discover_dailymed_labels,
     fetch_dailymed_label,
 )
+from medevidence.tools.dailymed import (
+    DailyMedDiscoveryExecutionProjection,
+    DailyMedFetchExecutionProjection,
+    DailyMedSectionEvidenceProjection,
+)
 from medevidence.tools.ports import DailyMedExecutionPort
 
 SETID = "11111111-1111-1111-1111-111111111111"
+RUN_ID = "run:12345678-1234-4234-9234-123456789abc"
 
 
 def _selection_request(*, pinned: bool = False) -> DailyMedSelectionRequestV1:
@@ -347,3 +354,71 @@ def test_unusable_fetch_cannot_expose_stable_evidence() -> None:
     ).model_dump(mode="python")
     with pytest.raises(ValidationError, match="stable label identities require"):
         DailyMedFetchResponse.model_validate(values)
+
+
+def test_dailymed_execution_projections_bind_exact_persisted_identities() -> None:
+    discovery_request = DailyMedDiscoveryRequest(
+        selection_request=_selection_request(), query_id="query:projection-discovery"
+    )
+    discovery_response = _discovery_response(discovery_request)
+    discovery = DailyMedDiscoveryExecutionProjection(
+        run_id=RUN_ID,
+        scope_id="scope:test",
+        task_id="source-task:test:dailymed",
+        attempt_id="source-task-attempt:test",
+        response=discovery_response,
+        acquisition=AcquisitionOutcomeRef(
+            run_id=RUN_ID,
+            source=SourceType.DAILYMED,
+            acquisition_id="acquisition:projection-discovery",
+            acquisition_intent_id="acquisition-intent:sha256:" + "a" * 64,
+            acquisition_ordinal=0,
+            operation="search",
+            query_id=discovery_response.query_id,
+            source_outcome_id=discovery_response.source_outcome_id,
+            snapshot_id=discovery_response.candidate_set_snapshot_id,
+        ),
+    )
+    assert discovery.response == discovery_response
+
+    fetch_request = DailyMedFetchRequest(
+        selection_request=discovery_response.selection_request,
+        query_id=discovery_response.query_id,
+        decision_id=discovery_response.decision_id,
+        selected_candidate_id=discovery_response.selected_candidate_id,
+        selected_setid=discovery_response.selected_setid,
+        selected_spl_version=discovery_response.selected_spl_version,
+    )
+    fetch_response = _fetch_response(fetch_request)
+    fetched = DailyMedFetchExecutionProjection(
+        run_id=RUN_ID,
+        scope_id="scope:test",
+        task_id="source-task:test:dailymed",
+        attempt_id="source-task-attempt:test",
+        response=fetch_response,
+        acquisition=AcquisitionOutcomeRef(
+            run_id=RUN_ID,
+            source=SourceType.DAILYMED,
+            acquisition_id="acquisition:projection-fetch",
+            acquisition_intent_id="acquisition-intent:sha256:" + "b" * 64,
+            acquisition_ordinal=1,
+            operation="fetch",
+            query_id=fetch_response.request.query_id,
+            source_outcome_id=fetch_response.source_outcome_id,
+            snapshot_id=fetch_response.fetch_snapshot_id,
+        ),
+        section_evidence=(
+            DailyMedSectionEvidenceProjection(
+                section_id=fetch_response.section_ids[0],
+                evidence_id="evidence:projection-section",
+                content_hash="sha256:" + "c" * 64,
+                locator_ref="locator:projection-section",
+            ),
+        ),
+    )
+    assert fetched.section_evidence[0].section_id == fetch_response.section_ids[0]
+
+    stale = fetched.model_dump(mode="python")
+    stale["section_evidence"][0]["section_id"] = "section:foreign"
+    with pytest.raises(ValidationError, match="exact eligible section set"):
+        DailyMedFetchExecutionProjection.model_validate(stale)

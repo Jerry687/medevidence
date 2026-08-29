@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from medevidence.composition import _AcquisitionAdapter
 from medevidence.ingestion.snapshots import (
     COMMITTED_BYTE_CAPACITY,
     INITIAL_FREE_SPACE_FLOOR_BYTES,
+    PERSISTENT_FILE_CAPACITY,
     RAW_RUN_BYTE_CAPACITY,
     ROOT_LOCK_FILENAME,
     TEMPORARY_FILE_PEAK_CAPACITY,
@@ -19,10 +21,26 @@ from medevidence.ingestion.snapshots import (
     SnapshotIntegrityError,
     SnapshotStore,
 )
+from medevidence.tools.ports import PubMedSearchProgressRecord
 
 
 def store(root: Path, *, free: int = INITIAL_FREE_SPACE_FLOOR_BYTES) -> SnapshotStore:
     return SnapshotStore(root, free_bytes=lambda _: free)
+
+
+def _search_progress() -> PubMedSearchProgressRecord:
+    return PubMedSearchProgressRecord.create(
+        run_id="run:00000000-0000-4000-8000-000000000002",
+        scope_id=f"scope:sha256:{'a' * 64}",
+        query='("semaglutide"[Title/Abstract])',
+        query_id="query:fixture",
+        acquisition_intent_id=f"acquisition-intent:sha256:{'b' * 64}",
+        snapshot_id=f"sha256:{'c' * 64}",
+        manifest_id=f"sha256:{'c' * 64}",
+        pmids=("10", "20"),
+        search_source_outcome_id="source-operation-outcome:fixture",
+        valid_result_count=2,
+    )
 
 
 def test_exact_raw_bytes_are_immutable_and_reused(tmp_path: Path) -> None:
@@ -45,6 +63,241 @@ def test_exact_raw_bytes_are_immutable_and_reused(tmp_path: Path) -> None:
     assert not first.reused_existing
     assert second.reused_existing
     assert (snapshots.root / ROOT_LOCK_FILENAME).stat().st_size == 0
+
+
+def test_snapshot_store_authority_is_slotted_frozen_and_internally_operable(
+    tmp_path: Path,
+) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    expected_root = (tmp_path / "snapshots").absolute()
+
+    assert snapshots.root == expected_root
+    assert not hasattr(snapshots, "__dict__")
+    for name, value in (
+        ("root", tmp_path / "foreign"),
+        ("_root", tmp_path / "foreign"),
+        ("read_source_replay", lambda *_args, **_kwargs: b"forged"),
+        ("read_pubmed_search_progress", lambda *_args, **_kwargs: b"forged"),
+        ("read_pubmed_terminal_progress", lambda *_args, **_kwargs: b"forged"),
+    ):
+        with pytest.raises(AttributeError, match="frozen"):
+            setattr(snapshots, name, value)
+
+    snapshots.initialize()
+    assert snapshots._initialized
+    with snapshots.writer():
+        assert snapshots.has_writer_lock
+        snapshots.store_raw_body(b"exact")
+    assert not snapshots.has_writer_lock
+    assert snapshots.root == expected_root
+
+
+def test_pubmed_search_progress_read_is_exact_and_run_scoped(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    run_id = "run:00000000-0000-4000-8000-000000000002"
+    relative = "journal/00000000-0000-4000-8000-000000000002/acquisition-0000/"
+    with snapshots.writer():
+        snapshots.publish_bytes(
+            relative + "search-progress.json",
+            b'{"exact":true}',
+            artifact_class="journal",
+        )
+
+    assert snapshots.read_pubmed_search_progress(run_id) == b'{"exact":true}'
+    with pytest.raises(SnapshotContainmentError, match="run identity"):
+        snapshots.read_pubmed_search_progress("../outside")
+    with pytest.raises(SnapshotIntegrityError, match="missing"):
+        snapshots.read_pubmed_search_progress("run:ffffffff-ffff-4fff-8fff-ffffffffffff")
+
+
+def test_concrete_acquisition_adapter_insert_or_verifies_exact_search_progress(
+    tmp_path: Path,
+) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    adapter = _AcquisitionAdapter(
+        store=snapshots,
+        repository=object(),  # type: ignore[arg-type]
+        code_revision="b" * 40,
+    )
+    record = _search_progress()
+    with snapshots.writer():
+        first = adapter.persist_search_progress(record)
+        second = adapter.persist_search_progress(record)
+
+    assert first == second == record
+    assert (
+        adapter.load_search_progress(
+            run_id=record.run_id,
+            acquisition_intent_id=record.acquisition_intent_id,
+        )
+        == record
+    )
+    conflicting = PubMedSearchProgressRecord.create(
+        **{
+            **record.payload(),
+            "pmids": ("10", "30"),
+        }
+    )
+    with snapshots.writer(), pytest.raises(SnapshotIntegrityError):
+        adapter.persist_search_progress(conflicting)
+
+
+def test_pubmed_search_progress_read_rejects_oversize(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    run_id = "run:00000000-0000-4000-8000-000000000002"
+    target = (
+        snapshots.root
+        / "journal"
+        / "00000000-0000-4000-8000-000000000002"
+        / "acquisition-0000"
+        / "search-progress.json"
+    )
+    snapshots.initialize()
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"x" * 16_385)
+    with pytest.raises(SnapshotIntegrityError, match="invalid size"):
+        snapshots.read_pubmed_search_progress(run_id)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unsupported")
+def test_pubmed_search_progress_read_rejects_reparse_leaf(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    snapshots.initialize()
+    target = (
+        snapshots.root
+        / "journal"
+        / "00000000-0000-4000-8000-000000000002"
+        / "acquisition-0000"
+        / "search-progress.json"
+    )
+    target.parent.mkdir(parents=True)
+    outside = tmp_path / "outside-progress.json"
+    outside.write_bytes(b'{"foreign":true}')
+    try:
+        target.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable to this test process")
+
+    with pytest.raises(SnapshotContainmentError):
+        snapshots.read_pubmed_search_progress("run:00000000-0000-4000-8000-000000000002")
+
+
+def test_pubmed_terminal_progress_read_is_exact_attempt_scoped_and_immutable(
+    tmp_path: Path,
+) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    run_id = "run:00000000-0000-4000-8000-000000000002"
+    attempt_id = f"source-task-attempt:sha256:{'a' * 64}"
+    relative = (
+        "journal/00000000-0000-4000-8000-000000000002/orchestration/pubmed/"
+        f"{'a' * 64}/terminal-progress.json"
+    )
+    with snapshots.writer():
+        first = snapshots.publish_bytes(
+            relative,
+            b'{"terminal":true}',
+            artifact_class="journal",
+        )
+        second = snapshots.publish_bytes(
+            relative,
+            b'{"terminal":true}',
+            artifact_class="journal",
+        )
+    assert not first.reused_existing and second.reused_existing
+    assert snapshots.read_pubmed_terminal_progress(run_id, attempt_id) == b'{"terminal":true}'
+    with snapshots.writer(), pytest.raises(SnapshotIntegrityError):
+        snapshots.publish_bytes(relative, b'{"rewritten":true}', artifact_class="journal")
+    with pytest.raises(SnapshotContainmentError, match="terminal-progress identity"):
+        snapshots.read_pubmed_terminal_progress(run_id, "attempt:foreign")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unsupported")
+def test_pubmed_terminal_progress_read_rejects_reparse_leaf(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    snapshots.initialize()
+    attempt_digest = "a" * 64
+    target = (
+        snapshots.root
+        / "journal"
+        / "00000000-0000-4000-8000-000000000002"
+        / "orchestration"
+        / "pubmed"
+        / attempt_digest
+        / "terminal-progress.json"
+    )
+    target.parent.mkdir(parents=True)
+    outside = tmp_path / "outside-terminal.json"
+    outside.write_bytes(b'{"foreign":true}')
+    try:
+        target.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable to this test process")
+    with pytest.raises(SnapshotContainmentError):
+        snapshots.read_pubmed_terminal_progress(
+            "run:00000000-0000-4000-8000-000000000002",
+            f"source-task-attempt:sha256:{attempt_digest}",
+        )
+
+
+def test_source_replay_narrow_read_and_exact_per_source_run_ceilings(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    run_id = "run:00000000-0000-4000-8000-000000000002"
+
+    def keys(index: int) -> dict[str, str]:
+        return {
+            "run_id": run_id,
+            "task_id": f"source-task:fixture:{index}",
+            "attempt_id": f"source-task-attempt:fixture:{index}",
+            "query_id": f"query:fixture:{index}",
+            "acquisition_intent_id": f"acquisition-intent:fixture:{index}",
+        }
+
+    with snapshots.writer():
+        for index in range(8):
+            kind = "dailymed-discovery" if index % 2 == 0 else "dailymed-fetch"
+            snapshots.publish_source_replay(kind, f'{{"index":{index}}}'.encode(), **keys(index))
+        with pytest.raises(SnapshotCapacityError, match="dailymed replay records"):
+            snapshots.publish_source_replay("dailymed-discovery", b'{"index":8}', **keys(8))
+        for index in range(8):
+            snapshots.publish_source_replay(
+                "faers-aggregate", f'{{"index":{index}}}'.encode(), **keys(index + 20)
+            )
+        with pytest.raises(SnapshotCapacityError, match="faers replay records"):
+            snapshots.publish_source_replay("faers-aggregate", b'{"index":8}', **keys(28))
+
+    assert snapshots.read_source_replay("dailymed-discovery", **keys(0)) == b'{"index":0}'
+    assert snapshots.read_source_replay("faers-aggregate", **keys(20)) == b'{"index":0}'
+    replay_paths = tuple(snapshots.root.rglob("projection.json"))
+    assert len(replay_paths) == 16
+    assert all("source-task:fixture" not in path.as_posix() for path in replay_paths)
+    assert all("query:fixture" not in path.as_posix() for path in replay_paths)
+    with pytest.raises(SnapshotIntegrityError, match="missing"):
+        snapshots.read_source_replay("dailymed-discovery", **keys(80))
+    with pytest.raises(SnapshotContainmentError, match="key has invalid size"):
+        snapshots.read_source_replay(
+            "dailymed-discovery",
+            **{**keys(0), "query_id": "x" * 257},
+        )
+
+
+def test_source_replay_record_size_is_bounded_without_large_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import medevidence.ingestion.snapshots as snapshots_module
+
+    monkeypatch.setattr(snapshots_module, "SOURCE_REPLAY_RECORD_BYTE_CAPACITY", 1)
+    snapshots = store(tmp_path / "snapshots")
+    with snapshots.writer(), pytest.raises(SnapshotCapacityError, match="invalid size"):
+        snapshots.publish_source_replay(
+            "faers-aggregate",
+            b"{}",
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            task_id="source-task:fixture",
+            attempt_id="source-task-attempt:fixture",
+            query_id="query:fixture",
+            acquisition_intent_id="acquisition-intent:fixture",
+        )
 
 
 def test_existing_corruption_is_never_overwritten(tmp_path: Path) -> None:
@@ -96,7 +349,7 @@ def test_capacity_checks_are_injected_and_exact(tmp_path: Path) -> None:
     file_limited = SnapshotStore(
         tmp_path / "file-limited",
         free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES,
-        committed_files=lambda: 1_214,
+        committed_files=lambda: PERSISTENT_FILE_CAPACITY,
     )
     with file_limited.writer(), pytest.raises(SnapshotCapacityError, match="file"):
         file_limited.store_raw_body(b"x")
