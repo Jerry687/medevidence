@@ -76,8 +76,11 @@ LICENSE_VALIDATOR = cast(
     Callable[[object], str | None], DEPENDENCY_HELPER["validate_license_expression"]
 )
 LICENSE_METADATA_RESOLVER = cast(
-    Callable[[object, object, object], tuple[str | None, tuple[str, ...]]],
+    Callable[..., tuple[str | None, tuple[str, ...]]],
     DEPENDENCY_HELPER["resolve_license_metadata"],
+)
+SNIFFIO_LICENSE_EVIDENCE_SHA256 = cast(
+    dict[str, str], DEPENDENCY_HELPER["SNIFFIO_1_3_1_LICENSE_EVIDENCE_SHA256"]
 )
 RAW_AUDIT_NORMALIZER = cast(
     Callable[[Path], dict[str, Any]], DEPENDENCY_HELPER["normalize_raw_audit"]
@@ -96,6 +99,10 @@ PACKAGES_FROM_AUDIT = cast(
         tuple[Any | None, int, int, list[dict[str, str]], dict[str, Any] | None],
     ],
     DEPENDENCY_HELPER["packages_from_audit"],
+)
+PACKAGES_FROM_LICENSES = cast(
+    Callable[[Path], tuple[Any, dict[str, int]]],
+    DEPENDENCY_HELPER["packages_from_licenses"],
 )
 FINALIZE_ADVISORY_DISPOSITIONS = cast(
     Callable[
@@ -364,6 +371,8 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
         "defusedxml==0.7.1",
         "fastapi==0.141.1",
         "httpx==0.28.1",
+        "langgraph==1.2.11",
+        "langgraph-checkpoint-postgres==3.1.2",
         "psycopg[binary]==3.3.4",
         "pydantic==2.13.4",
         "SQLAlchemy==2.0.51",
@@ -387,6 +396,12 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
         dependency.casefold().startswith(("numpy", "scikit-learn", "torch", "transformers"))
         for dependency in project["project"]["dependencies"]
     )
+    production_names = {
+        dependency.partition("==")[0].casefold()
+        for dependency in project["project"]["dependencies"]
+    }
+    assert {"langgraph", "langgraph-checkpoint-postgres"} <= production_names
+    assert production_names.isdisjoint({"langchain", "langchain-core", "openai", "redis"})
     assert project["tool"]["uv"]["sources"] == {"torch": {"index": "pytorch-cpu"}}
     assert project["tool"]["uv"]["index"] == [
         {
@@ -457,6 +472,63 @@ def test_numpy_2_5_1_spdx_expression_is_accepted_exactly() -> None:
 
 @pytest.mark.parametrize(
     "expression",
+    [
+        "MPL-2.0 AND (Apache-2.0 OR MIT)",
+        "(MPL-2.0 AND (Apache-2.0 WITH LLVM-exception OR MIT)) OR BSD-3-Clause",
+    ],
+)
+def test_bounded_parenthesized_spdx_expression_is_accepted_exactly(expression: str) -> None:
+    assert LICENSE_VALIDATOR(expression) == expression
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "MPL-2.0 AND (Apache-2.0 OR MIT",
+        "MPL-2.0 AND (Apache-2.0 OR MIT))",
+        "MPL-2.0 AND ()",
+        "MPL-2.0 AND (OR MIT)",
+        "MPL-2.0 AND (MIT OR)",
+        "MPL-2.0 AND (MIT Apache-2.0)",
+        "MPL-2.0 AND (MIT; import os)",
+        "MPL-2.0 AND (__import__)",
+        "MPL-2.0 WITH LLVM-exception",
+        "MPL-2.0  AND MIT",
+        "MPL-2.0 AND ( MIT)",
+        "MPL-2.0\nOR MIT",
+    ],
+)
+def test_malformed_or_injection_like_parenthesized_spdx_is_rejected(expression: str) -> None:
+    with pytest.raises(ValueError, match="approved SPDX-expression grammar"):
+        LICENSE_VALIDATOR(expression)
+
+
+def test_spdx_parentheses_nesting_is_bounded() -> None:
+    exact_maximum = "MIT"
+    for _ in range(16):
+        exact_maximum = f"({exact_maximum} OR MIT)"
+
+    assert LICENSE_VALIDATOR(exact_maximum) == exact_maximum
+
+    max_plus_one = f"({exact_maximum} OR MIT)"
+
+    with pytest.raises(ValueError, match="approved SPDX-expression grammar"):
+        LICENSE_VALIDATOR(max_plus_one)
+
+
+def test_spdx_token_count_is_bounded() -> None:
+    exact_maximum = " OR ".join(["MIT"] * 64)
+
+    assert LICENSE_VALIDATOR(exact_maximum) == exact_maximum
+
+    max_plus_one = f"{exact_maximum} OR MIT"
+
+    with pytest.raises(ValueError, match="approved SPDX-expression grammar"):
+        LICENSE_VALIDATOR(max_plus_one)
+
+
+@pytest.mark.parametrize(
+    "expression",
     ["0BSD", "Zlib", "CC0-1.0", "BSL-1.0", "CNRI-Python", "ISC"],
 )
 def test_newly_approved_spdx_identifiers_are_accepted_exactly(expression: str) -> None:
@@ -483,6 +555,195 @@ def test_exact_legacy_and_iscl_classifier_mappings() -> None:
     )
     classifier = "License :: OSI Approved :: ISC License (ISCL)"
     assert LICENSE_METADATA_RESOLVER(None, None, [classifier]) == ("ISC", (classifier,))
+
+
+def test_orjson_expression_exactly_reconciles_multiple_classifiers() -> None:
+    expression = "MPL-2.0 AND (Apache-2.0 OR MIT)"
+    classifiers = [
+        "License :: OSI Approved :: Apache Software License",
+        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+    ]
+
+    assert LICENSE_METADATA_RESOLVER(expression, None, classifiers) == (
+        expression,
+        tuple(classifiers),
+    )
+
+
+@pytest.mark.parametrize(
+    ("expression", "classifiers"),
+    [
+        (
+            "MPL-2.0 AND (Apache-2.0 OR MIT)",
+            [
+                "License :: OSI Approved :: Apache Software License",
+                "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+            ],
+        ),
+        (
+            "MPL-2.0 AND Apache-2.0",
+            [
+                "License :: OSI Approved :: Apache Software License",
+                "License :: OSI Approved :: MIT License",
+                "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+            ],
+        ),
+        (
+            "MPL-2.0 AND Apache-2.0",
+            [
+                "License :: OSI Approved :: Apache Software License",
+                "License :: OSI Approved :: BSD License",
+                "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+            ],
+        ),
+        (
+            None,
+            [
+                "License :: OSI Approved :: Apache Software License",
+                "License :: OSI Approved :: MIT License",
+            ],
+        ),
+    ],
+)
+def test_multiple_classifiers_fail_when_expression_does_not_exactly_cover_them(
+    expression: str | None,
+    classifiers: list[str],
+) -> None:
+    with pytest.raises(ValueError, match="exact license classifiers conflict"):
+        LICENSE_METADATA_RESOLVER(expression, None, classifiers)
+
+
+def test_single_classifier_reconciliation_behavior_is_preserved() -> None:
+    classifier = "License :: OSI Approved :: MIT License"
+
+    assert LICENSE_METADATA_RESOLVER("MIT", None, [classifier]) == (
+        "MIT",
+        (classifier,),
+    )
+    with pytest.raises(ValueError, match="standardized license metadata sources conflict"):
+        LICENSE_METADATA_RESOLVER("MPL-2.0 AND MIT", None, [classifier])
+
+
+def test_sniffio_1_3_1_exact_legacy_license_evidence_is_accepted() -> None:
+    classifiers = [
+        "License :: OSI Approved :: Apache Software License",
+        "License :: OSI Approved :: MIT License",
+    ]
+
+    assert LICENSE_METADATA_RESOLVER(
+        None,
+        "MIT OR Apache-2.0",
+        classifiers,
+        "sniffio",
+        "1.3.1",
+        dict(SNIFFIO_LICENSE_EVIDENCE_SHA256),
+    ) == ("MIT OR Apache-2.0", tuple(classifiers))
+
+
+@pytest.mark.parametrize(
+    ("package_name", "package_version", "classifiers", "evidence_mutation"),
+    [
+        ("sniffio-fork", "1.3.1", None, None),
+        ("sniffio", "1.3.2", None, None),
+        (
+            "sniffio",
+            "1.3.1",
+            [
+                "License :: OSI Approved :: Apache Software License",
+                "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+            ],
+            None,
+        ),
+        ("sniffio", "1.3.1", None, "missing"),
+        ("sniffio", "1.3.1", None, "content"),
+    ],
+)
+def test_sniffio_legacy_license_exception_rejects_any_binding_drift(
+    package_name: str,
+    package_version: str,
+    classifiers: list[str] | None,
+    evidence_mutation: str | None,
+) -> None:
+    exact_classifiers = [
+        "License :: OSI Approved :: Apache Software License",
+        "License :: OSI Approved :: MIT License",
+    ]
+    evidence = dict(SNIFFIO_LICENSE_EVIDENCE_SHA256)
+    if evidence_mutation == "missing":
+        evidence.pop("LICENSE")
+    elif evidence_mutation == "content":
+        evidence["LICENSE"] = "0" * 64
+
+    with pytest.raises(ValueError, match="license evidence"):
+        LICENSE_METADATA_RESOLVER(
+            None,
+            "MIT OR Apache-2.0",
+            classifiers or exact_classifiers,
+            package_name,
+            package_version,
+            evidence,
+        )
+
+
+def _sniffio_normalized_license_record() -> dict[str, Any]:
+    return {
+        "license_classifiers": [
+            "License :: OSI Approved :: Apache Software License",
+            "License :: OSI Approved :: MIT License",
+        ],
+        "license_evidence_sha256": dict(SNIFFIO_LICENSE_EVIDENCE_SHA256),
+        "license_expression": "MIT OR Apache-2.0",
+        "metadata_source": "installed_distribution",
+        "name": "sniffio",
+        "reachability": "windows_active",
+        "review_status": "declared",
+        "source_registry": "https://pypi.org/simple",
+        "source_wheel_sha256": None,
+        "source_wheel_url": None,
+        "version": "1.3.1",
+    }
+
+
+def _write_license_inventory(tmp_path: Path, record: dict[str, Any]) -> Path:
+    path = tmp_path / "licenses.json"
+    path.write_text(json.dumps({"packages": [record]}), encoding="utf-8")
+    return path
+
+
+def test_authoritative_reconciliation_accepts_exact_normalized_sniffio_evidence(
+    tmp_path: Path,
+) -> None:
+    packages, counts = PACKAGES_FROM_LICENSES(
+        _write_license_inventory(tmp_path, _sniffio_normalized_license_record())
+    )
+
+    assert packages.items == ("sniffio==1.3.1",)
+    assert counts == {"declared": 1, "needs_review": 0, "missing_metadata": 0}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_hashes", "changed_hash", "foreign_name", "wrong_version", "foreign_field"],
+)
+def test_authoritative_reconciliation_rejects_forged_normalized_sniffio_evidence(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    record = _sniffio_normalized_license_record()
+    if mutation == "missing_hashes":
+        record.pop("license_evidence_sha256")
+    elif mutation == "changed_hash":
+        cast(dict[str, str], record["license_evidence_sha256"])["LICENSE"] = "0" * 64
+    elif mutation == "foreign_name":
+        record["name"] = "sniffio-fork"
+    elif mutation == "wrong_version":
+        record["version"] = "1.3.2"
+    else:
+        record["foreign_evidence"] = "forged"
+
+    with pytest.raises(ValueError):
+        PACKAGES_FROM_LICENSES(_write_license_inventory(tmp_path, record))
 
 
 def test_standardized_license_conflict_fails_closed() -> None:
@@ -657,7 +918,7 @@ def _active_pip_records() -> tuple[Any, Any, Any, dict[str, str], list[dict[str,
     return lock, active, inactive, binding, records
 
 
-def test_audit_reconciliation_accounts_for_exact_84_plus_1_plus_1(
+def test_audit_reconciliation_accounts_for_exact_105_plus_1_plus_1(
     tmp_path: Path,
 ) -> None:
     lock, active, inactive, binding, records = _active_pip_records()
@@ -675,17 +936,49 @@ def test_audit_reconciliation_accounts_for_exact_84_plus_1_plus_1(
     assert vulnerability_count == 0
     assert skipped_count == 0
     assert counts == {
-        "pip_audit_pass": 84,
+        "pip_audit_pass": 105,
         "audited_via_exact_public_version_fallback": 1,
         "marker_inactive_target_not_executable": 1,
     }
-    assert len(finalized) == 86
+    assert len(finalized) == 107
     assert {
         (item["version"], item["disposition"]) for item in finalized if item["name"] == "torch"
     } == {
         ("2.13.0+cpu", "audited_via_exact_public_version_fallback"),
         ("2.13.0", "marker_inactive_target_not_executable"),
     }
+
+
+def test_audit_reconciliation_without_fallback_accounts_for_exact_106_plus_1(
+    tmp_path: Path,
+) -> None:
+    lock, active, inactive, binding = PACKAGE_SETS_FROM_LOCK(Path("uv.lock"))
+    records = [
+        {"name": identity.split("==", 1)[0], "version": identity.split("==", 1)[1], "vulns": []}
+        for identity in active.items
+    ]
+    audit_path = _write_synthetic_pip_audit(tmp_path, records)
+
+    audit, vulnerability_count, skipped_count, dispositions, fallback = PACKAGES_FROM_AUDIT(
+        audit_path,
+        "Audit",
+        tmp_path / "unused-osv-response.json",
+        tmp_path / "unused-osv-acquisition.json",
+        binding,
+    )
+    finalized, counts = FINALIZE_ADVISORY_DISPOSITIONS(
+        lock, active, inactive, dispositions, fallback
+    )
+
+    assert audit is not None and audit.items == active.items
+    assert vulnerability_count == 0
+    assert skipped_count == 0
+    assert fallback is None
+    assert counts == {
+        "pip_audit_pass": 106,
+        "marker_inactive_target_not_executable": 1,
+    }
+    assert len(finalized) == 107
 
 
 @pytest.mark.parametrize("second_skip_name", ["torch", "alembic"])

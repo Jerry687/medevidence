@@ -133,3 +133,19 @@ formal workflow progression to load and bind an independently persisted
 authorizes one minimal PostgreSQL receipt migration and relationship-aware
 Stage-2 aggregation for successor-002. It does not rewrite ADR-005 or ADR-007,
 authorize public API changes, or claim implementation, review, audit, or PASS.
+
+## Owner-accepted M3 LangGraph checkpoint-runtime record
+
+- [ADR-017: LangGraph PostgreSQL checkpoint runtime](ADR-017-langgraph-postgres-checkpoint-runtime.md)
+
+ADR-017 records the exact Owner-approved `langgraph==1.2.11` and
+`langgraph-checkpoint-postgres==3.1.2` runtime, fixed eight-node topology,
+primitive-only untrusted checkpoint boundary, and isolated package-owned
+PostgreSQL checkpoint schema. It preserves ADR-016 validation-receipt authority
+and adds no source adapter, provider, public API, business-lifecycle migration,
+or export behavior. The round-6 independent review remains immutable
+`FAIL — P0 0 / P1 3 / P2 2`; round 7 closed all executable findings, and its
+fresh re-review returned immutable `FAIL — P0 0 / P1 0 / P2 1` solely for
+stale delivery evidence. Round 8 updates only governance/evidence and requires
+fresh re-review, exact-byte rebind, and terminal audit before any PASS or Git-
+integration claim.

@@ -548,6 +548,7 @@ UNRESOLVED_LICENSE_TERMS = {
 LICENSE_DOCUMENT_FIELDS = {"packages"}
 LICENSE_RECORD_FIELDS = {
     "license_classifiers",
+    "license_evidence_sha256",
     "license_expression",
     "metadata_source",
     "name",
@@ -639,17 +640,10 @@ APPROVED_SPDX_LICENSE_IDS = {
     "PSF-2.0",
     "Zlib",
 }
-# Conservative accepted grammar. The sole approved WITH atom is exact.
-APPROVED_SPDX_ATOMS = APPROVED_SPDX_LICENSE_IDS | {
-    "Apache-2.0 WITH LLVM-exception"
-}
-SPDX_ID_ALTERNATION = "|".join(
-    re.escape(value) for value in sorted(APPROVED_SPDX_ATOMS, key=len, reverse=True)
-)
-SPDX_EXPRESSION_PATTERN = re.compile(
-    rf"^(?:{SPDX_ID_ALTERNATION})"
-    rf"(?: (?:AND|OR) (?:{SPDX_ID_ALTERNATION}))*$"
-)
+SPDX_BINARY_OPERATORS = {"AND", "OR"}
+SPDX_MAXIMUM_LENGTH = 512
+SPDX_MAXIMUM_TOKENS = 128
+SPDX_MAXIMUM_NESTING = 16
 APPROVED_PYPI_LICENSE_CLASSIFIERS = {
     "License :: OSI Approved :: Apache Software License",
     "License :: OSI Approved :: BSD License",
@@ -668,6 +662,17 @@ EXACT_CLASSIFIER_LICENSES = {
 EXACT_LEGACY_LICENSES = {
     "Apache 2.0 License": "Apache-2.0",
     "ISC License": "ISC",
+}
+SNIFFIO_1_3_1_CLASSIFIERS = (
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+)
+SNIFFIO_1_3_1_LICENSE_EVIDENCE_SHA256 = {
+    "LICENSE": "652c878488d1456361e08c3f8607fd7ba59892a14103d15cce4ff93c85b5cc8b",
+    "LICENSE.APACHE2": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "LICENSE.MIT": "3e6dae555eb92787fc82d1d48355677f454c7f65aeb38d3f9e72bf9a3daf034b",
+    "METADATA": "0b318b57098edeccf585e60a889a6b6a7b5c4086f3a9aa62eff76a1d3cee12d9",
+    "RECORD": "e6c97953661def7ab6dac78f83c86f31e622bee38ff55ea508cb04e1a604d4ff",
 }
 
 
@@ -992,6 +997,114 @@ def license_value_is_unresolved(value: str) -> bool:
     )
 
 
+def tokenize_spdx_expression(value: str) -> list[str] | None:
+    if len(value) > SPDX_MAXIMUM_LENGTH:
+        return None
+    tokens: list[str] = []
+    position = 0
+    while position < len(value):
+        character = value[position]
+        if character == " ":
+            position += 1
+            continue
+        if character in "()":
+            tokens.append(character)
+            position += 1
+        elif character.isascii() and (character.isalnum() or character in ".+-"):
+            end = position + 1
+            while end < len(value):
+                candidate = value[end]
+                if not candidate.isascii() or not (
+                    candidate.isalnum() or candidate in ".+-"
+                ):
+                    break
+                end += 1
+            tokens.append(value[position:end])
+            position = end
+        else:
+            return None
+        if len(tokens) > SPDX_MAXIMUM_TOKENS:
+            return None
+    return tokens
+
+
+def is_approved_spdx_expression(value: str) -> bool:
+    tokens = tokenize_spdx_expression(value)
+    if not tokens:
+        return False
+    canonical = "".join(
+        f" {token} " if token in SPDX_BINARY_OPERATORS | {"WITH"} else token
+        for token in tokens
+    )
+    if canonical != value:
+        return False
+    position = 0
+
+    def parse_primary(depth: int) -> bool:
+        nonlocal position
+        if position >= len(tokens):
+            return False
+        if tokens[position] == "(":
+            if depth >= SPDX_MAXIMUM_NESTING:
+                return False
+            position += 1
+            expression_start = position
+            if not parse_or_expression(depth + 1):
+                return False
+            if position >= len(tokens) or tokens[position] != ")":
+                return False
+            if not any(
+                token in SPDX_BINARY_OPERATORS
+                for token in tokens[expression_start:position]
+            ):
+                return False
+            position += 1
+            return True
+        license_id = tokens[position]
+        if license_id not in APPROVED_SPDX_LICENSE_IDS:
+            return False
+        position += 1
+        if position < len(tokens) and tokens[position] == "WITH":
+            if license_id != "Apache-2.0":
+                return False
+            position += 1
+            if position >= len(tokens) or tokens[position] != "LLVM-exception":
+                return False
+            position += 1
+        return True
+
+    def parse_and_expression(depth: int) -> bool:
+        nonlocal position
+        if not parse_primary(depth):
+            return False
+        while position < len(tokens) and tokens[position] == "AND":
+            position += 1
+            if not parse_primary(depth):
+                return False
+        return True
+
+    def parse_or_expression(depth: int) -> bool:
+        nonlocal position
+        if not parse_and_expression(depth):
+            return False
+        while position < len(tokens) and tokens[position] == "OR":
+            position += 1
+            if not parse_and_expression(depth):
+                return False
+        return True
+
+    return parse_or_expression(0) and position == len(tokens)
+
+
+def parsed_spdx_license_ids(value: str) -> set[str]:
+    if not is_approved_spdx_expression(value):
+        fail("license_expression is outside the approved SPDX-expression grammar")
+    tokens = tokenize_spdx_expression(value)
+    if tokens is None:
+        fail("license_expression is outside the approved SPDX-expression grammar")
+    return {token for token in tokens if token in APPROVED_SPDX_LICENSE_IDS}
+
+
 def validate_license_expression(value: Any) -> str | None:
     if value is None:
         return None
@@ -1003,7 +1116,7 @@ def validate_license_expression(value: Any) -> str | None:
         fail("license_expression contains an unresolved sentinel")
     if "licenseref" in value.casefold():
         fail("LicenseRef values are prohibited")
-    if SPDX_EXPRESSION_PATTERN.fullmatch(value) is None:
+    if not is_approved_spdx_expression(value):
         fail("license_expression is outside the approved SPDX-expression grammar")
     return value
 
@@ -1028,23 +1141,59 @@ def validate_license_classifiers(value: Any) -> tuple[str, ...]:
     return tuple(validated)
 
 
+def exact_sniffio_license_evidence(
+    package_name: Any,
+    package_version: Any,
+    license_expression: Any,
+    legacy_license: Any,
+    classifiers: tuple[str, ...],
+    evidence_sha256: Any,
+) -> bool:
+    return (
+        package_name == "sniffio"
+        and package_version == "1.3.1"
+        and (
+            (license_expression == "MIT OR Apache-2.0" and legacy_license is None)
+            or (license_expression is None and legacy_license == "MIT OR Apache-2.0")
+        )
+        and classifiers == SNIFFIO_1_3_1_CLASSIFIERS
+        and evidence_sha256 == SNIFFIO_1_3_1_LICENSE_EVIDENCE_SHA256
+    )
+
+
 def resolve_license_metadata(
     license_expression: Any,
     legacy_license: Any,
     classifiers: Any,
+    package_name: Any = None,
+    package_version: Any = None,
+    license_evidence_sha256: Any = None,
 ) -> tuple[str | None, tuple[str, ...]]:
     for candidate in (license_expression, legacy_license, *(classifiers or [])):
         if isinstance(candidate, str) and "licenseref" in candidate.casefold():
             fail("LicenseRef values are prohibited in all license metadata")
     expression = validate_license_expression(license_expression)
     validated_classifiers = validate_license_classifiers(classifiers)
+    exact_sniffio_evidence = exact_sniffio_license_evidence(
+        package_name,
+        package_version,
+        license_expression,
+        legacy_license,
+        validated_classifiers,
+        license_evidence_sha256,
+    )
+    if package_name == "sniffio" and package_version == "1.3.1":
+        if not exact_sniffio_evidence:
+            fail("sniffio 1.3.1 license evidence binding differs from the exact release")
+    elif license_evidence_sha256 is not None:
+        fail("exact license evidence hashes are bound only to sniffio 1.3.1")
     legacy_expression: str | None = None
     if legacy_license is not None:
         if not isinstance(legacy_license, str):
             fail("legacy License metadata must be a string or null")
         if legacy_license in EXACT_LEGACY_LICENSES:
             legacy_expression = EXACT_LEGACY_LICENSES[legacy_license]
-        elif SPDX_EXPRESSION_PATTERN.fullmatch(legacy_license) is not None:
+        elif is_approved_spdx_expression(legacy_license):
             legacy_expression = validate_license_expression(legacy_license)
     classifier_expressions = {
         EXACT_CLASSIFIER_LICENSES[classifier]
@@ -1052,8 +1201,18 @@ def resolve_license_metadata(
         if classifier in EXACT_CLASSIFIER_LICENSES
     }
     if len(classifier_expressions) > 1:
-        fail("exact license classifiers conflict")
-    classifier_expression = next(iter(classifier_expressions), None)
+        reconciled_expression = expression
+        if reconciled_expression is None and exact_sniffio_evidence:
+            reconciled_expression = legacy_expression
+        if (
+            reconciled_expression is None
+            or len(classifier_expressions) != len(validated_classifiers)
+            or classifier_expressions != parsed_spdx_license_ids(reconciled_expression)
+        ):
+            fail("exact license classifiers conflict")
+        classifier_expression = None
+    else:
+        classifier_expression = next(iter(classifier_expressions), None)
     standardized = [
         value
         for value in (expression, legacy_expression, classifier_expression)
@@ -1111,7 +1270,12 @@ def packages_from_licenses(
                 review_counts["needs_review"] += 1
             fail("license review_status must equal exactly 'declared'")
         license_expression, classifiers = resolve_license_metadata(
-            record["license_expression"], None, record["license_classifiers"]
+            record["license_expression"],
+            None,
+            record["license_classifiers"],
+            normalize_name(record["name"]),
+            record["version"],
+            record["license_evidence_sha256"],
         )
         if license_expression is None and not classifiers:
             review_counts["missing_metadata"] += 1
@@ -1414,6 +1578,19 @@ def exact_pins(path: pathlib.Path) -> dict[str, list[str]]:
         isinstance(group, list) for group in (production, development, retrieval)
     ):
         fail("direct dependency groups are missing")
+    approved_production = [
+        "alembic==1.18.5",
+        "defusedxml==0.7.1",
+        "fastapi==0.141.1",
+        "httpx==0.28.1",
+        "langgraph==1.2.11",
+        "langgraph-checkpoint-postgres==3.1.2",
+        "psycopg[binary]==3.3.4",
+        "pydantic==2.13.4",
+        "SQLAlchemy==2.0.51",
+    ]
+    if production != approved_production:
+        fail("production direct pins differ from the exact Owner-approved set")
     approved_retrieval = [
         "numpy==2.5.1",
         "scikit-learn==1.9.0",
@@ -1456,6 +1633,8 @@ def create_license_inventory(lock_path: pathlib.Path) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     for normalized_name, expected_version in sorted(active.packages.values()):
         distribution = metadata.distribution(normalized_name)
+        if validate_version(distribution.version) != expected_version:
+            fail(f"installed metadata version mismatch for {normalized_name}")
         license_expression = distribution.metadata.get("License-Expression")
         legacy_license = distribution.metadata.get("License")
         classifiers = sorted(
@@ -1463,8 +1642,31 @@ def create_license_inventory(lock_path: pathlib.Path) -> dict[str, Any]:
             for value in distribution.metadata.get_all("Classifier", [])
             if value.startswith("License ::")
         )
+        license_evidence_sha256: dict[str, str] | None = None
+        if normalized_name == "sniffio" and expected_version == "1.3.1":
+            expected_prefix = "sniffio-1.3.1.dist-info/"
+            distribution_files = {
+                str(path).replace("\\", "/"): path for path in distribution.files or []
+            }
+            license_evidence_sha256 = {}
+            for file_name in SNIFFIO_1_3_1_LICENSE_EVIDENCE_SHA256:
+                relative_path = expected_prefix + file_name
+                package_path = distribution_files.get(relative_path)
+                if package_path is None:
+                    fail("sniffio 1.3.1 exact license evidence file is missing")
+                evidence_path = pathlib.Path(distribution.locate_file(package_path))
+                if not evidence_path.is_file():
+                    fail("sniffio 1.3.1 exact license evidence file is missing")
+                license_evidence_sha256[file_name] = hashlib.sha256(
+                    evidence_path.read_bytes()
+                ).hexdigest()
         license_expression, validated = resolve_license_metadata(
-            license_expression, legacy_license, classifiers
+            license_expression,
+            legacy_license,
+            classifiers,
+            normalized_name,
+            expected_version,
+            license_evidence_sha256,
         )
         validated_classifiers = list(validated)
         records.append(
@@ -1478,6 +1680,7 @@ def create_license_inventory(lock_path: pathlib.Path) -> dict[str, Any]:
                 "source_wheel_sha256": None,
                 "license_expression": license_expression,
                 "license_classifiers": validated_classifiers,
+                "license_evidence_sha256": license_evidence_sha256,
                 "review_status": (
                     "declared"
                     if license_expression or validated_classifiers
@@ -1485,8 +1688,6 @@ def create_license_inventory(lock_path: pathlib.Path) -> dict[str, Any]:
                 ),
             }
         )
-        if validate_version(distribution.version) != expected_version:
-            fail(f"installed metadata version mismatch for {normalized_name}")
     if inactive.items != ("torch==2.13.0",):
         fail("the exact inactive package identity is not torch==2.13.0")
     records.append(
@@ -1500,6 +1701,7 @@ def create_license_inventory(lock_path: pathlib.Path) -> dict[str, Any]:
             "source_wheel_sha256": INACTIVE_TORCH_WHEEL_SHA256,
             "license_expression": TORCH_LICENSE_EXPRESSION,
             "license_classifiers": [],
+            "license_evidence_sha256": None,
             "review_status": "declared",
         }
     )
@@ -1528,13 +1730,13 @@ def finalize_advisory_dispositions(
         counts[name] = counts.get(name, 0) + 1
     expected_counts = (
         {
-            PIP_AUDIT_PASS_DISPOSITION: 84,
+            PIP_AUDIT_PASS_DISPOSITION: 105,
             OSV_FALLBACK_DISPOSITION: 1,
             INACTIVE_MARKER_DISPOSITION: 1,
         }
         if fallback is not None
         else {
-            PIP_AUDIT_PASS_DISPOSITION: 85,
+            PIP_AUDIT_PASS_DISPOSITION: 106,
             INACTIVE_MARKER_DISPOSITION: 1,
         }
     )
@@ -1542,15 +1744,15 @@ def finalize_advisory_dispositions(
         f"{item['name']}=={item['version']}" for item in finalized
     }
     if (
-        lock.count != 86
-        or active_lock.count != 85
+        lock.count != 107
+        or active_lock.count != 106
         or inactive_lock.items != ("torch==2.13.0",)
-        or len(finalized) != 86
-        or len(represented_identities) != 86
+        or len(finalized) != 107
+        or len(represented_identities) != 107
         or represented_identities != set(lock.items)
         or counts != expected_counts
     ):
-        fail("advisory dispositions do not exactly account for all 86 lock identities")
+        fail("advisory dispositions do not exactly account for all 107 lock identities")
     return finalized, counts
 
 
