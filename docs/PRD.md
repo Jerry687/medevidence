@@ -646,3 +646,164 @@ remains preserved in the
 [delivery record](../.delivery/M1B-CADEC-003.md) establishes
 `M1B-CADEC-003_COMPLETE`, `M1B-CADEC_VERTICAL_SLICE_COMPLETE`, and
 `READY_FOR_M2-CADEC-RETRIEVAL-PLANNING` without authorizing M2 work.
+
+## 16. M3-006 source-capability runtime clarification
+
+The M1B loader-only and M2 retrieval records above remain immutable statements
+of their milestone boundaries. The later Owner decision recorded by
+[ADR-018](decisions/ADR-018-m3-source-capability-adapters.md) supersedes only
+the M3 runtime authorization deferral and permits the fixed eight-node workflow
+to invoke exact source-specific application capabilities.
+
+For each request, every member of `scope.selected_sources` has exactly one plan
+row. Tasks equal exactly plan rows marked `selected`; skipped rows remain
+visible with no task or `SourceOutcome`. Every selected task freezes its
+required source operations before their effects, binds them to the exact run
+and attempt, and cannot become terminal until every final required operation is
+terminal. PubMed and DailyMed may append only result-determined canonical
+fetch suffixes before those fetches execute. DailyMed fabricates no fetch when
+the frozen selection path requires none.
+
+Operation outcomes aggregate deterministically: any failed operation makes
+execution failed; coverage is complete iff all are complete, unavailable iff
+all are unavailable, and partial otherwise; any match makes result `matches`,
+while `no_match` requires every operation to be exactly
+`succeeded + complete + no_match`; warnings are a sorted unique union.
+
+The M3 CADEC path verifies all 1,248 admitted documents, omits chunks only for
+the two approved zero-length members, transiently scores all 1,246 eligible
+whole documents using BM25 `k1=0.9`, `b=0.4`, and returns positive-score top-20
+in deterministic score/UTF-8 document-ID order. It persists no text or chunk
+and changes no M2 router, qrels, corpus, or metric. CADEC remains auxiliary
+only; CADEC and FAERS retain their exact mandatory limitation identities and
+create no clinical, causal, incidence, product-risk, comparative-safety, or
+ranking authority.
+
+### Round 3 correctness closure
+
+The initial independent M3-006 review is preserved as
+`FAIL — P0 0 / P1 4 / P2 0`. Round 3 does not change the frozen source
+semantics. It binds every operation to its exact input subject, separates the
+task aggregate identity from all exact child acquisitions, requires durable
+limitations and zero degraded CADEC refs, reconstructs the complete exact CADEC
+verification tuple, and supplies sealed production DailyMed/FAERS projection
+authorities that the dispatcher accepts only by exact type. Workflow and
+M3-003 evaluation contracts advance compatibly to v2. Status is
+`AWAITING_FRESH_REVIEW_AFTER_ROUND_3`; no PASS or Git claim is made.
+
+### Round 4 durable-stage and composition closure
+
+The fresh Round 3 review is preserved as
+`FAIL — P0 0 / P1 3 / P2 0`: asset-free fake CADEC, a dynamic fetch suffix not
+checkpointed before fetch, and self-consistent terminal
+query/count/intent/operation forgery. Round 4 retains all frozen source
+semantics while adding v3 typed input refs, scope/acquisition-intent binding,
+RUNNING operation progress, and canonical reconstruction of every terminal
+`SourceOutcome` field.
+
+PubMed search membership and DailyMed discovery provenance are durably reloaded
+before selected fetch. Each operation stage returns to the workflow for a
+checkpoint before the next effect. CADEC is absent from the structural
+three-source dispatcher and is reachable only through the sealed final
+infrastructure wrapper that internally constructs the concrete local adapter
+from explicit paths. Production composition constructs that wrapper. Status is
+`AWAITING_FRESH_REVIEW_AFTER_ROUND_4`; no PASS or Git claim is made.
+
+### Round 5 durable terminal replay closure
+
+The fresh Round 4 review remains immutable:
+`FAIL — P0 0 / P1 3 / P2 0`. It found writable CADEC `_search`, no
+source-specific replay for self-consistent durable child forgery, and
+coordinated PubMed progress-journal/checkpoint substitution.
+
+Round 5 freezes the concrete CADEC wrapper/adapter and reruns exact assets for
+terminal validation. PubMed adds an immutable terminal progress receipt and
+production composition constructs its service from exact concrete
+`SnapshotStore` and persistence authorities rather than accepting a prebuilt
+service. DailyMed and FAERS reload exact durable provenance. Every source
+implements `validate_terminal_task`, and workflow replay precedes all
+post-collection trusted, effecting, idempotent-return, and terminal-inspection
+paths. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_5`; no PASS or Git claim is
+made.
+
+### Round 6 terminal-prefix replay closure
+
+The fresh Round 5 review remains immutable:
+`FAIL — P0 0 / P1 2 / P2 0`. It found that an already terminal source prefix
+was not replayed before starting the next source and that non-CADEC replay
+authorities were caller-supplied or replaceable.
+
+Round 6 replays all existing terminal tasks before the `collect_evidence` loop
+can plan or execute the next source. All later replay gates remain. The source
+dispatcher, PubMed service, DailyMed/FAERS authorities, CADEC wrapper, and CADEC
+adapter freeze critical fields and use class-qualified authority calls.
+Production composition constructs PubMed acquisition and immutable
+DailyMed/FAERS replay stores internally, separate from caller-supplied live
+provenance. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_6`; no PASS or Git
+claim is made.
+
+### Round 9 exact source-plan replay closure
+
+The fresh Round 8 review remains immutable:
+`FAIL — P0 0 / P1 1 / P2 0`. It showed that checkpoint bytes could change a
+selected row into a skip while removing its task, or drift a skip reason after
+receipt, and still self-authenticate through export.
+
+Round 9 replays the exact full ordered plan, including planning status and
+reason code/text, before collection, source effects, later effects, inspection,
+and trusted/terminal returns. `source_plan_id` binds the plan into canonical
+report and validation-receipt identity. The workflow and planner dependencies
+are final/slotted/frozen. Coordinated attacks produce zero effects. Status is
+`AWAITING_FRESH_REVIEW_AFTER_ROUND_9`; no PASS or Git claim is made.
+
+### Final Round 10 canonical planner closure
+
+The fresh Round 9 review remains immutable:
+`FAIL — P0 0 / P1 1 / P2 0`. It found that a mutable injected planning Protocol
+could shadow its method and export a forged selected-to-skip plan.
+
+Final Round 10 requires exact `CanonicalSourcePlanningAuthority`, bound to one
+strict scope and full canonical plan, final/slotted/no-dictionary and immutable
+after construction. Workflow rejects every other planner type and calls initial
+planning/replay class-qualified. Harness, LangGraph, and M3-003 use this same
+authority. The coordinated attack produces zero effects. Status is
+`AWAITING_FINAL_FRESH_REVIEW_AFTER_ROUND_10`; budget 10/10 is exhausted and no
+PASS or Git claim is made.
+
+### Final independent review result
+
+Fresh final Round 10 independent review returned
+`PASS — P0 0 / P1 0 / P2 0` with no findings. Reviewer evidence passed planner
+attacks `5/5`, workflow/runtime/composition `264`, projection/replay `89`,
+authority/subsets `17`, and all static/scope/compactness checks. Every earlier
+FAIL remains immutable. Status is `AWAITING_TERMINAL_AUDIT`; overall terminal
+PASS and Git integration are not yet claimed.
+
+### Round 7 inspect, store, and CADEC bounds closure
+
+The fresh Round 6 review remains immutable:
+`FAIL — P0 0 / P1 3 / P2 0`. It found active inspect without terminal-source
+replay, coordinated forgery through replaceable underlying stores/adapters, and
+CADEC `max_records=20` where the exact request scope required 100.
+
+Round 7 makes source replay part of every LangGraph trusted result, active or
+terminal. Snapshot/replay/acquisition and CADEC authorities are final, slotted,
+frozen, guarded, and class-qualified. CADEC terminal outcomes use exact
+`ExecutionBounds.from_scope(scope)` while top-20 remains a separate positive-
+result projection. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_7`; no PASS or
+Git claim is made.
+
+### Round 8 skipped-source and conditional-composition closure
+
+The fresh Round 7 review remains immutable:
+`FAIL — P0 0 / P1 2 / P2 0`. It found validation equated tasks with the full
+scope, blocking valid skipped rows, and composition constructed DailyMed/FAERS
+even for PubMed-only requests.
+
+Round 8 validates tasks against the exact canonical plan-selected subset of the
+full scope. Skipped-not-applicable and skipped-by-policy rows stay visible with
+no task or `SourceOutcome` through export. Production composition admits every
+one of the 15 nonempty source subsets using only exact complete selected groups;
+CADEC-only requires no store and network sources share one replay store iff any
+is selected. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_8`; no PASS or Git
+claim is made.

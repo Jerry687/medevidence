@@ -149,3 +149,81 @@ fresh re-review returned immutable `FAIL — P0 0 / P1 0 / P2 1` solely for
 stale delivery evidence. Round 8 updates only governance/evidence and requires
 fresh re-review, exact-byte rebind, and terminal audit before any PASS or Git-
 integration claim.
+
+## Owner-accepted M3 source-capability record
+
+- [ADR-018: M3 source capability adapters](ADR-018-m3-source-capability-adapters.md)
+
+ADR-018 freezes exact plan-row/task equality, durable required-operation
+planning, four-dimensional multi-operation aggregation, explicit PubMed,
+DailyMed, FAERS, and CADEC adapters, and the transient exact-asset CADEC BM25
+runtime. It supersedes only the M1B authorization deferral for this exact M3
+runtime; immutable M1B/M2 semantics and evidence remain unchanged. It adds no
+dependency, public API/schema, medical network, model/provider, persistence,
+router, qrels, corpus, metric-contract, or Holdout authority.
+
+The initial ADR-018 candidate review remains immutable
+`FAIL — P0 0 / P1 4 / P2 0`. Round 3 adds exact operation subject identities,
+aggregate-plus-child terminal provenance, exact CADEC verification and degraded
+zero-ref reconstruction, and sealed concrete DailyMed/FAERS projection
+authorities required by exact type at composition. The candidate is
+`AWAITING_FRESH_REVIEW_AFTER_ROUND_3`; no PASS or Git integration is claimed.
+
+The fresh Round 3 review remains immutable
+`FAIL — P0 0 / P1 3 / P2 0`. Round 4 closes its asset-free fake CADEC,
+uncheckpointed dynamic suffix, and self-consistent terminal forgery findings
+with v3 typed inputs/progress/acquisition intents, durable PubMed/DailyMed
+reload, canonical all-field outcomes, and final sealed infrastructure CADEC
+composition. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_4`; no PASS or Git
+integration is claimed.
+
+Final Round 10 fresh independent review returned
+`PASS — P0 0 / P1 0 / P2 0` with no findings after directly exercising planner
+attacks and authoritative replay/composition paths. All immutable FAIL history
+remains preserved. Status is `AWAITING_TERMINAL_AUDIT`; this is not an overall
+terminal PASS or Git-integration claim.
+
+The fresh Round 9 review remains immutable
+`FAIL — P0 0 / P1 1 / P2 0`. Final Round 10 introduces the exact final/slotted/
+immutable `CanonicalSourcePlanningAuthority`, rejects mutable Protocol planners,
+and uses class-qualified initial/replay calls. Status is
+`AWAITING_FINAL_FRESH_REVIEW_AFTER_ROUND_10`; remediation budget 10/10 is
+exhausted and no PASS or Git integration is claimed.
+
+The fresh Round 4 review remains immutable
+`FAIL — P0 0 / P1 3 / P2 0`. Round 5 closes writable CADEC authority,
+source-replay omission, and coordinated PubMed journal/checkpoint substitution
+with frozen concrete CADEC replay, a PubMed terminal receipt and concrete
+composition, durable DailyMed/FAERS replay, and mandatory
+`validate_terminal_task` before every post-collection trusted/effect path.
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_5`; no PASS or Git integration is
+claimed.
+
+The fresh Round 8 review remains immutable
+`FAIL — P0 0 / P1 1 / P2 0`. Round 9 replays the exact full source plan at every
+trusted boundary and binds its ordered status/reason content into report and
+receipt identity. Frozen workflow/planner dependencies prevent checkpoint self-
+authentication. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_9`; no PASS or Git
+integration is claimed.
+
+The fresh Round 6 review remains immutable
+`FAIL — P0 0 / P1 3 / P2 0`. Round 7 adds LangGraph active/terminal trusted-
+return replay, freezes the concrete snapshot and replay authorities, and binds
+CADEC to exact scope execution bounds while retaining top-20 solely as result
+projection. Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_7`; no PASS or Git
+integration is claimed.
+
+The fresh Round 5 review remains immutable
+`FAIL — P0 0 / P1 2 / P2 0`. Round 6 replays every existing terminal prefix
+before the next source loop/effect and freezes all source capability/service
+authorities. PubMed acquisition and DailyMed/FAERS immutable replay stores are
+constructed internally; live provenance no longer grants replay authority.
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_6`; no PASS or Git integration is
+claimed.
+
+The fresh Round 7 review remains immutable
+`FAIL — P0 0 / P1 2 / P2 0`. Round 8 makes validator tasks equal exact plan-
+selected sources while preserving skipped rows without tasks/outcomes, and
+conditionally composes exact source groups for all 15 nonempty subsets. Status
+is `AWAITING_FRESH_REVIEW_AFTER_ROUND_8`; no PASS or Git integration is
+claimed.

@@ -8,13 +8,18 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, StringConstraints, model_validator
 
 from medevidence.domain import (
+    CADEC_MANDATORY_LIMITATIONS,
+    FAERS_MANDATORY_LIMITATIONS,
     AcquisitionOutcomeRef,
     CitationId,
     ClaimId,
+    CoverageStatus,
+    ExecutionStatus,
     M1BSourcePlanEntryV1,
     PlanningStatus,
     ReportId,
     ResearchScope,
+    ResultStatus,
     RunId,
     Sha256Digest,
     SourceOutcome,
@@ -23,7 +28,12 @@ from medevidence.domain import (
     canonical_json,
     sha256_digest,
 )
-from medevidence.domain.identifiers import DurableModel, derive_identity
+from medevidence.domain.identifiers import (
+    AcquisitionIntentId,
+    DurableModel,
+    LongText,
+    derive_identity,
+)
 
 type StableWorkflowId = Annotated[
     str,
@@ -63,6 +73,8 @@ WORKFLOW_TOPOLOGY: tuple[WorkflowNode, ...] = (
     WorkflowNode.FINALIZE_AND_EXPORT,
 )
 MAX_SOURCE_TASK_ATTEMPTS = 8
+MAX_SOURCE_TASK_OPERATIONS = 101
+MAX_OPERATION_OBSERVATIONS = 100
 
 
 class SafetyOutcome(StrEnum):
@@ -174,17 +186,23 @@ class SourceTaskFailureRef(DurableModel):
 class TerminalSourceOutcomeRef(DurableModel):
     """Validated reference and small terminal outcome, never a source payload."""
 
-    schema_version: Literal["m3.source-outcome-ref.v1"] = "m3.source-outcome-ref.v1"
+    schema_version: Literal["m3.source-outcome-ref.v2"] = "m3.source-outcome-ref.v2"
+    terminal_outcome_id: StableWorkflowId
+    operation_acquisition_ids: tuple[StableWorkflowId, ...] = Field(
+        min_length=1, max_length=MAX_SOURCE_TASK_OPERATIONS
+    )
     acquisition: AcquisitionOutcomeRef
     outcome: SourceOutcome
 
     @model_validator(mode="after")
     def validate_binding(self) -> Self:
-        if (
-            self.acquisition.source is not self.outcome.source
-            or self.acquisition.query_id != self.outcome.query_id
-        ):
-            raise ValueError("source outcome reference does not bind its terminal outcome")
+        if self.acquisition.source is not self.outcome.source:
+            raise ValueError("source outcome representative acquisition has the wrong source")
+        if len(set(self.operation_acquisition_ids)) != len(self.operation_acquisition_ids):
+            raise ValueError("terminal operation acquisition identities must be unique")
+        expected = derive_identity("source-task-terminal-outcome", self.outcome)
+        if self.terminal_outcome_id != expected:
+            raise ValueError("terminal outcome identity does not match its exact content")
         return self
 
 
@@ -197,6 +215,434 @@ class EvidenceReference(DurableModel):
     snapshot_id: StableWorkflowId
     content_hash: Sha256Digest
     locator_ref: StableWorkflowId
+
+
+class SourceOperationKind(StrEnum):
+    """Closed source-neutral operation kinds required by M3-006."""
+
+    PUBMED_SEARCH = "pubmed_search"
+    PUBMED_FETCH = "pubmed_fetch"
+    DAILYMED_DISCOVERY = "dailymed_discovery"
+    DAILYMED_FETCH = "dailymed_fetch"
+    FAERS_AGGREGATE = "faers_aggregate"
+    CADEC_VERIFY = "cadec_verify"
+    CADEC_SEARCH = "cadec_search"
+
+
+class SourceOperationInputRole(StrEnum):
+    """Closed semantic roles used to bind selected source work."""
+
+    REQUEST = "request"
+    PUBMED_PMID = "pubmed_pmid"
+    DAILYMED_DECISION = "dailymed_decision"
+    CANDIDATE = "candidate"
+    SETID = "setid"
+    SPL_VERSION = "spl_version"
+    ASSET = "asset"
+    MEMBERSHIP = "membership"
+    QUERY_PLAN = "query_plan"
+
+
+class SourceOperationInputRef(DurableModel):
+    """One typed primitive identity selected for a required operation."""
+
+    schema_version: Literal["m3.source-operation-input-ref.v1"] = "m3.source-operation-input-ref.v1"
+    role: SourceOperationInputRole
+    value: StableWorkflowId
+
+
+class RequiredSourceOperation(DurableModel):
+    """One operation frozen before a source task executes."""
+
+    schema_version: Literal["m3.required-source-operation.v3"] = "m3.required-source-operation.v3"
+    operation_id: StableWorkflowId
+    run_id: RunId
+    task_id: StableWorkflowId
+    scope_id: StableWorkflowId
+    source: SourceType
+    ordinal: int = Field(ge=0, lt=MAX_SOURCE_TASK_OPERATIONS)
+    kind: SourceOperationKind
+    query_id: StableWorkflowId
+    input_refs: tuple[SourceOperationInputRef, ...] = Field(min_length=1, max_length=16)
+    input_identity: StableWorkflowId
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> Self:
+        if self.task_id != source_task_id(self.run_id, self.source):
+            raise ValueError("required operation task identity must bind run and source")
+        roles = tuple(item.role for item in self.input_refs)
+        if len(set(roles)) != len(roles):
+            raise ValueError("source operation input roles must be unique")
+        expected_input = derive_identity(
+            "source-operation-input",
+            {
+                "kind": self.kind,
+                "query_id": self.query_id,
+                "input_refs": self.input_refs,
+            },
+        )
+        if self.input_identity != expected_input:
+            raise ValueError("source operation input identity does not match typed inputs")
+        payload = self.model_dump(mode="python", exclude={"schema_version", "operation_id"})
+        if self.operation_id != derive_identity("source-operation", payload):
+            raise ValueError("required operation identity does not match its content")
+        return self
+
+
+class SourceOperationAcquisitionRef(DurableModel):
+    """Reference binding one executed operation to its acquisition and snapshot."""
+
+    schema_version: Literal["m3.source-operation-acquisition-ref.v2"] = (
+        "m3.source-operation-acquisition-ref.v2"
+    )
+    acquisition_id: StableWorkflowId
+    acquisition_intent_id: AcquisitionIntentId
+    run_id: RunId
+    task_id: StableWorkflowId
+    attempt_id: StableWorkflowId
+    source: SourceType
+    ordinal: int = Field(ge=0, lt=MAX_SOURCE_TASK_OPERATIONS)
+    operation_id: StableWorkflowId
+    kind: SourceOperationKind
+    query_id: StableWorkflowId
+    source_outcome_id: StableWorkflowId
+    snapshot_id: StableWorkflowId
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> Self:
+        payload = self.model_dump(mode="python", exclude={"schema_version", "acquisition_id"})
+        if self.acquisition_id != derive_identity("source-operation-acquisition", payload):
+            raise ValueError("operation acquisition identity does not match its content")
+        return self
+
+
+class SourceOperationObservationRef(DurableModel):
+    """Content-free observation provenance for one operation acquisition."""
+
+    schema_version: Literal["m3.source-operation-observation-ref.v1"] = (
+        "m3.source-operation-observation-ref.v1"
+    )
+    observation_id: StableWorkflowId
+    run_id: RunId
+    task_id: StableWorkflowId
+    attempt_id: StableWorkflowId
+    source: SourceType
+    ordinal: int = Field(ge=0, lt=MAX_SOURCE_TASK_OPERATIONS)
+    operation_id: StableWorkflowId
+    query_id: StableWorkflowId
+    acquisition_id: StableWorkflowId
+    snapshot_id: StableWorkflowId
+    evidence_id: StableWorkflowId
+    content_hash: Sha256Digest
+    locator_ref: StableWorkflowId
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> Self:
+        payload = self.model_dump(mode="python", exclude={"schema_version", "observation_id"})
+        if self.observation_id != derive_identity("source-observation", payload):
+            raise ValueError("operation observation identity does not match its content")
+        return self
+
+    @property
+    def evidence_reference(self) -> EvidenceReference:
+        """Project the bounded observation into the existing evidence reference."""
+
+        return EvidenceReference(
+            evidence_id=self.evidence_id,
+            source=self.source,
+            snapshot_id=self.snapshot_id,
+            content_hash=self.content_hash,
+            locator_ref=self.locator_ref,
+        )
+
+
+class TerminalSourceOperationResult(DurableModel):
+    """One reconstructed terminal result for one required operation."""
+
+    schema_version: Literal["m3.terminal-source-operation-result.v1"] = (
+        "m3.terminal-source-operation-result.v1"
+    )
+    operation: RequiredSourceOperation
+    attempt: SourceTaskAttemptRef
+    acquisition: SourceOperationAcquisitionRef
+    outcome: SourceOutcome
+    observations: tuple[SourceOperationObservationRef, ...] = Field(
+        default=(), max_length=MAX_OPERATION_OBSERVATIONS
+    )
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> Self:
+        operation = self.operation
+        acquisition = self.acquisition
+        if self.attempt.task_id != operation.task_id:
+            raise ValueError("operation result attempt must bind the task")
+        expected = (
+            operation.run_id,
+            operation.task_id,
+            self.attempt.attempt_id,
+            operation.source,
+            operation.ordinal,
+            operation.operation_id,
+            operation.kind,
+            operation.query_id,
+        )
+        actual = (
+            acquisition.run_id,
+            acquisition.task_id,
+            acquisition.attempt_id,
+            acquisition.source,
+            acquisition.ordinal,
+            acquisition.operation_id,
+            acquisition.kind,
+            acquisition.query_id,
+        )
+        if actual != expected:
+            raise ValueError("operation acquisition must bind run/task/attempt/source/operation")
+        if (
+            self.outcome.source is not operation.source
+            or self.outcome.query_id != operation.query_id
+        ):
+            raise ValueError("operation outcome must bind source and query")
+        expected_outcome_id = derive_identity("source-operation-outcome", self.outcome)
+        if acquisition.source_outcome_id != expected_outcome_id:
+            raise ValueError("operation acquisition must bind the exact outcome content")
+        observation_ids = tuple(item.observation_id for item in self.observations)
+        if len(set(observation_ids)) != len(observation_ids):
+            raise ValueError("operation observations must be unique")
+        evidence_ids = tuple(item.evidence_id for item in self.observations)
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ValueError("operation observation evidence identities must be unique")
+        for observation in self.observations:
+            observed = (
+                observation.run_id,
+                observation.task_id,
+                observation.attempt_id,
+                observation.source,
+                observation.ordinal,
+                observation.operation_id,
+                observation.query_id,
+                observation.acquisition_id,
+                observation.snapshot_id,
+            )
+            expected_observation = (
+                operation.run_id,
+                operation.task_id,
+                self.attempt.attempt_id,
+                operation.source,
+                operation.ordinal,
+                operation.operation_id,
+                operation.query_id,
+                acquisition.acquisition_id,
+                acquisition.snapshot_id,
+            )
+            if observed != expected_observation:
+                raise ValueError("operation observation must bind its exact acquisition")
+        return self
+
+
+class SourceTaskProgressResult(DurableModel):
+    """Durable post-operation checkpoint before a dynamically expanded task finishes."""
+
+    schema_version: Literal["m3.source-task-progress-result.v1"] = (
+        "m3.source-task-progress-result.v1"
+    )
+    attempt: SourceTaskAttemptRef
+    required_operations: tuple[RequiredSourceOperation, ...] = Field(
+        min_length=1, max_length=MAX_SOURCE_TASK_OPERATIONS
+    )
+    operation_results: tuple[TerminalSourceOperationResult, ...] = Field(
+        min_length=1, max_length=MAX_SOURCE_TASK_OPERATIONS
+    )
+
+    @model_validator(mode="after")
+    def validate_progress(self) -> Self:
+        source = self.required_operations[0].source
+        validate_required_operation_plan(source, self.required_operations)
+        if (
+            tuple(item.operation for item in self.operation_results)
+            != self.required_operations[: len(self.operation_results)]
+        ):
+            raise ValueError("progress results must equal a nonempty exact plan prefix")
+        if any(item.attempt != self.attempt for item in self.operation_results):
+            raise ValueError("progress results must bind one exact attempt")
+        if any(item.task_id != self.attempt.task_id for item in self.required_operations):
+            raise ValueError("progress plan must bind the attempted task")
+        if len({item.run_id for item in self.required_operations}) != 1:
+            raise ValueError("progress plan must bind one exact run")
+        return self
+
+
+def validate_terminal_operation_binding(
+    terminal: TerminalSourceOutcomeRef,
+    results: tuple[TerminalSourceOperationResult, ...],
+) -> None:
+    """Bind the task outcome separately from its exact operation acquisitions."""
+
+    acquisition_ids = tuple(item.acquisition.acquisition_id for item in results)
+    if terminal.operation_acquisition_ids != acquisition_ids:
+        raise ValueError("terminal operation acquisition identities must equal exact result order")
+    representative = next(
+        (
+            item
+            for item in results
+            if item.acquisition.acquisition_id == terminal.acquisition.acquisition_id
+        ),
+        None,
+    )
+    if representative is None:
+        raise ValueError("representative acquisition must be one terminal operation acquisition")
+    acquisition = terminal.acquisition
+    operation_acquisition = representative.acquisition
+    legacy_operation = (
+        "fetch"
+        if representative.operation.kind
+        in {SourceOperationKind.PUBMED_FETCH, SourceOperationKind.DAILYMED_FETCH}
+        else "search"
+    )
+    if (
+        acquisition.run_id != operation_acquisition.run_id
+        or acquisition.source is not operation_acquisition.source
+        or acquisition.acquisition_intent_id != operation_acquisition.acquisition_intent_id
+        or acquisition.acquisition_ordinal != operation_acquisition.ordinal
+        or acquisition.operation != legacy_operation
+        or acquisition.query_id != operation_acquisition.query_id
+        or acquisition.source_outcome_id != operation_acquisition.source_outcome_id
+        or acquisition.snapshot_id != operation_acquisition.snapshot_id
+    ):
+        raise ValueError("representative acquisition must equal its exact operation binding")
+
+
+def validate_source_limitations(
+    source: SourceType,
+    limitations: tuple[LongText, ...],
+) -> None:
+    """Enforce governed source limitations without inventing new source semantics."""
+
+    if len(set(limitations)) != len(limitations):
+        raise ValueError("source limitations must be unique and canonically ordered")
+    if source is SourceType.CADEC and limitations != CADEC_MANDATORY_LIMITATIONS:
+        raise ValueError("terminal CADEC task requires exact mandatory limitations")
+    if source is SourceType.FAERS and limitations != FAERS_MANDATORY_LIMITATIONS:
+        raise ValueError("terminal FAERS task requires exact mandatory limitations")
+
+
+def validate_cadec_degraded_evidence(
+    source: SourceType,
+    outcome: SourceOutcome,
+    evidence_refs: tuple[EvidenceReference, ...],
+    results: tuple[TerminalSourceOperationResult, ...],
+) -> None:
+    """A degraded CADEC task exposes no partial observation or evidence reference."""
+
+    degraded = (
+        outcome.execution_status is ExecutionStatus.FAILED
+        or outcome.coverage_status is CoverageStatus.UNAVAILABLE
+        or outcome.result_status is ResultStatus.INDETERMINATE
+    )
+    if (
+        source is SourceType.CADEC
+        and degraded
+        and (evidence_refs or any(item.observations for item in results))
+    ):
+        raise ValueError("degraded CADEC task cannot expose observations or evidence")
+
+
+def validate_required_operation_plan(
+    source: SourceType,
+    operations: tuple[RequiredSourceOperation, ...],
+) -> None:
+    """Reject noncanonical, duplicated, or source-incompatible operation plans."""
+
+    if not operations:
+        raise ValueError("source task requires at least one required operation")
+    if len(operations) > MAX_SOURCE_TASK_OPERATIONS:
+        raise ValueError("source task operation count exceeds its bound")
+    if tuple(item.ordinal for item in operations) != tuple(range(len(operations))):
+        raise ValueError("required operations must use contiguous canonical ordinals")
+    if len({item.operation_id for item in operations}) != len(operations):
+        raise ValueError("required operation identities must be unique")
+    if any(item.source is not source for item in operations):
+        raise ValueError("required operations must belong to the task source")
+    if len({item.scope_id for item in operations}) != 1:
+        raise ValueError("required operations must bind one exact scope")
+    required_roles = {
+        SourceOperationKind.PUBMED_SEARCH: (SourceOperationInputRole.QUERY_PLAN,),
+        SourceOperationKind.PUBMED_FETCH: (SourceOperationInputRole.PUBMED_PMID,),
+        SourceOperationKind.DAILYMED_DISCOVERY: (SourceOperationInputRole.REQUEST,),
+        SourceOperationKind.DAILYMED_FETCH: (
+            SourceOperationInputRole.DAILYMED_DECISION,
+            SourceOperationInputRole.CANDIDATE,
+            SourceOperationInputRole.SETID,
+            SourceOperationInputRole.SPL_VERSION,
+        ),
+        SourceOperationKind.FAERS_AGGREGATE: (SourceOperationInputRole.REQUEST,),
+        SourceOperationKind.CADEC_VERIFY: (
+            SourceOperationInputRole.ASSET,
+            SourceOperationInputRole.MEMBERSHIP,
+        ),
+        SourceOperationKind.CADEC_SEARCH: (SourceOperationInputRole.QUERY_PLAN,),
+    }
+    for item in operations:
+        if tuple(ref.role for ref in item.input_refs) != required_roles[item.kind]:
+            raise ValueError(f"{item.kind.value} requires its exact typed input roles")
+    kinds = tuple(item.kind for item in operations)
+    if source is SourceType.PUBMED:
+        if any(item.query_id != operations[0].query_id for item in operations[1:]):
+            raise ValueError("PubMed fetches must share the exact search query identity")
+        if kinds[0] is not SourceOperationKind.PUBMED_SEARCH or any(
+            kind is not SourceOperationKind.PUBMED_FETCH for kind in kinds[1:]
+        ):
+            raise ValueError("PubMed requires search followed by zero to 100 fetches")
+        pmids = tuple(
+            item.input_refs[0].value
+            for item in operations
+            if item.kind is SourceOperationKind.PUBMED_FETCH
+        )
+        if len(set(pmids)) != len(pmids):
+            raise ValueError("PubMed fetch PMID inputs must be unique")
+    elif source is SourceType.DAILYMED:
+        if len(operations) > 8:
+            raise ValueError("DailyMed operation count exceeds four discovery/fetch groups")
+        first_fetch = next(
+            (
+                index
+                for index, item in enumerate(operations)
+                if item.kind is SourceOperationKind.DAILYMED_FETCH
+            ),
+            len(operations),
+        )
+        discoveries = operations[:first_fetch]
+        fetches = operations[first_fetch:]
+        if not discoveries or any(
+            item.kind is not SourceOperationKind.DAILYMED_DISCOVERY for item in discoveries
+        ):
+            raise ValueError("DailyMed requires a nonempty discovery prefix")
+        if any(item.kind is not SourceOperationKind.DAILYMED_FETCH for item in fetches):
+            raise ValueError("DailyMed discovery cannot appear after the fetch suffix begins")
+        discovery_query_ids = tuple(item.query_id for item in discoveries)
+        if len(set(discovery_query_ids)) != len(discovery_query_ids):
+            raise ValueError("DailyMed discovery query identities must be unique")
+        if len(discoveries) > 4:
+            raise ValueError("DailyMed requires one to four discovery groups")
+        fetch_query_ids = tuple(item.query_id for item in fetches)
+        if len(set(fetch_query_ids)) != len(fetch_query_ids):
+            raise ValueError("DailyMed permits at most one fetch per discovery")
+        discovery_order = {query_id: index for index, query_id in enumerate(discovery_query_ids)}
+        if any(query_id not in discovery_order for query_id in fetch_query_ids):
+            raise ValueError("DailyMed fetch must bind a prior discovery query")
+        fetch_order = tuple(discovery_order[query_id] for query_id in fetch_query_ids)
+        if fetch_order != tuple(sorted(fetch_order)):
+            raise ValueError("DailyMed fetch suffix must preserve discovery order")
+    elif source is SourceType.FAERS:
+        if len({item.query_id for item in operations}) != len(operations):
+            raise ValueError("FAERS operation query identities must be unique")
+        if len(kinds) > 8 or any(kind is not SourceOperationKind.FAERS_AGGREGATE for kind in kinds):
+            raise ValueError("FAERS requires one to eight aggregate operations")
+    else:
+        if len({item.query_id for item in operations}) != len(operations):
+            raise ValueError("CADEC operation query identities must be unique")
+        if kinds != (SourceOperationKind.CADEC_VERIFY, SourceOperationKind.CADEC_SEARCH):
+            raise ValueError("CADEC requires verification followed by search")
 
 
 class ClaimReference(DurableModel):
@@ -234,9 +680,15 @@ class ConflictReference(DurableModel):
 class SourceTaskState(DurableModel):
     """One selected source task and its terminal reference when executed."""
 
-    schema_version: Literal["m3.source-task.v1"] = "m3.source-task.v1"
+    schema_version: Literal["m3.source-task.v3"] = "m3.source-task.v3"
     task_id: StableWorkflowId
     source: SourceType
+    required_operations: tuple[RequiredSourceOperation, ...] = Field(
+        default=(), max_length=MAX_SOURCE_TASK_OPERATIONS
+    )
+    operation_results: tuple[TerminalSourceOperationResult, ...] = Field(
+        default=(), max_length=MAX_SOURCE_TASK_OPERATIONS
+    )
     status: SourceTaskStatus = SourceTaskStatus.PENDING
     attempts: int = Field(default=0, ge=0, le=MAX_SOURCE_TASK_ATTEMPTS)
     active_attempt: SourceTaskAttemptRef | None = None
@@ -246,11 +698,46 @@ class SourceTaskState(DurableModel):
     )
     terminal_outcome_ref: TerminalSourceOutcomeRef | None = None
     evidence_refs: tuple[EvidenceReference, ...] = Field(default=(), max_length=100)
+    limitations: tuple[LongText, ...] = Field(default=(), max_length=16)
 
     @model_validator(mode="after")
     def validate_task_state(self) -> Self:
+        if not self.required_operations:
+            pristine_pending = (
+                self.status is SourceTaskStatus.PENDING
+                and self.attempts == 0
+                and self.active_attempt is None
+                and not self.failure_history
+                and not self.operation_results
+                and self.terminal_outcome_ref is None
+                and not self.evidence_refs
+                and not self.limitations
+            )
+            if not pristine_pending:
+                raise ValueError("non-pristine source task requires a nonempty operation plan")
+            return self
+        validate_required_operation_plan(self.source, self.required_operations)
+        plan_task_ids = {item.task_id for item in self.required_operations}
+        plan_run_ids = {item.run_id for item in self.required_operations}
+        if plan_task_ids != {self.task_id} or len(plan_run_ids) != 1:
+            raise ValueError("required operations must bind the exact source task")
+        result_operations = tuple(item.operation for item in self.operation_results)
+        if result_operations != self.required_operations[: len(result_operations)]:
+            raise ValueError("operation results must be the canonical required-plan prefix")
+        result_attempts = {item.attempt.attempt_id for item in self.operation_results}
+        if len(result_attempts) > 1:
+            raise ValueError("operation results must belong to one task attempt")
         terminal = self.status is SourceTaskStatus.TERMINAL
         failed = self.status is SourceTaskStatus.FAILED
+        if self.operation_results and not terminal:
+            if self.status is not SourceTaskStatus.RUNNING:
+                raise ValueError("only a running task may retain operation progress")
+            if (
+                self.active_attempt is None
+                or self.attempts != self.active_attempt.attempt_number
+                or any(item.attempt != self.active_attempt for item in self.operation_results)
+            ):
+                raise ValueError("running operation progress must bind the exact active attempt")
         if terminal != (self.terminal_outcome_ref is not None):
             raise ValueError("terminal task status and outcome reference must coexist")
         if self.status is SourceTaskStatus.PENDING and self.attempts != 0:
@@ -282,8 +769,16 @@ class SourceTaskState(DurableModel):
             raise ValueError("failed source task requires a checkpointed failure")
         if terminal and self.attempts < 1:
             raise ValueError("terminal source task requires an attempt")
+        if terminal and len(self.operation_results) != len(self.required_operations):
+            raise ValueError("terminal source task requires every required operation terminal")
+        if terminal and any(
+            item.attempt.attempt_number != self.attempts for item in self.operation_results
+        ):
+            raise ValueError("terminal operation results must bind the task attempt count")
         if not terminal and self.evidence_refs:
             raise ValueError("unexecuted source task cannot expose evidence")
+        if not terminal and self.limitations:
+            raise ValueError("nonterminal source task cannot expose limitations")
         failure_attempts = tuple(item.attempt.attempt_number for item in self.failure_history)
         if failure_attempts != tuple(sorted(set(failure_attempts))):
             raise ValueError("source task failures must have unique ordered attempts")
@@ -315,26 +810,93 @@ class SourceTaskState(DurableModel):
                 raise ValueError("source task and terminal outcome source must match")
             if self.terminal_outcome_ref.acquisition.source is not self.source:
                 raise ValueError("source task and acquisition source must match")
+            if self.terminal_outcome_ref.acquisition.run_id not in plan_run_ids:
+                raise ValueError("source task terminal acquisition must bind the operation run")
         if any(item.source is not self.source for item in self.evidence_refs):
             raise ValueError("source task evidence must belong to the same source")
         if len({item.evidence_id for item in self.evidence_refs}) != len(self.evidence_refs):
             raise ValueError("source task evidence references must be unique")
+        projected_evidence = tuple(
+            observation.evidence_reference
+            for result in self.operation_results
+            for observation in result.observations
+        )
+        if terminal and self.evidence_refs != projected_evidence:
+            raise ValueError("source task evidence must equal its operation observations")
+        if terminal and self.terminal_outcome_ref is not None:
+            validate_terminal_operation_binding(
+                self.terminal_outcome_ref,
+                self.operation_results,
+            )
+            validate_source_limitations(self.source, self.limitations)
+            validate_cadec_degraded_evidence(
+                self.source,
+                self.terminal_outcome_ref.outcome,
+                self.evidence_refs,
+                self.operation_results,
+            )
+            from .source_task_projection import validate_canonical_terminal_source_outcome
+
+            validate_canonical_terminal_source_outcome(
+                self.terminal_outcome_ref.outcome,
+                self.required_operations,
+                self.operation_results,
+            )
         return self
 
 
 class CollectedEvidenceResult(DurableModel):
     """One bounded collection result with no source payload bytes."""
 
-    schema_version: Literal["m3.collected-evidence.v1"] = "m3.collected-evidence.v1"
+    schema_version: Literal["m3.collected-evidence.v2"] = "m3.collected-evidence.v2"
     attempt: SourceTaskAttemptRef
+    required_operations: tuple[RequiredSourceOperation, ...] = Field(
+        min_length=1, max_length=MAX_SOURCE_TASK_OPERATIONS
+    )
+    operation_results: tuple[TerminalSourceOperationResult, ...] = Field(
+        min_length=1, max_length=MAX_SOURCE_TASK_OPERATIONS
+    )
     terminal_outcome_ref: TerminalSourceOutcomeRef
     evidence_refs: tuple[EvidenceReference, ...] = Field(default=(), max_length=100)
+    limitations: tuple[LongText, ...] = Field(default=(), max_length=16)
 
     @model_validator(mode="after")
     def validate_sources(self) -> Self:
         source = self.terminal_outcome_ref.outcome.source
+        validate_required_operation_plan(source, self.required_operations)
+        if tuple(item.operation for item in self.operation_results) != self.required_operations:
+            raise ValueError("collection requires every required operation exactly terminal")
+        if any(item.attempt != self.attempt for item in self.operation_results):
+            raise ValueError("collection operation results must bind the exact attempt")
+        if any(item.operation.task_id != self.attempt.task_id for item in self.operation_results):
+            raise ValueError("collection operation plan must bind the attempted task")
+        operation_run_ids = {item.run_id for item in self.required_operations}
+        if self.terminal_outcome_ref.acquisition.run_id not in operation_run_ids:
+            raise ValueError("collection terminal acquisition must bind the operation run")
         if any(item.source is not source for item in self.evidence_refs):
             raise ValueError("collected evidence must match the terminal outcome source")
+        projected_evidence = tuple(
+            observation.evidence_reference
+            for result in self.operation_results
+            for observation in result.observations
+        )
+        if self.evidence_refs != projected_evidence:
+            raise ValueError("collected evidence must equal its operation observations")
+        validate_terminal_operation_binding(self.terminal_outcome_ref, self.operation_results)
+        validate_source_limitations(source, self.limitations)
+        validate_cadec_degraded_evidence(
+            source,
+            self.terminal_outcome_ref.outcome,
+            self.evidence_refs,
+            self.operation_results,
+        )
+        from .source_task_projection import validate_canonical_terminal_source_outcome
+
+        validate_canonical_terminal_source_outcome(
+            self.terminal_outcome_ref.outcome,
+            self.required_operations,
+            self.operation_results,
+        )
         return self
 
 

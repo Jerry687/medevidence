@@ -13,11 +13,13 @@ from .contracts import (
     ExportDestinationRef,
     ExportRecord,
     PendingDraftRef,
+    RequiredSourceOperation,
     ReviewRecord,
     SafetyDecision,
     ScopeSafetyEvaluation,
     SourceTaskAttemptRef,
     SourceTaskFailureRef,
+    SourceTaskProgressResult,
     SourceTaskState,
     SynthesisState,
 )
@@ -42,14 +44,25 @@ class SourcePlanningPort(Protocol):
 class EvidenceCollectionPort(Protocol):
     """Execute one selected source task through a stable application capability."""
 
+    def plan_operations(
+        self,
+        task: SourceTaskState,
+        scope: ResearchScope,
+        attempt: SourceTaskAttemptRef,
+    ) -> tuple[RequiredSourceOperation, ...]:
+        """Freeze the exact required operation set without source or persistence I/O."""
+
+        ...
+
+    def validate_terminal_task(self, task: SourceTaskState, scope: ResearchScope) -> None: ...
+
     def collect(
         self,
         task: SourceTaskState,
         scope: ResearchScope,
         attempt: SourceTaskAttemptRef,
-    ) -> CollectedEvidenceResult | SourceTaskFailureRef:
+    ) -> CollectedEvidenceResult | SourceTaskFailureRef | SourceTaskProgressResult:
         """Dispatch one stable idempotency-bound logical attempt."""
-
         ...
 
 

@@ -1,5 +1,207 @@
 # V1 Traceability Matrix
 
+## M3-006 source-capability adapter candidate
+
+Owner `OWNER DECISION: A - APPROVED WITH EXACT CLARIFICATIONS` continues
+M3-006 from clean discovery baseline
+`46eb93bb61524bae102c068d87372f1e63de7c89`. The governing full authorization
+has SHA-256
+`e6b812f6411b8e8a62a559ae0182b45cae25bc70d0173c135b94e97b8cd73fa8`;
+[ADR-018](decisions/ADR-018-m3-source-capability-adapters.md) freezes the exact
+source semantics.
+
+| Requirement | M3-006 candidate evidence | Remaining gate |
+|---|---|---|
+| [`V1-FR-002`](PRD.md#v1-fr-002--pubmed-vertical-slice) | Pure exact search plan, persisted search, ordered zero-to-100 fetch suffix, acquisition/observation reconstruction, and unchanged PubMed composite outcome | Independent review must verify the actual persisted evidence path and no provider-native leakage |
+| [`V1-FR-003`](PRD.md#v1-fr-003--dailymed-labeling) | One-to-four exact discovery operations; selection-dependent fetches are frozen before fetch I/O; SETID/SPL/section projections retain existing policy | Review must verify a non-required fetch is never fabricated and degradation cannot become no-match |
+| [`V1-FR-004`](PRD.md#v1-fr-004--faers-descriptive-query) | One-to-eight exact persisted aggregate operations retain numerical/query/source restrictions and `faers_mandatory_limitations`; no narrative/individual report surface | Review must directly verify the legacy execution/persistence authority remains on path |
+| [`V1-FR-005`](PRD.md#v1-fr-005--cadec-auxiliary-corpus) | Exact archive/manifest and all 1,248 admitted documents are reverified; two zero-length members make no chunk; 1,246 whole documents are transiently scored with BM25 `0.9/0.4`; positive top-20 is deterministic; failures expose no refs | CADEC remains auxiliary; review must verify exact asset reachability, failure projection, and absence of persistence/M2 mutation |
+| [`V1-FR-012`](PRD.md#v1-fr-012--controlled-orchestration) | One row per selected scope source; tasks equal exactly selected rows; required operations are durable before effects; final terminal result requires every operation | Review must inspect direct workflow reachability, not infer it from green tests |
+| [`V1-FR-016`](PRD.md#v1-fr-016--orthogonal-source-outcomes) | One aggregate authority implements any-failed execution, all-complete/all-unavailable coverage, any-match/all-exact-no-match result, and sorted unique warnings | Review must exercise mixed-operation degraded and no-result cases |
+| [`V1-NFR-004`](PRD.md#v1-nfr-004--offline-deterministic-tests) | Pre-R3 evidence: exact asset `20 passed`; integrated focused `589 passed in 10.09s`; full socket-disabled suite `2643 passed, 2 warnings`, `82%`, in `86.29s` | Initial review failed; Round 3 evidence and fresh gate are recorded below |
+| [`V1-NFR-005`](PRD.md#v1-nfr-005--replaceable-infrastructure) | Tools are contract-only, orchestration consumes injected ports, and only infrastructure imports concrete local CADEC search | Static layering and actual diff require independent review |
+
+Implementation correction history is preserved. R1 followed an initial full
+run of `6 failed, 2579 passed, 55 errors`; the minimal failing set then passed
+`3`, the M3-003 evaluation passed `89`, the legacy D2 surface passed `103`, and
+the CADEC layering/exact-asset focus passed `313`. R1 repaired evaluator
+interface adaptation, CADEC layer direction, and the FAERS legacy execution/
+persistence contract without changing semantics. R2 restored the frozen
+validator compactness bound to `1794/1800` and its focused suite passed `314`.
+
+The pre-R3 document candidate had exactly 25 changed implementation/test
+paths. This governance node adds nine authorized documentation/evidence paths,
+for a derived 34-path allowlist. Its status before the immutable initial review
+was `AWAITING_INDEPENDENT_REVIEW`; the Round 3 status is recorded below.
+
+### M3-006 Round 3 review closure candidate
+
+The initial independent review verdict is immutable:
+`FAIL — P0 0 / P1 4 / P2 0`.
+
+| Initial P1 finding | Round 3 exact closure | Current evidence/gate |
+|---|---|---|
+| CADEC fake exact-asset/no-match plus degraded refs/reconstruction | Complete field-for-field `CadecVerifiedCorpus` equality; plan/scope result reconstruction; exact durable limitations; degraded CADEC has zero observations/evidence refs | Exact-asset handoff PASS; fresh reviewer must reproduce fake/degraded negatives |
+| Operation subject omitted PubMed PMID and DailyMed selection | Required-operation v2 `input_identity` binds PubMed search/fetch, DailyMed discovery/fetch, FAERS request/query, and CADEC verify/search subjects | Round 3 focused handoffs `341` and workflow/authority `340` passed; command text not retained |
+| Terminal aggregate/child provenance mismatch | Terminal-ref v2 binds aggregate identity, every ordered child acquisition ID, and one exact representative child; task/collection v2 recompute all four dimensions | Fresh reviewer must mutate aggregate, child set/order, and representative binding directly |
+| No production DailyMed/FAERS authority | Sealed concrete authorities reconstruct governed requests and persisted provenance and own terminal projections; `SourceCapabilities` requires their exact types | Production reachability and structural-fake regressions are in the focused authority suite |
+
+Workflow/M3-003 evaluation uses compatible v2 state and projections. The fresh
+full offline suite returned `2662 passed, 2 warnings`, `82%`, in `91.56s`;
+static node-local checks passed. Status is
+`AWAITING_FRESH_REVIEW_AFTER_ROUND_3`. No PASS, rebind, terminal audit, commit,
+push, PR, merge, medical network, model/provider, or Holdout claim is made.
+
+### M3-006 Round 4 review closure candidate
+
+The fresh Round 3 independent verdict is immutable:
+`FAIL — P0 0 / P1 3 / P2 0`.
+
+| Round 3 P1 finding | Round 4 exact closure | Current evidence/gate |
+|---|---|---|
+| Asset-free fake CADEC | CADEC is absent from structural `SourceCapabilities`; final sealed infrastructure wrapper internally creates the concrete adapter, binds asset/membership/query-plan inputs, and is constructed by production composition | Composition reachability, no-injected-search route, and exact membership handoff require fresh review |
+| Dynamic suffix not checkpointed before fetch | v3 RUNNING progress retains an exact completed-result prefix; PubMed journals ordered PMID membership through existing `SnapshotStore`; DailyMed reloads durable discovery provenance; each operation stage returns for workflow checkpoint before fetch | Missing/stale/alternate progress and before-fetch side-effect regressions are executable |
+| Self-consistent terminal query/count/intent/operation forgery | Typed input refs, scope, acquisition intents, and canonical all-field `SourceOutcome` reconstruction bind query, bounds, count, pages, truncation, warnings, failure, and aggregate dimensions to children | Terminal/static authority and mutation regressions require fresh direct review |
+
+Round 4 expands the exact derived allowlist from 34 to 39 paths by adding
+`src/medevidence/composition.py`, `src/medevidence/tools/ports.py`,
+`src/medevidence/ingestion/snapshots.py`,
+`tests/unit/ingestion/test_snapshots.py`, and
+`tests/unit/test_source_capability_composition.py`. The fresh full offline suite
+returned `2685 passed, 2 warnings`, `82%`, in `103.16s`; Ruff, format (`173`),
+MyPy (`67`), offline lock (`108`), and diff passed; compactness is `1800/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_4`. No PASS, rebind, terminal
+audit, commit, push, PR, merge, medical network, model/provider, or Holdout
+claim is made.
+
+### M3-006 final independent review PASS
+
+Fresh final Round 10 review returned `PASS — P0 0 / P1 0 / P2 0` with no
+findings. It directly verified planner attacks `5/5`, workflow/runtime/
+composition `264`, projection/replay `89`, authority/subsets `17`, Ruff,
+formatting, strict MyPy, exact scope `43`, non-self manifest `42`, validator
+size `1292/1300`, and compactness `1800/1800`. The last full offline suite is
+`2766 passed, 2 warnings`, `82%`.
+
+Every immutable FAIL from the initial review through Round 9 remains preserved
+above. Current status is `AWAITING_TERMINAL_AUDIT`; exact-byte rebind and
+terminal audit remain. No overall terminal PASS, commit, push, PR, merge,
+medical network, model/provider, or Holdout claim is made.
+
+### M3-006 final Round 10 review closure candidate
+
+The fresh Round 9 independent verdict is immutable:
+`FAIL — P0 0 / P1 1 / P2 0`.
+
+| Round 9 P1 finding | Final Round 10 exact closure | Current evidence/gate |
+|---|---|---|
+| Mutable injected `SourcePlanningPort` shadow authorized forged selected-to-skip export | Exact `CanonicalSourcePlanningAuthority` is final/slotted/no-dict/immutable, binds strict scope and full plan, is exact-typed by workflow, and is called class-qualified for initial/replay paths | Final fresh review must reproduce Protocol, subclass, field, and instance-shadow attacks and prove zero effects |
+
+The exact allowlist remains 43 paths. The fresh full suite returned
+`2766 passed, 2 warnings`, `82%`, in `82.54s`; static node checks passed,
+validator size is `1292/1300`, and compactness is `1800/1800`.
+
+Status is `AWAITING_FINAL_FRESH_REVIEW_AFTER_ROUND_10`. Remediation budget
+10/10 is exhausted. No PASS, rebind, terminal audit, commit, push, PR, merge,
+medical network, model/provider, or Holdout claim is made.
+
+### M3-006 Round 9 review closure candidate
+
+The fresh Round 8 independent verdict is immutable:
+`FAIL — P0 0 / P1 1 / P2 0`.
+
+| Round 8 P1 finding | Round 9 exact closure | Current evidence/gate |
+|---|---|---|
+| Untrusted checkpoint self-authenticated source plan, permitting selected-to-skip task removal or post-receipt reason drift | Frozen planner replays exact ordered full rows before source/effects/trusted returns; `source_plan_id` binds report request and receipt; workflow/dependencies frozen | Fresh review must reproduce both coordinated attacks and prove zero effects |
+
+The exact allowlist remains 43 paths. The fresh full suite returned
+`2764 passed, 2 warnings`, `82%`, in `82.51s`; static node checks passed,
+validator size is `1292/1300`, and compactness is `1800/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_9`. No PASS, rebind, terminal
+audit, commit, push, PR, merge, medical network, model/provider, or Holdout
+claim is made.
+
+### M3-006 Round 8 review closure candidate
+
+The fresh Round 7 independent verdict is immutable:
+`FAIL — P0 0 / P1 2 / P2 0`.
+
+| Round 7 P1 finding | Round 8 exact closure | Current evidence/gate |
+|---|---|---|
+| Validator compared tasks with full scope and blocked skipped runs | `CanonicalReportRequest.selected_task_sources` is an exact unique canonical scope subset derived from selected plan rows; task equality uses it; skipped rows remain visible with no task/outcome through export | Fresh review must execute mixed selected/skipped validation and export |
+| Composition unconditionally constructed DailyMed/FAERS and rejected PubMed-only | Each source has an optional exact complete dependency group; all 15 nonempty source subsets are covered; CADEC-only has no store; one shared replay store exists iff a network source is selected | Fresh review must inspect all subset reachability and partial/extraneous negatives |
+
+Independent scope derivation expands the allowlist from 41 to 43 paths because
+Round 8 also changes `src/medevidence/tools/report_validation.py` and
+`tests/unit/tools/test_report_validation.py`. The fresh full suite returned
+`2757 passed, 2 warnings`, `82%`, in `81.95s`; static node checks passed,
+validator size is `1291/1300`, and compactness is `1800/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_8`. No PASS, rebind, terminal
+audit, commit, push, PR, merge, medical network, model/provider, or Holdout
+claim is made.
+
+### M3-006 Round 7 review closure candidate
+
+The fresh Round 6 independent verdict is immutable:
+`FAIL — P0 0 / P1 3 / P2 0`.
+
+| Round 6 P1 finding | Round 7 exact closure | Current evidence/gate |
+|---|---|---|
+| Active inspect did not replay terminal source prefix | Pure workflow `validate_terminal_sources` is called from LangGraph trusted-result construction for active, interrupted, terminal, and idempotent returns | Fresh review must forge a terminal prefix in active checkpoint state and inspect it |
+| Underlying stores/adapters replaceable for coordinated forgery | `SnapshotStore` final/slotted/read-only/guarded; acquisition, DailyMed/FAERS replay, CADEC wrapper/adapter frozen and class-qualified | Fresh review must attempt coordinated reader and checkpoint replacement |
+| CADEC scope bound 100 replaced by top-20 | Success/failure use exact `ExecutionBounds.from_scope`; search result binds exact scope bounds; 20 remains only positive-result projection | Fresh review must assert exact scope 100 and independent result-limit 20 |
+
+The derived allowlist expands from 39 to 41 paths by adding
+`src/medevidence/orchestration/langgraph_runtime.py` and
+`tests/unit/orchestration/test_langgraph_runtime.py`. The fresh full suite
+returned `2727 passed, 2 warnings`, `82%`, in `81.39s`; static node checks
+passed and compactness is `1799/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_7`. No PASS, rebind, terminal
+audit, commit, push, PR, merge, medical network, model/provider, or Holdout
+claim is made.
+
+### M3-006 Round 6 review closure candidate
+
+The fresh Round 5 independent verdict is immutable:
+`FAIL — P0 0 / P1 2 / P2 0`.
+
+| Round 5 P1 finding | Round 6 exact closure | Current evidence/gate |
+|---|---|---|
+| Terminal prefix not replayed before next source | `collect_evidence` replays all existing terminal tasks before its loop, planning, or effects; every later replay call site remains | Fresh review must forge source 1 terminal bytes and prove source 2 receives zero calls |
+| Non-CADEC replay authorities caller-supplied/replaceable | Dispatcher, PubMed service, DailyMed/FAERS authorities, CADEC wrapper/adapter are frozen and class-qualified; composition builds PubMed acquisition and private immutable DailyMed/FAERS replay stores internally, separate from live provenance | Fresh review must attempt field/method replacement and replay-store injection at composition |
+
+The exact derived allowlist remains 39 paths. The fresh full offline suite
+returned `2723 passed, 2 warnings`, `82%`, in `81.52s`; static node checks
+passed and compactness is `1792/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_6`. No PASS, rebind, terminal
+audit, commit, push, PR, merge, medical network, model/provider, or Holdout
+claim is made.
+
+### M3-006 Round 5 review closure candidate
+
+The fresh Round 4 independent verdict is immutable:
+`FAIL — P0 0 / P1 3 / P2 0`.
+
+| Round 4 P1 finding | Round 5 exact closure | Current evidence/gate |
+|---|---|---|
+| Writable CADEC `_search` | Final wrapper and internal adapter fields are frozen; terminal validation reruns the concrete configured asset and requires complete task equality | Fresh review must attempt normal field replacement and fabricated terminal replay |
+| Durable child self-consistent forgery; no source replay | `EvidenceCollectionPort.validate_terminal_task` replays PubMed, DailyMed, FAERS, or CADEC durable authority before every post-collection trusted/effect/inspection/return path | Fresh review must trace all workflow call sites and mutate source-specific durable records |
+| Coordinated PubMed progress journal and checkpoint substitution | Attempt-scoped terminal receipt binds search receipt, ordered PMIDs, operations, acquisitions, outcomes, evidence, limitations, and terminal projection; concrete production composition builds the service from exact `SnapshotStore`/repository authorities | Fresh review must substitute both records together and verify failure before downstream effects |
+
+The exact derived allowlist remains 39 paths. M3-003 supplies replay-compatible
+offline behavior. The fresh full offline suite returned
+`2705 passed, 2 warnings`, `82%`, in `112.81s`; static node checks passed and
+compactness is `1791/1800`.
+
+Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_5`. No PASS, rebind, terminal
+audit, commit, push, PR, merge, medical network, model/provider, or Holdout
+claim is made.
+
 ## M1B-FAERS-001
 
 | Owner decision | Domain evidence | Offline tests |

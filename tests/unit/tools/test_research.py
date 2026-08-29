@@ -37,6 +37,7 @@ from medevidence.domain import (
     SourceFailure,
     SourceOutcome,
     SourceType,
+    derive_identity,
     sha256_digest,
 )
 from medevidence.tools import (
@@ -45,13 +46,15 @@ from medevidence.tools import (
     SearchPubMedResponse,
     research_pubmed_draft,
 )
-from medevidence.tools.contracts import AcquisitionIntentInput
+from medevidence.tools.contracts import AcquisitionIntentInput, RunIntentInput
 from medevidence.tools.ports import (
     PersistedAcquisition,
     PersistedPublicationBinding,
     PersistedPublicationLineageEdge,
     PubMedFetchExecution,
     PubMedSearchExecution,
+    PubMedSearchProgressRecord,
+    PubMedTerminalProgressRecord,
     ResponseObservation,
     RunFinalization,
 )
@@ -206,6 +209,7 @@ def _corrected_context_only_status() -> PublicationStatus:
 def _publication(
     outcome: SourceOutcome,
     *,
+    pmid: str = "10",
     status: PublicationStatusValue = PublicationStatusValue.CURRENT_OR_NO_KNOWN_NOTICE,
     abstract: str | None = (
         "😀 semaglutide distant gastrointestinal. semaglutide gastrointestinal"
@@ -213,9 +217,9 @@ def _publication(
 ) -> PublicationRecord:
     provenance = Provenance(
         source=SourceType.PUBMED,
-        source_record_id="10",
+        source_record_id=pmid,
         query_id=outcome.query_id,
-        source_lookup_key="pubmed:10",
+        source_lookup_key=f"pubmed:{pmid}",
         retrieved_at=NOW,
         connector_version="fixture-1.0",
         content_hash=sha256_digest(b"raw"),
@@ -236,7 +240,7 @@ def _publication(
         configured_bounds=outcome.configured_bounds,
     )
     return PublicationRecord.create(
-        pmid="10",
+        pmid=pmid,
         doi=None,
         pmcid=None,
         title="Synthetic PubMed fixture",
@@ -265,11 +269,13 @@ class Execution:
         search_outcome: SourceOutcome | None = None,
         fetch_outcome: SourceOutcome | None = None,
         search_total_available: int | None = None,
+        search_pmids: tuple[str, ...] | None = None,
     ) -> None:
         self.calls = calls
         self.search_outcome = search_outcome or _outcome(result=ResultStatus.MATCHES, count=1)
         self.fetch_outcome = fetch_outcome or _outcome(result=ResultStatus.MATCHES, count=1)
         self.search_total_available = search_total_available
+        self.search_pmids = search_pmids
         self.publications: list[PublicationRecord] = []
 
     def search(self, *, query: str, query_id: str) -> PubMedSearchExecution:
@@ -277,7 +283,11 @@ class Execution:
         response = SearchPubMedResponse(
             query=query,
             query_id=query_id,
-            pmids=("10",) if self.search_outcome.result_status is ResultStatus.MATCHES else (),
+            pmids=(
+                self.search_pmids
+                if self.search_pmids is not None
+                else (("10",) if self.search_outcome.result_status is ResultStatus.MATCHES else ())
+            ),
             total_available=(
                 self.search_total_available
                 if self.search_total_available is not None
@@ -313,7 +323,9 @@ class Execution:
         self.calls.append(f"execute-fetch-{pmid}")
         outcome = self.fetch_outcome.model_copy(update={"query_id": query_id})
         publication = (
-            _publication(outcome) if outcome.result_status is ResultStatus.MATCHES else None
+            _publication(outcome, pmid=pmid)
+            if outcome.result_status is ResultStatus.MATCHES
+            else None
         )
         if publication is not None:
             self.publications.append(publication)
@@ -358,6 +370,8 @@ class Acquisitions:
         self.fetch_binding_mode = fetch_binding_mode
         self.raw_results: list[object] = []
         self.search_intent_id: str | None = None
+        self.search_progress: PubMedSearchProgressRecord | None = None
+        self.terminal_progress: PubMedTerminalProgressRecord | None = None
 
     def persist_search(
         self,
@@ -393,9 +407,9 @@ class Acquisitions:
         intent: AcquisitionIntentInput,
         execution: PubMedFetchExecution,
     ) -> PersistedAcquisition:
-        self.calls.append("persist-fetch-10")
+        self.calls.append(f"persist-fetch-{intent.pmid}")
         persisted = _persisted(
-            1,
+            intent.acquisition_ordinal,
             acquisition_intent_id=intent.acquisition_intent_id,
             publication=execution.publication,
         )
@@ -454,17 +468,80 @@ class Acquisitions:
         self.raw_results.append(result)
         return cast(PersistedAcquisition, result)
 
+    def persist_search_progress(
+        self,
+        record: PubMedSearchProgressRecord,
+    ) -> PubMedSearchProgressRecord:
+        self.calls.append("persist-search-progress")
+        validated = PubMedSearchProgressRecord.model_validate(record.model_dump(mode="python"))
+        if self.search_progress is not None and self.search_progress != validated:
+            raise ValueError("synthetic search progress conflict")
+        self.search_progress = validated
+        return PubMedSearchProgressRecord.model_validate(validated.model_dump(mode="python"))
+
+    def load_search_progress(
+        self,
+        *,
+        run_id: str,
+        acquisition_intent_id: str,
+    ) -> PubMedSearchProgressRecord:
+        self.calls.append("load-search-progress")
+        if self.search_progress is None:
+            raise ValueError("synthetic search progress missing")
+        if (
+            self.search_progress.run_id != run_id
+            or self.search_progress.acquisition_intent_id != acquisition_intent_id
+        ):
+            raise ValueError("synthetic search progress belongs to another acquisition")
+        return PubMedSearchProgressRecord.model_validate(
+            self.search_progress.model_dump(mode="python")
+        )
+
+    def persist_terminal_progress(
+        self,
+        record: PubMedTerminalProgressRecord,
+    ) -> PubMedTerminalProgressRecord:
+        self.calls.append("persist-terminal-progress")
+        validated = PubMedTerminalProgressRecord.model_validate(record.model_dump(mode="python"))
+        if self.terminal_progress is not None and self.terminal_progress != validated:
+            raise ValueError("synthetic terminal progress conflict")
+        self.terminal_progress = validated
+        return PubMedTerminalProgressRecord.model_validate(validated.model_dump(mode="python"))
+
+    def load_terminal_progress(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+    ) -> PubMedTerminalProgressRecord:
+        self.calls.append("load-terminal-progress")
+        if self.terminal_progress is None:
+            raise ValueError("synthetic terminal progress missing")
+        if (
+            self.terminal_progress.run_id != run_id
+            or self.terminal_progress.attempt_id != attempt_id
+        ):
+            raise ValueError("synthetic terminal progress belongs to another attempt")
+        return PubMedTerminalProgressRecord.model_validate(
+            self.terminal_progress.model_dump(mode="python")
+        )
+
 
 class Runs:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
         self.finalization: RunFinalization | None = None
         self.acquisitions: tuple[PersistedAcquisition, ...] | None = None
+        self.run_intent_id: str | None = None
+
+    def resolve_run_intent_id(self, intent: RunIntentInput) -> str:
+        return derive_identity("run-intent", intent)
 
     def persist_run_intent(self, intent: object) -> str:
-        del intent
         self.calls.append("persist-run-intent")
-        return RUN_INTENT_ID
+        validated = RunIntentInput.model_validate(intent)
+        self.run_intent_id = self.resolve_run_intent_id(validated)
+        return self.run_intent_id
 
     def persist_run_and_report(
         self,
@@ -662,6 +739,25 @@ def _service(
     return service, runs
 
 
+def test_pubmed_research_service_is_exact_sealed_and_frozen() -> None:
+    service, _ = _service([])
+    assert type(service) is PubMedResearchService
+    assert not hasattr(service, "__dict__")
+    for name, replacement in (
+        ("_catalog", object()),
+        ("_execution", object()),
+        ("_acquisitions", object()),
+        ("_runs", object()),
+        ("_runtime", object()),
+        ("load_search_progress", lambda **_values: object()),
+        ("load_terminal_progress", lambda **_values: object()),
+    ):
+        with pytest.raises(AttributeError, match="frozen"):
+            setattr(service, name, replacement)
+    with pytest.raises(TypeError, match="sealed"):
+        type("ForgedPubMedResearchService", (PubMedResearchService,), {})
+
+
 def test_complete_run_persists_each_acquisition_before_next_and_run_last() -> None:
     calls: list[str] = []
     service, runs = _service(calls)
@@ -671,6 +767,7 @@ def test_complete_run_persists_each_acquisition_before_next_and_run_last() -> No
         "persist-run-intent",
         "execute-search",
         "persist-search",
+        "persist-search-progress",
         "execute-fetch-10",
         "persist-fetch-10",
         "persist-run-report-envelope",
@@ -679,7 +776,7 @@ def test_complete_run_persists_each_acquisition_before_next_and_run_last() -> No
     assert report.run_id == RUN_ID
     assert report.catalog_version == "m1a-concepts-v1"
     assert report.catalog_content_hash == _catalog().catalog_content_hash
-    assert report.run_intent_id == RUN_INTENT_ID
+    assert report.run_intent_id == runs.run_intent_id
     assert len(report.acquisition_snapshot_ids) == 2
     assert report.acquisition_snapshot_ids == report.acquisition_manifest_ids
     publication = report.publications[0]
@@ -702,6 +799,28 @@ def test_complete_run_persists_each_acquisition_before_next_and_run_last() -> No
     assert len({item.acquisition_intent_id for item in runs.acquisitions}) == 2
     assert runs.finalization.report_artifact_bytes == report.artifact_bytes()
     assert sha256_digest(report.artifact_bytes()) == report.report_artifact_id
+
+
+def test_collection_persists_exact_acquisitions_without_final_report() -> None:
+    calls: list[str] = []
+    service, runs = _service(calls)
+
+    collection = service.collect(_request())
+
+    assert calls == [
+        "persist-run-intent",
+        "execute-search",
+        "persist-search",
+        "persist-search-progress",
+        "execute-fetch-10",
+        "persist-fetch-10",
+    ]
+    assert runs.finalization is None and runs.acquisitions is None
+    assert len(collection.persisted_acquisitions) == 2
+    assert collection.fetches[0].publication == collection.publications[0]
+    assert collection.publications[0].provenance.snapshot_id == (
+        collection.persisted_acquisitions[1].snapshot_id
+    )
 
 
 def test_skipped_source_is_visible_without_fabricated_outcome() -> None:
@@ -985,6 +1104,7 @@ def test_succeeded_partial_match_preserves_warnings_identity_and_finalizes_last(
         "persist-run-intent",
         "execute-search",
         "persist-search",
+        "persist-search-progress",
         "execute-fetch-10",
         "persist-fetch-10",
         "persist-run-report-envelope",

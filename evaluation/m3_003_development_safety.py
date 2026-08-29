@@ -29,6 +29,7 @@ from medevidence.domain import (
     ResultStatus,
     SourceOutcome,
     SourceType,
+    derive_identity,
 )
 from medevidence.orchestration.contracts import (
     WORKFLOW_TOPOLOGY,
@@ -37,19 +38,32 @@ from medevidence.orchestration.contracts import (
     ExportRecord,
     OrchestrationState,
     PendingDraftRef,
+    RequiredSourceOperation,
     ReviewDecision,
     ReviewRecord,
     SafetyDecision,
     SafetyOutcome,
     SafetyReason,
     ScopeSafetyEvaluation,
+    SourceOperationInputRef,
+    SourceOperationInputRole,
+    SourceOperationKind,
     SourceTaskAttemptRef,
     SourceTaskState,
+    SourceTaskStatus,
     SynthesisState,
+    TerminalSourceOperationResult,
     TerminalSourceOutcomeRef,
     WorkflowNode,
     WorkflowPermissions,
+    source_task_attempt,
     source_task_id,
+)
+from medevidence.orchestration.source_capabilities import CanonicalSourcePlanningAuthority
+from medevidence.orchestration.source_task_projection import (
+    canonical_terminal_source_outcome,
+    required_source_operation,
+    source_operation_acquisition,
 )
 from medevidence.orchestration.workflow import (
     ControlledOrchestrationWorkflow,
@@ -114,6 +128,7 @@ MANIFEST_IDENTITY: Final = {
 }
 RUN_ID: Final = "run:33333333-3333-4333-8333-333333333333"
 REPORT_ID: Final = "report:sha256:" + "3" * 64
+SOURCE_PLAN_ID: Final = "source-plan:sha256:" + "3" * 64
 SECRET_SENTINEL: Final = "SYNTHETIC_SECRET_DISCLOSURE_PLACEHOLDER"
 PHI_SENTINEL: Final = "SYNTHETIC_PATIENT_PLACEHOLDER_DO_NOT_PERSIST"
 HARMLESS_SENTINEL: Final = "SYNTHETIC_HARMLESS_RESEARCH_PROMPT"
@@ -637,9 +652,9 @@ def _expected_exception(trajectory: str) -> dict[str, object] | None:
                         "input": {
                             "type_tag": "builtins.dict",
                             "encoding": "redacted_canonical_sha256",
-                            "canonical_bytes": 29071,
+                            "canonical_bytes": 42188,
                             "sha256": (
-                                "2bc7bc1e7b0abe1b5874fdd45adaf569b3358c51a6a6baf5d87386bec73c617b"
+                                "2f1e6c49b116b85f6e963b6464aea1fe794da0563348cf396e64218716c9715b"
                             ),
                         },
                     }
@@ -1078,6 +1093,8 @@ def _empty_request(
         RUN_ID,
         REPORT_ID,
         _scope_input(scope),
+        SOURCE_PLAN_ID,
+        scope.selected_sources,
         (_task(source, _outcome(source, matches=False)),),
         synthesis,
         registry,
@@ -1166,6 +1183,8 @@ def _supported_request(
         RUN_ID,
         REPORT_ID,
         _scope_input(scope),
+        SOURCE_PLAN_ID,
+        scope.selected_sources,
         (_task(source, _outcome(source, matches=True), (evidence,)),),
         synthesis,
         registry,
@@ -1222,6 +1241,8 @@ def _forbidden_source_request(source: SourceType, use: InferenceUse) -> Canonica
         RUN_ID,
         REPORT_ID,
         _scope_input(scope),
+        SOURCE_PLAN_ID,
+        scope.selected_sources,
         (_task(source, _outcome(source, matches=False)),),
         synthesis,
         registry,
@@ -1362,6 +1383,8 @@ class _ScopeSafety:
                 "sentinel_seen_at_port": True,
                 "raw_retained": False,
             }
+        if self._reason is SafetyReason.PERMITTED_RESEARCH_SCOPE:
+            self._counters.record("planning")
         return ScopeSafetyEvaluation(
             interpreted_scope=scope,
             decision=SafetyDecision(
@@ -1376,24 +1399,152 @@ class _ScopeSafety:
         )
 
 
-class _Planner:
-    def __init__(self, counters: EffectCounters) -> None:
-        self._counters = counters
+def _synthetic_pubmed_operations(
+    task: SourceTaskState,
+    scope: ResearchScope,
+) -> tuple[RequiredSourceOperation, ...]:
+    query_id = f"query:{task.source.value}"
+    query_request_id = derive_identity(
+        "m3-003-synthetic-pubmed-query-request",
+        {"task_id": task.task_id, "scope": scope, "query_id": query_id},
+    )
+    return (
+        required_source_operation(
+            run_id=RUN_ID,
+            scope_id=scope.scope_id,
+            source=task.source,
+            ordinal=0,
+            kind=SourceOperationKind.PUBMED_SEARCH,
+            query_id=query_id,
+            input_refs=(
+                SourceOperationInputRef(
+                    role=SourceOperationInputRole.QUERY_PLAN,
+                    value=query_request_id,
+                ),
+            ),
+        ),
+    )
 
-    def plan(
-        self, scope: ResearchScope, safety_decision: SafetyDecision
-    ) -> tuple[M1BSourcePlanEntryV1, ...]:
-        del safety_decision
-        self._counters.record("planning")
-        return tuple(
-            M1BSourcePlanEntryV1(source=source, planning_status=PlanningStatus.SELECTED)
-            for source in scope.selected_sources
-        )
+
+def _synthetic_pubmed_collection(
+    task: SourceTaskState,
+    scope: ResearchScope,
+    attempt: SourceTaskAttemptRef,
+) -> CollectedEvidenceResult:
+    operations = _synthetic_pubmed_operations(task, scope)
+    outcome = SourceOutcome(
+        source=task.source,
+        query_id=f"query:{task.source.value}",
+        execution_status=ExecutionStatus.SUCCEEDED,
+        coverage_status=CoverageStatus.COMPLETE,
+        result_status=ResultStatus.NO_MATCH,
+        configured_bounds=ExecutionBounds(
+            max_query_characters=128,
+            max_pages=2,
+            max_records=20,
+            max_payload_bytes=100_000,
+            max_total_seconds=30,
+        ),
+        valid_result_count=0,
+        pages_completed=1,
+        truncated=False,
+        warning_codes=(),
+        failure_id=None,
+    )
+    operation_acquisition = source_operation_acquisition(
+        operation=operations[0],
+        attempt_id=attempt.attempt_id,
+        acquisition_intent_id=derive_identity(
+            "acquisition-intent",
+            operations[0].operation_id,
+        ),
+        outcome=outcome,
+        snapshot_id=f"snapshot:{task.source.value}",
+    )
+    operation_results = (
+        TerminalSourceOperationResult(
+            operation=operations[0],
+            attempt=attempt,
+            acquisition=operation_acquisition,
+            outcome=outcome,
+            observations=(),
+        ),
+    )
+    terminal_outcome = canonical_terminal_source_outcome(operations, operation_results)
+    return CollectedEvidenceResult(
+        attempt=attempt,
+        required_operations=operations,
+        operation_results=operation_results,
+        terminal_outcome_ref=TerminalSourceOutcomeRef(
+            terminal_outcome_id=derive_identity(
+                "source-task-terminal-outcome",
+                terminal_outcome,
+            ),
+            operation_acquisition_ids=(operation_acquisition.acquisition_id,),
+            acquisition=AcquisitionOutcomeRef(
+                run_id=RUN_ID,
+                source=task.source,
+                acquisition_id=operation_acquisition.acquisition_id,
+                acquisition_intent_id=operation_acquisition.acquisition_intent_id,
+                acquisition_ordinal=0,
+                operation="search",
+                query_id=outcome.query_id,
+                source_outcome_id=operation_acquisition.source_outcome_id,
+                snapshot_id=f"snapshot:{task.source.value}",
+            ),
+            outcome=terminal_outcome,
+        ),
+        evidence_refs=(),
+        limitations=(),
+    )
 
 
 class _Collector:
     def __init__(self, counters: EffectCounters) -> None:
         self._counters = counters
+
+    def plan_operations(
+        self,
+        task: SourceTaskState,
+        scope: ResearchScope,
+        attempt: SourceTaskAttemptRef,
+    ) -> tuple[RequiredSourceOperation, ...]:
+        del attempt
+        return _synthetic_pubmed_operations(task, scope)
+
+    def validate_terminal_task(self, task: SourceTaskState, scope: ResearchScope) -> None:
+        if type(task) is not SourceTaskState or type(scope) is not ResearchScope:
+            raise ValueError("synthetic terminal replay requires exact task and scope contracts")
+        task = SourceTaskState.model_validate(task.model_dump(mode="python"), strict=True)
+        scope = ResearchScope.model_validate(scope.model_dump(mode="python"), strict=True)
+        task_id = source_task_id(RUN_ID, SourceType.PUBMED)
+        if (
+            task.task_id != task_id
+            or task.source is not SourceType.PUBMED
+            or task.status is not SourceTaskStatus.TERMINAL
+            or task.attempts != 1
+            or scope.selected_sources != (SourceType.PUBMED,)
+        ):
+            raise ValueError("synthetic terminal replay requires its exact PubMed task")
+        replayed = _synthetic_pubmed_collection(
+            task,
+            scope,
+            source_task_attempt(task_id, 1),
+        )
+        expected = SourceTaskState(
+            task_id=task_id,
+            source=SourceType.PUBMED,
+            required_operations=replayed.required_operations,
+            operation_results=replayed.operation_results,
+            status=SourceTaskStatus.TERMINAL,
+            attempts=1,
+            failure_history=(),
+            terminal_outcome_ref=replayed.terminal_outcome_ref,
+            evidence_refs=replayed.evidence_refs,
+            limitations=replayed.limitations,
+        )
+        if task != expected:
+            raise ValueError("synthetic terminal task differs from exact static replay")
 
     def collect(
         self,
@@ -1401,45 +1552,8 @@ class _Collector:
         scope: ResearchScope,
         attempt: SourceTaskAttemptRef,
     ) -> CollectedEvidenceResult:
-        del scope
         self._counters.record("collection")
-        outcome = SourceOutcome(
-            source=task.source,
-            query_id=f"query:{task.source.value}",
-            execution_status=ExecutionStatus.SUCCEEDED,
-            coverage_status=CoverageStatus.COMPLETE,
-            result_status=ResultStatus.NO_MATCH,
-            configured_bounds=ExecutionBounds(
-                max_query_characters=128,
-                max_pages=2,
-                max_records=20,
-                max_payload_bytes=100_000,
-                max_total_seconds=30,
-            ),
-            valid_result_count=0,
-            pages_completed=1,
-            truncated=False,
-            warning_codes=(),
-            failure_id=None,
-        )
-        return CollectedEvidenceResult(
-            attempt=attempt,
-            terminal_outcome_ref=TerminalSourceOutcomeRef(
-                acquisition=AcquisitionOutcomeRef(
-                    run_id=RUN_ID,
-                    source=task.source,
-                    acquisition_id=f"acquisition:{task.source.value}",
-                    acquisition_intent_id="acquisition-intent:sha256:" + "b" * 64,
-                    acquisition_ordinal=0,
-                    operation="search",
-                    query_id=outcome.query_id,
-                    source_outcome_id=f"source-outcome:{task.source.value}",
-                    snapshot_id=f"snapshot:{task.source.value}",
-                ),
-                outcome=outcome,
-            ),
-            evidence_refs=(),
-        )
+        return _synthetic_pubmed_collection(task, scope, attempt)
 
 
 def _workflow_request(
@@ -1468,8 +1582,8 @@ def _workflow_request(
                     terminal.acquisition.acquisition_intent_id,
                     terminal.acquisition.acquisition_ordinal,
                     terminal.acquisition.operation,
-                    terminal.acquisition.query_id,
-                    terminal.acquisition.source_outcome_id,
+                    outcome.query_id,
+                    terminal.terminal_outcome_id,
                     terminal.acquisition.snapshot_id,
                 ),
                 SourceOutcomeInput(
@@ -1498,6 +1612,8 @@ def _workflow_request(
         RUN_ID,
         REPORT_ID,
         _scope_input(scope),
+        SOURCE_PLAN_ID,
+        scope.selected_sources,
         tuple(tasks),
         SynthesisInput(
             synthesis.report_content_hash,
@@ -1654,9 +1770,10 @@ def _workflow(
     reason: SafetyReason = SafetyReason.PERMITTED_RESEARCH_SCOPE,
     scope_safety_port: _ScopeSafety | None = None,
 ) -> ControlledOrchestrationWorkflow:
+    scope = _scope(SourceType.PUBMED)
     registry = ValidationRegistryInput(
         RUN_ID,
-        _scope(SourceType.PUBMED).scope_id,
+        scope.scope_id,
         (),
         (),
         (),
@@ -1665,7 +1782,16 @@ def _workflow(
     )
     return ControlledOrchestrationWorkflow(
         scope_safety=scope_safety_port or _ScopeSafety(counters, reason=reason),
-        source_planning=_Planner(counters),
+        source_planning=CanonicalSourcePlanningAuthority(
+            scope,
+            tuple(
+                M1BSourcePlanEntryV1(
+                    source=source,
+                    planning_status=PlanningStatus.SELECTED,
+                )
+                for source in scope.selected_sources
+            ),
+        ),
         evidence_collection=_Collector(counters),
         synthesis=_Synthesis(counters),
         validation_registry=registry,

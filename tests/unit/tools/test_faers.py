@@ -30,6 +30,11 @@ from medevidence.tools import (
     PersistedFaersAggregate,
     fetch_faers_aggregate,
 )
+from medevidence.tools.faers import (
+    FaersAggregateExecutionProjection,
+    FaersBucketEvidenceProjection,
+    execute_faers_aggregate,
+)
 from medevidence.tools.ports import FaersExecutionPort, FaersPersistencePort
 
 RUN_ID = "run:00000000-0000-4000-8000-000000000001"
@@ -191,6 +196,44 @@ def test_faers_tool_persists_exact_execution_before_return() -> None:
     assert result == executed.result
     assert result is not executed.result
     assert execution.events == ["execute", "persist"]
+
+
+def test_faers_execution_helper_and_projection_preserve_exact_provenance() -> None:
+    request = _request()
+    expected = _execution(request)
+    execution = _ExecutionPort(expected)
+    persistence = _PersistencePort(execution.events)
+
+    actual = execute_faers_aggregate(
+        request,
+        execution=cast(FaersExecutionPort, execution),
+        persistence=cast(FaersPersistencePort, persistence),
+    )
+    projection = FaersAggregateExecutionProjection(
+        run_id=RUN_ID,
+        scope_id="scope:test",
+        task_id="source-task:test:faers",
+        attempt_id="source-task-attempt:test",
+        execution=actual,
+        bucket_evidence=(
+            FaersBucketEvidenceProjection(
+                bucket_ordinal=0,
+                evidence_id="evidence:faers-bucket",
+                content_hash="sha256:" + "9" * 64,
+                locator_ref="locator:faers-bucket",
+            ),
+        ),
+    )
+
+    assert actual == expected
+    assert actual is not expected
+    assert projection.execution.acquisition_outcome_ref == expected.acquisition_outcome_ref
+    assert execution.events == ["execute", "persist"]
+
+    missing = projection.model_dump(mode="python")
+    missing["bucket_evidence"] = ()
+    with pytest.raises(ValueError, match="exact aggregate bucket set"):
+        FaersAggregateExecutionProjection.model_validate(missing)
 
 
 def test_faers_composition_is_inert_until_the_returned_tool_is_called() -> None:

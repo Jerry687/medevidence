@@ -521,6 +521,9 @@ def _runtime_result(
         or any(task.error is not None or task.interrupts for task in snapshot.tasks)
     ):
         raise WorkflowTransitionError("checkpoint scheduling topology drift")
+    replayed = ControlledOrchestrationWorkflow.validate_terminal_sources(runtime._workflow, state)
+    if replayed != state:
+        raise WorkflowTransitionError("source replay validation changed checkpoint state")
     interrupted = (
         WorkflowNode.REQUEST_EXPORT_APPROVAL
         if expected_next == (WorkflowNode.REQUEST_EXPORT_APPROVAL.value,)

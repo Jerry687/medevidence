@@ -1,6 +1,6 @@
 """One source-neutral deterministic authority for report validation."""
 
-# ruff: noqa: E501, E701, I001, RUF021, UP047
+# ruff: noqa: E501, E701, E702, I001, RUF021, UP047
 # fmt: off
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date
 from enum import StrEnum
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, cast
 from medevidence.domain import CADEC_MANDATORY_LIMITATIONS, FAERS_MANDATORY_LIMITATIONS, AdverseEventConcept, ComparisonIntent, CoverageStatus, DrugConcept, ExecutionBounds, ExecutionStatus, InclusiveDateRange, QueryBounds, ResearchScope, ResultBounds, ResultStatus, SourceType, canonical_json, derive_identity, sha256_digest
 
 M3_VALIDATION_RECEIPT_V1 = "M3_VALIDATION_RECEIPT_V1"
@@ -223,7 +223,6 @@ class SynthesisInput:
         for values, maximum, code in checks:
             if type(values) is not tuple or len(values) > maximum:
                 raise CanonicalValidationError(code)
-
 @dataclass(frozen=True, slots=True)
 class NumericalContextInput:
     value: str
@@ -396,20 +395,19 @@ class StoredValidationInput:
     semantic_passed: bool
     safety_passed: bool
     reason_codes: tuple[str, ...]
-
 @dataclass(frozen=True, slots=True)
 class CanonicalReportRequest:
     run_id: str
     report_id: str
     scope: ScopeInput
+    source_plan_id: str
+    selected_task_sources: tuple[SourceType, ...]
     tasks: tuple[TerminalTaskInput, ...]
     synthesis: SynthesisInput
     registry: ValidationRegistryInput
     stored_validation: StoredValidationInput | None = None
-
     def __post_init__(self) -> None:
         _bounded_tuple(self.tasks, 4, "task_cardinality_exceeded", type_code="task_collection_wrong_type")
-
 @dataclass(frozen=True, slots=True)
 class CitationTrace:
     citation_id: str
@@ -790,7 +788,12 @@ def _check_scope_cardinality(value: ScopeInput) -> None:
     _bounded_tuple(value.drugs, 4, "scope_drug_cardinality_exceeded", type_code="scope_collection_wrong_type")
     _bounded_tuple(value.adverse_reactions, 8, "scope_adverse_reaction_cardinality_exceeded", type_code="scope_collection_wrong_type")
     _bounded_tuple(value.selected_sources, 4, "scope_source_cardinality_exceeded", type_code="scope_sources_wrong_type")
-
+def _selected_task_sources(value: object, scope_sources: tuple[SourceType, ...]) -> tuple[SourceType, ...]:
+    _bounded_tuple(value, 4, "selected_task_source_cardinality_exceeded", type_code="selected_task_sources_wrong_type")
+    selected = cast(tuple[SourceType, ...], value)
+    if any(type(item) is not SourceType for item in selected): raise CanonicalValidationError("selected_task_sources_wrong_type")
+    if selected != tuple(source for source in scope_sources if source in set(selected)): raise CanonicalValidationError("selected_task_sources_invalid")
+    return selected
 def _check_evidence_cardinality(value: EvidenceInput) -> None:
     _bounded_tuple(value.locators, 1, "evidence_locator_cardinality_exceeded", type_code="evidence_collection_invalid")
     _bounded_tuple(value.numerical_facts, 100, "evidence_numerical_fact_cardinality_exceeded", type_code="evidence_collection_invalid")
@@ -837,7 +840,7 @@ def _check_nested_cardinality(value: ValidationRegistryInput) -> None:
 
 def _outer_cardinality(request: CanonicalReportRequest) -> None:
     _exact(request, CanonicalReportRequest, "request_wrong_type")
-    _check_scope_cardinality(_exact(request.scope, ScopeInput, "scope_wrong_type"))
+    _check_scope_cardinality(_exact(request.scope, ScopeInput, "scope_wrong_type")); _selected_task_sources(request.selected_task_sources, request.scope.selected_sources)
     _bounded_tuple(request.tasks, 4, "task_cardinality_exceeded", type_code="task_collection_wrong_type")
     for task in request.tasks:
         if type(task) is TerminalTaskInput and (type(task.evidence_refs) is not tuple or len(task.evidence_refs) > 100):
@@ -858,9 +861,9 @@ def _outer_cardinality(request: CanonicalReportRequest) -> None:
     registry = _exact(request.registry, ValidationRegistryInput, "registry_wrong_type")
     _check_registry_cardinality(registry)
     _check_nested_cardinality(registry)
-
 def _copy_request(value: CanonicalReportRequest) -> CanonicalReportRequest:
-    scope = _copy_scope(value.scope)
+    scope = _copy_scope(value.scope); source_plan_id = _text(value.source_plan_id, "source_plan_id_invalid"); selected_task_sources = _selected_task_sources(value.selected_task_sources, scope.selected_sources)
+    if re.fullmatch(r"source-plan:sha256:[0-9a-f]{64}", source_plan_id) is None: raise CanonicalValidationError("source_plan_id_invalid")
     tasks = tuple(_copy_task(item) for item in value.tasks)
     synthesis = value.synthesis
     claim_refs = tuple(ClaimReferenceInput(_text(_exact(item, ClaimReferenceInput, "claim_reference_wrong_type").claim_id, "claim_reference_invalid")) for item in synthesis.claims)
@@ -874,8 +877,7 @@ def _copy_request(value: CanonicalReportRequest) -> CanonicalReportRequest:
         stored = _exact(stored, StoredValidationInput, "stored_validation_wrong_type")
         if any(type(item) is not bool for item in (stored.structural_passed, stored.semantic_passed, stored.safety_passed)):
             raise CanonicalValidationError("stored_validation_gate_wrong_type")
-    return CanonicalReportRequest(_text(value.run_id, "run_id_invalid"), _text(value.report_id, "report_id_invalid"), scope, tasks, synthesis, registry, stored)
-
+    return CanonicalReportRequest(_text(value.run_id, "run_id_invalid"), _text(value.report_id, "report_id_invalid"), scope, source_plan_id, selected_task_sources, tasks, synthesis, registry, stored)
 def _qualitative_form(code: QualitativeCode) -> tuple[SourceType, ClaimClass, InferenceUse, str]:
     values = {
         QualitativeCode.PUBMED_DESCRIPTIVE: (SourceType.PUBMED, ClaimClass.DESCRIPTIVE, InferenceUse.DESCRIPTIVE, "The bounded publication supplies descriptive evidence."),
@@ -924,14 +926,13 @@ def _conflict_hash(value: ConflictInput) -> str:
 
 def _task_bindings(tasks: tuple[TerminalTaskInput, ...]) -> tuple[tuple[str, str], ...]:
     return tuple((item.task_id, sha256_digest(canonical_json(_primitive(item)))) for item in tasks)
-
 def canonical_report_content_hash(request: CanonicalReportRequest) -> str:
     registry = request.registry
     citation_map = {item.citation_id: item for item in registry.citations}
     payload = {
         "run_id": request.run_id,
         "report_id": request.report_id,
-        "scope": request.scope,
+        "scope": request.scope, "selected_task_sources": request.selected_task_sources,
         "source_task_bindings": _task_bindings(request.tasks),
         "claim_ids": tuple(item.claim_id for item in request.synthesis.claims),
         "citation_bindings": tuple((item.citation_id, item.claim_id, item.evidence_id, citation_map[item.citation_id].relationship if item.citation_id in citation_map else "unresolved") for item in request.synthesis.citations),
@@ -944,7 +945,6 @@ def canonical_report_content_hash(request: CanonicalReportRequest) -> str:
         "resolutions": registry.resolutions,
     }
     return sha256_digest(canonical_json(_primitive(payload)))
-
 def _aggregate_semantic_results(traces: tuple[CitationTrace, ...]) -> SemanticSupport:
     if any(item.result is SemanticSupport.UNSUPPORTED for item in traces):
         return SemanticSupport.UNSUPPORTED
@@ -963,14 +963,10 @@ def _governed_resolution(value: ResolutionInput | None, registry: ValidationRegi
     comparison = next((item for item in registry.comparisons if item.comparison_id == value.comparison_id), None)
     conflict = next((item for item in registry.conflicts if item.conflict_id == value.conflict_id), None)
     return comparison is not None and conflict is not None and conflict.comparison_id == comparison.comparison_id and conflict.outcome is ConflictOutcome.APPARENT_DIFFERENCE_SCOPE_MISMATCH
-
 def _validation_input_hash(request: CanonicalReportRequest) -> str:
-    payload = {"run_id": request.run_id, "report_id": request.report_id, "scope": request.scope, "tasks": request.tasks, "synthesis": request.synthesis, "registry": request.registry}
-    return sha256_digest(canonical_json(_primitive(payload)))
-
+    payload = {"run_id": request.run_id, "report_id": request.report_id, "scope": request.scope, "source_plan_id": request.source_plan_id, "selected_task_sources": request.selected_task_sources, "tasks": request.tasks, "synthesis": request.synthesis, "registry": request.registry}; return sha256_digest(canonical_json(_primitive(payload)))
 def _receipt_content(value: ValidationReceipt) -> dict[str, object]:
     return {item.name: _primitive(getattr(value, item.name)) for item in fields(value) if item.name not in {"receipt_id", "receipt_content_hash"}}
-
 def _build_validation_receipt(request: CanonicalReportRequest, summary: ValidationSummary, audits: tuple[ClaimAudit, ...]) -> ValidationReceipt:
     claim_results = []
     for audit in audits:
@@ -1131,7 +1127,7 @@ def canonical_validate_report(
     if value.scope.scope_id != registry.scope_id:
         structural.add("unauthorized_scope")
     task_sources = tuple(item.source for item in tasks)
-    if task_sources != value.scope.selected_sources or len(set(task_sources)) != len(task_sources):
+    if task_sources != value.selected_task_sources or len(set(task_sources)) != len(task_sources):
         structural.add("selected_source_task_mismatch")
     for task in tasks:
         expected_task_id = f"source-task:{value.run_id.removeprefix('run:')}:{task.source.value}"

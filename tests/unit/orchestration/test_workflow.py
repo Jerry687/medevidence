@@ -14,6 +14,8 @@ import pytest
 from pydantic import ValidationError
 
 from medevidence.domain import (
+    CADEC_MANDATORY_LIMITATIONS,
+    FAERS_MANDATORY_LIMITATIONS,
     AcquisitionOutcomeRef,
     AdverseEventConcept,
     ComparisonIntent,
@@ -28,7 +30,9 @@ from medevidence.domain import (
     ResultBounds,
     ResultStatus,
     SourceOutcome,
+    SourcePlanReasonCode,
     SourceType,
+    derive_identity,
 )
 from medevidence.orchestration import (
     MAX_SOURCE_TASK_ATTEMPTS,
@@ -63,6 +67,24 @@ from medevidence.orchestration import (
     WorkflowNode,
     WorkflowTransitionError,
     source_task_attempt,
+)
+from medevidence.orchestration.contracts import (
+    RequiredSourceOperation,
+    SourceOperationInputRef,
+    SourceOperationInputRole,
+    SourceOperationKind,
+    SourceTaskProgressResult,
+    TerminalSourceOperationResult,
+)
+from medevidence.orchestration.source_capabilities import (
+    CanonicalSourcePlanningAuthority,
+    SourceCapabilityContractError,
+)
+from medevidence.orchestration.source_task_projection import (
+    canonical_terminal_source_outcome,
+    required_source_operation,
+    source_operation_acquisition,
+    source_operation_observation,
 )
 from medevidence.tools.report_validation import (
     AcquisitionInput,
@@ -100,6 +122,7 @@ from medevidence.tools.report_validation import (
 
 RUN_ID = "run:12345678-1234-4234-9234-123456789abc"
 REPORT_ID = "report:sha256:" + "a" * 64
+SOURCE_PLAN_ID = "source-plan:sha256:" + "d" * 64
 HASH_ONE = "sha256:" + "1" * 64
 HASH_TWO = "sha256:" + "2" * 64
 IDENTITY = EvaluatorIdentityInput("deterministic_workflow_test", "v1")
@@ -173,14 +196,24 @@ def _validation_evidence(source: SourceType) -> EvidenceInput:
 def _collected_result(
     source: SourceType,
     *,
+    scope: ResearchScope | None = None,
     attempt: SourceTaskAttemptRef | None = None,
     execution: ExecutionStatus = ExecutionStatus.SUCCEEDED,
     coverage: CoverageStatus = CoverageStatus.COMPLETE,
     result: ResultStatus = ResultStatus.MATCHES,
+    with_fetch: bool = False,
 ) -> CollectedEvidenceResult:
+    scope = scope or _scope(source)
     if attempt is None:
         task_id = f"source-task:{RUN_ID.removeprefix('run:')}:{source.value}"
         attempt = source_task_attempt(task_id, 1)
+    mandatory_warning = {
+        SourceType.FAERS: "faers_mandatory_limitations",
+        SourceType.CADEC: "cadec_mandatory_limitations",
+    }.get(source)
+    warning_codes = set(() if coverage is CoverageStatus.COMPLETE else ("source_degraded",))
+    if mandatory_warning is not None:
+        warning_codes.add(mandatory_warning)
     outcome = SourceOutcome(
         source=source,
         query_id=f"query:{source.value}",
@@ -197,20 +230,64 @@ def _collected_result(
         valid_result_count=1 if result is ResultStatus.MATCHES else 0,
         pages_completed=0 if coverage is CoverageStatus.UNAVAILABLE else 1,
         truncated=coverage is CoverageStatus.PARTIAL,
-        warning_codes=() if coverage is CoverageStatus.COMPLETE else ("source_degraded",),
+        warning_codes=tuple(sorted(warning_codes)),
         failure_id="failure:test" if execution is ExecutionStatus.FAILED else None,
     )
-    acquisition = AcquisitionOutcomeRef(
-        run_id=RUN_ID,
-        source=source,
-        acquisition_id=f"acquisition:{source.value}",
-        acquisition_intent_id="acquisition-intent:sha256:" + "c" * 64,
-        acquisition_ordinal=0,
-        operation="search",
-        query_id=outcome.query_id,
-        source_outcome_id=f"source-outcome:{source.value}",
-        snapshot_id=f"snapshot:{source.value}",
+    operation_kinds = {
+        SourceType.PUBMED: (
+            (SourceOperationKind.PUBMED_SEARCH, SourceOperationKind.PUBMED_FETCH)
+            if result is ResultStatus.MATCHES
+            else (SourceOperationKind.PUBMED_SEARCH,)
+        ),
+        SourceType.DAILYMED: (SourceOperationKind.DAILYMED_DISCOVERY,),
+        SourceType.FAERS: (SourceOperationKind.FAERS_AGGREGATE,),
+        SourceType.CADEC: (SourceOperationKind.CADEC_VERIFY, SourceOperationKind.CADEC_SEARCH),
+    }[source]
+    if source is SourceType.DAILYMED and with_fetch and result is ResultStatus.MATCHES:
+        operation_kinds = (*operation_kinds, SourceOperationKind.DAILYMED_FETCH)
+    roles = {
+        SourceOperationKind.PUBMED_SEARCH: (SourceOperationInputRole.QUERY_PLAN,),
+        SourceOperationKind.PUBMED_FETCH: (SourceOperationInputRole.PUBMED_PMID,),
+        SourceOperationKind.DAILYMED_DISCOVERY: (SourceOperationInputRole.REQUEST,),
+        SourceOperationKind.DAILYMED_FETCH: (
+            SourceOperationInputRole.DAILYMED_DECISION,
+            SourceOperationInputRole.CANDIDATE,
+            SourceOperationInputRole.SETID,
+            SourceOperationInputRole.SPL_VERSION,
+        ),
+        SourceOperationKind.FAERS_AGGREGATE: (SourceOperationInputRole.REQUEST,),
+        SourceOperationKind.CADEC_VERIFY: (
+            SourceOperationInputRole.ASSET,
+            SourceOperationInputRole.MEMBERSHIP,
+        ),
+        SourceOperationKind.CADEC_SEARCH: (SourceOperationInputRole.QUERY_PLAN,),
+    }
+    required_operations = tuple(
+        required_source_operation(
+            run_id=RUN_ID,
+            scope_id=scope.scope_id,
+            source=source,
+            ordinal=ordinal,
+            kind=kind,
+            query_id=(
+                f"query:{source.value}:verify"
+                if kind is SourceOperationKind.CADEC_VERIFY
+                else outcome.query_id
+            ),
+            input_refs=tuple(
+                SourceOperationInputRef(
+                    role=role,
+                    value=derive_identity(
+                        "workflow-test-operation-input",
+                        {"source": source, "ordinal": ordinal, "role": role},
+                    ),
+                )
+                for role in roles[kind]
+            ),
+        )
+        for ordinal, kind in enumerate(operation_kinds)
     )
+    operation_results: list[TerminalSourceOperationResult] = []
     evidence = ()
     if result is ResultStatus.MATCHES:
         registered = _validation_evidence(source)
@@ -223,21 +300,217 @@ def _collected_result(
                 locator_ref=registered.locators[0],
             ),
         )
+    for operation in required_operations:
+        operation_outcome = outcome
+        if operation.kind is SourceOperationKind.CADEC_VERIFY:
+            operation_outcome = SourceOutcome(
+                source=source,
+                query_id=operation.query_id,
+                execution_status=execution,
+                coverage_status=coverage,
+                result_status=(
+                    ResultStatus.NO_MATCH
+                    if execution is ExecutionStatus.SUCCEEDED
+                    and coverage is CoverageStatus.COMPLETE
+                    else ResultStatus.INDETERMINATE
+                ),
+                configured_bounds=outcome.configured_bounds,
+                valid_result_count=0,
+                pages_completed=outcome.pages_completed,
+                truncated=outcome.truncated,
+                warning_codes=outcome.warning_codes,
+                failure_id=outcome.failure_id,
+            )
+        acquisition_ref = source_operation_acquisition(
+            operation=operation,
+            attempt_id=attempt.attempt_id,
+            acquisition_intent_id=derive_identity(
+                "acquisition-intent",
+                {"source": source, "ordinal": operation.ordinal},
+            ),
+            outcome=operation_outcome,
+            snapshot_id=f"snapshot:{source.value}",
+        )
+        observations = ()
+        if operation is required_operations[-1]:
+            observations = tuple(
+                source_operation_observation(
+                    operation=operation,
+                    acquisition=acquisition_ref,
+                    evidence_id=item.evidence_id,
+                    content_hash=item.content_hash,
+                    locator_ref=item.locator_ref,
+                )
+                for item in evidence
+            )
+        operation_results.append(
+            TerminalSourceOperationResult(
+                operation=operation,
+                attempt=attempt,
+                acquisition=acquisition_ref,
+                outcome=operation_outcome,
+                observations=observations,
+            )
+        )
+    operation_results_tuple = tuple(operation_results)
+    representative = operation_results_tuple[-1].acquisition
+    terminal_outcome = canonical_terminal_source_outcome(
+        required_operations,
+        operation_results_tuple,
+    )
+    limitations = {
+        SourceType.FAERS: tuple(FAERS_MANDATORY_LIMITATIONS),
+        SourceType.CADEC: tuple(CADEC_MANDATORY_LIMITATIONS),
+    }.get(source, ())
     return CollectedEvidenceResult(
         attempt=attempt,
+        required_operations=required_operations,
+        operation_results=operation_results_tuple,
         terminal_outcome_ref=TerminalSourceOutcomeRef(
-            acquisition=acquisition,
-            outcome=outcome,
+            terminal_outcome_id=derive_identity(
+                "source-task-terminal-outcome",
+                terminal_outcome,
+            ),
+            operation_acquisition_ids=tuple(
+                item.acquisition.acquisition_id for item in operation_results_tuple
+            ),
+            acquisition=AcquisitionOutcomeRef(
+                run_id=representative.run_id,
+                source=representative.source,
+                acquisition_id=representative.acquisition_id,
+                acquisition_intent_id=representative.acquisition_intent_id,
+                acquisition_ordinal=representative.ordinal,
+                operation=(
+                    "fetch"
+                    if operation_results_tuple[-1].operation.kind
+                    in {SourceOperationKind.PUBMED_FETCH, SourceOperationKind.DAILYMED_FETCH}
+                    else "search"
+                ),
+                query_id=representative.query_id,
+                source_outcome_id=representative.source_outcome_id,
+                snapshot_id=representative.snapshot_id,
+            ),
+            outcome=terminal_outcome,
         ),
         evidence_refs=evidence,
+        limitations=limitations,
     )
 
 
 def _expected_result(
     source: SourceType,
     outcomes: dict[SourceType, CollectedEvidenceResult] | None,
+    scope: ResearchScope,
 ) -> CollectedEvidenceResult:
-    return (outcomes or {}).get(source, _collected_result(source))
+    return (outcomes or {}).get(source, _collected_result(source, scope=scope))
+
+
+def _self_consistent_terminal_child_forgery(
+    state: OrchestrationState,
+) -> OrchestrationState:
+    task = state.source_tasks[0]
+    old_result = task.operation_results[-1]
+    old_operation = old_result.operation
+    foreign_refs = (
+        old_operation.input_refs[0].model_copy(
+            update={
+                "value": derive_identity(
+                    "workflow-terminal-child-forgery",
+                    {"operation_id": old_operation.operation_id},
+                )
+            }
+        ),
+        *old_operation.input_refs[1:],
+    )
+    operation = required_source_operation(
+        run_id=old_operation.run_id,
+        scope_id=old_operation.scope_id,
+        source=old_operation.source,
+        ordinal=old_operation.ordinal,
+        kind=old_operation.kind,
+        query_id=old_operation.query_id,
+        input_refs=foreign_refs,
+    )
+    acquisition = source_operation_acquisition(
+        operation=operation,
+        attempt_id=old_result.attempt.attempt_id,
+        acquisition_intent_id=old_result.acquisition.acquisition_intent_id,
+        outcome=old_result.outcome,
+        snapshot_id=old_result.acquisition.snapshot_id,
+    )
+    observations = tuple(
+        source_operation_observation(
+            operation=operation,
+            acquisition=acquisition,
+            evidence_id=item.evidence_id,
+            content_hash=item.content_hash,
+            locator_ref=item.locator_ref,
+        )
+        for item in old_result.observations
+    )
+    result = TerminalSourceOperationResult(
+        operation=operation,
+        attempt=old_result.attempt,
+        acquisition=acquisition,
+        outcome=old_result.outcome,
+        observations=observations,
+    )
+    operations = (*task.required_operations[:-1], operation)
+    results = (*task.operation_results[:-1], result)
+    outcome = canonical_terminal_source_outcome(operations, results)
+    terminal = TerminalSourceOutcomeRef(
+        terminal_outcome_id=derive_identity("source-task-terminal-outcome", outcome),
+        operation_acquisition_ids=tuple(item.acquisition.acquisition_id for item in results),
+        acquisition=AcquisitionOutcomeRef(
+            run_id=acquisition.run_id,
+            source=acquisition.source,
+            acquisition_id=acquisition.acquisition_id,
+            acquisition_intent_id=acquisition.acquisition_intent_id,
+            acquisition_ordinal=acquisition.ordinal,
+            operation=(
+                "fetch"
+                if operation.kind
+                in {SourceOperationKind.PUBMED_FETCH, SourceOperationKind.DAILYMED_FETCH}
+                else "search"
+            ),
+            query_id=acquisition.query_id,
+            source_outcome_id=acquisition.source_outcome_id,
+            snapshot_id=acquisition.snapshot_id,
+        ),
+        outcome=outcome,
+    )
+    forged_task = SourceTaskState(
+        task_id=task.task_id,
+        source=task.source,
+        required_operations=operations,
+        operation_results=results,
+        status=task.status,
+        attempts=task.attempts,
+        failure_history=task.failure_history,
+        terminal_outcome_ref=terminal,
+        evidence_refs=task.evidence_refs,
+        limitations=task.limitations,
+    )
+    forged_tasks = (forged_task, *state.source_tasks[1:])
+    forged_refs = tuple(
+        item.terminal_outcome_ref for item in forged_tasks if item.terminal_outcome_ref is not None
+    )
+    history = tuple(
+        item.model_copy(update={"source_outcome_refs": forged_refs})
+        if item.source_outcome_refs
+        else item
+        for item in state.review_history
+    )
+    active = state.active_approval
+    if active is not None:
+        active = active.model_copy(update={"source_outcome_refs": forged_refs})
+    return state.model_copy(
+        update={
+            "source_tasks": forged_tasks,
+            "review_history": history,
+            "active_approval": active,
+        }
+    )
 
 
 def _validation_registry(
@@ -250,7 +523,7 @@ def _validation_registry(
     evidence = tuple(
         _validation_evidence(source)
         for source in scope.selected_sources
-        if _expected_result(source, outcomes).terminal_outcome_ref.outcome.result_status
+        if _expected_result(source, outcomes, scope).terminal_outcome_ref.outcome.result_status
         is ResultStatus.MATCHES
     )
     publication = next((item for item in evidence if item.source is SourceType.PUBMED), None)
@@ -289,7 +562,7 @@ def _validation_registry(
         None,
     )
     claim = replace(claim, claim_id=canonical_claim_id(claim))
-    outcome = _expected_result(SourceType.PUBMED, outcomes).terminal_outcome_ref.outcome
+    outcome = _expected_result(SourceType.PUBMED, outcomes, scope).terminal_outcome_ref.outcome
     citation = CitationInput(
         "citation:sha256:" + "0" * 64,
         claim.claim_id,
@@ -380,8 +653,8 @@ def _canonical_request(
                     acquisition.acquisition_intent_id,
                     acquisition.acquisition_ordinal,
                     acquisition.operation,
-                    acquisition.query_id,
-                    acquisition.source_outcome_id,
+                    outcome.query_id,
+                    terminal.terminal_outcome_id,
                     acquisition.snapshot_id,
                 ),
                 SourceOutcomeInput(
@@ -419,6 +692,8 @@ def _canonical_request(
         run_id,
         report_id,
         scope_input,
+        SOURCE_PLAN_ID,
+        tuple(item.source for item in source_tasks),
         tuple(tasks),
         SynthesisInput(
             synthesis.report_content_hash,
@@ -457,24 +732,32 @@ class FakeScopeSafety:
         )
 
 
-class FakePlanner:
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
-
-    def plan(
-        self,
-        scope: ResearchScope,
-        safety_decision: SafetyDecision,
-    ) -> tuple[M1BSourcePlanEntryV1, ...]:
-        self.events.append("plan_sources")
-        assert safety_decision.outcome is SafetyOutcome.PERMITTED
-        return tuple(
-            M1BSourcePlanEntryV1(
-                source=source,
-                planning_status=PlanningStatus.SELECTED,
-            )
-            for source in scope.selected_sources
+def _source_plan(
+    scope: ResearchScope,
+    statuses: dict[SourceType, PlanningStatus] | None = None,
+) -> tuple[M1BSourcePlanEntryV1, ...]:
+    statuses = statuses or {}
+    return tuple(
+        M1BSourcePlanEntryV1(
+            source=source,
+            planning_status=statuses.get(source, PlanningStatus.SELECTED),
+            reason_code=(
+                None
+                if statuses.get(source, PlanningStatus.SELECTED) is PlanningStatus.SELECTED
+                else (
+                    SourcePlanReasonCode.NOT_APPLICABLE_TO_SCOPE
+                    if statuses[source] is PlanningStatus.SKIPPED_NOT_APPLICABLE
+                    else SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED
+                )
+            ),
+            reason=(
+                None
+                if statuses.get(source, PlanningStatus.SELECTED) is PlanningStatus.SELECTED
+                else "deterministic test skip"
+            ),
         )
+        for source in scope.selected_sources
+    )
 
 
 class FakeCollector:
@@ -488,6 +771,7 @@ class FakeCollector:
             list[CollectionFailureClassification],
         ]
         | None = None,
+        progress_once: set[SourceType] | None = None,
     ) -> None:
         self.events = events
         self.outcomes = outcomes or {}
@@ -496,9 +780,54 @@ class FakeCollector:
             source: list(classifications)
             for source, classifications in (typed_failures or {}).items()
         }
+        self.progress_once = set(progress_once or set())
         self.calls: list[SourceType] = []
+        self.plan_calls: list[tuple[SourceType, int]] = []
+        self.drift_on_plan_call: int | None = None
         self.attempts_seen: list[tuple[SourceType, int]] = []
+        self.source_stages: list[tuple[SourceType, str]] = []
+        self.replay_calls: list[SourceType] = []
         self.raw_override: object | None = None
+
+    def plan_operations(
+        self,
+        task: SourceTaskState,
+        scope: ResearchScope,
+        attempt: SourceTaskAttemptRef,
+    ) -> tuple[RequiredSourceOperation, ...]:
+        assert task.source in scope.selected_sources
+        assert attempt.task_id == task.task_id
+        self.plan_calls.append((task.source, attempt.attempt_number))
+        operations = _collected_result(
+            task.source, scope=scope, attempt=attempt
+        ).required_operations
+        if task.source is SourceType.PUBMED:
+            operations = operations[:1]
+        if self.drift_on_plan_call == len(self.plan_calls):
+            first = operations[0]
+            operations = (
+                required_source_operation(
+                    run_id=first.run_id,
+                    scope_id=first.scope_id,
+                    source=first.source,
+                    ordinal=0,
+                    kind=first.kind,
+                    query_id=first.query_id,
+                    input_refs=(
+                        first.input_refs[0].model_copy(
+                            update={
+                                "value": derive_identity(
+                                    "workflow-test-operation-input-drift",
+                                    {"input_identity": first.input_identity},
+                                )
+                            }
+                        ),
+                        *first.input_refs[1:],
+                    ),
+                ),
+                *operations[1:],
+            )
+        return operations
 
     def collect(
         self,
@@ -506,7 +835,6 @@ class FakeCollector:
         scope: ResearchScope,
         attempt: SourceTaskAttemptRef,
     ) -> object:
-        del scope
         self.events.append(f"collect_evidence:{task.source.value}")
         self.calls.append(task.source)
         self.attempts_seen.append((task.source, task.attempts))
@@ -526,12 +854,66 @@ class FakeCollector:
                 classification=classification,
                 reason_code="deterministic_test_failure",
             )
-        result = self.outcomes.get(task.source, _collected_result(task.source))
-        return CollectedEvidenceResult(
+        result = self.outcomes.get(task.source, _collected_result(task.source, scope=scope))
+        outcome = result.terminal_outcome_ref.outcome
+        expanded = _collected_result(
+            task.source,
+            scope=scope,
             attempt=attempt,
-            terminal_outcome_ref=result.terminal_outcome_ref,
-            evidence_refs=result.evidence_refs,
+            execution=outcome.execution_status,
+            coverage=outcome.coverage_status,
+            result=outcome.result_status,
+            with_fetch=True,
         )
+        if task.source in self.progress_once and not task.operation_results:
+            self.progress_once.remove(task.source)
+            self.source_stages.append((task.source, "search_or_discovery"))
+            return SourceTaskProgressResult(
+                attempt=attempt,
+                required_operations=expanded.required_operations,
+                operation_results=expanded.operation_results[: len(task.required_operations)],
+            )
+        if task.operation_results:
+            if (
+                task.required_operations != expanded.required_operations
+                or task.operation_results
+                != expanded.operation_results[: len(task.operation_results)]
+            ):
+                raise ValueError("durable source progress suffix drift")
+            self.source_stages.append((task.source, "fetch"))
+        return expanded
+
+    def validate_terminal_task(self, task: SourceTaskState, scope: ResearchScope) -> None:
+        self.replay_calls.append(task.source)
+        terminal = task.terminal_outcome_ref
+        if terminal is None or not task.operation_results:
+            raise ValueError("terminal replay requires an exact terminal task")
+        replayed = _collected_result(
+            task.source,
+            scope=scope,
+            attempt=task.operation_results[0].attempt,
+            execution=terminal.outcome.execution_status,
+            coverage=terminal.outcome.coverage_status,
+            result=terminal.outcome.result_status,
+            with_fetch=any(
+                item.kind in {SourceOperationKind.PUBMED_FETCH, SourceOperationKind.DAILYMED_FETCH}
+                for item in task.required_operations
+            ),
+        )
+        expected = SourceTaskState(
+            task_id=task.task_id,
+            source=task.source,
+            required_operations=replayed.required_operations,
+            operation_results=replayed.operation_results,
+            status=SourceTaskStatus.TERMINAL,
+            attempts=task.attempts,
+            failure_history=task.failure_history,
+            terminal_outcome_ref=replayed.terminal_outcome_ref,
+            evidence_refs=replayed.evidence_refs,
+            limitations=replayed.limitations,
+        )
+        if task != expected:
+            raise ValueError("terminal task differs from durable source replay")
 
 
 class FakeSynthesis:
@@ -787,10 +1169,12 @@ class Harness:
             list[CollectionFailureClassification],
         ]
         | None = None,
+        progress_once: set[SourceType] | None = None,
         validation_passed: bool = True,
         receipt_persistence_fails: bool = False,
         decisions: list[ReviewDecision] | None = None,
         scope: ResearchScope | None = None,
+        source_plan: tuple[M1BSourcePlanEntryV1, ...] | None = None,
         claim_variant: int = 0,
     ) -> None:
         self.events: list[str] = []
@@ -803,12 +1187,16 @@ class Harness:
             claim_variant=claim_variant,
         )
         self.scope_safety = FakeScopeSafety(self.events, blocked=blocked)
-        self.planner = FakePlanner(self.events)
+        self.planner = CanonicalSourcePlanningAuthority(
+            self.scope,
+            source_plan or _source_plan(self.scope),
+        )
         self.collector = FakeCollector(
             self.events,
             outcomes,
             generic_fail_once,
             typed_failures,
+            progress_once,
         )
         self.synthesis = FakeSynthesis(self.events, self.registry)
         self.semantic = FakeSemanticProvider(self.events, support)
@@ -819,7 +1207,10 @@ class Harness:
         self.persistence = FakePersistence(self.events)
         self.approval = FakeApproval(self.events, decisions)
         self.export = FakeExport(self.events)
-        self.workflow = ControlledOrchestrationWorkflow(
+        self.workflow = self.new_workflow()
+
+    def new_workflow(self) -> ControlledOrchestrationWorkflow:
+        return ControlledOrchestrationWorkflow(
             scope_safety=self.scope_safety,
             source_planning=self.planner,
             evidence_collection=self.collector,
@@ -874,7 +1265,6 @@ def test_happy_path_follows_exact_topology_and_exports_once() -> None:
     )
     assert harness.events == [
         "scope_and_safety",
-        "plan_sources",
         "collect_evidence:pubmed",
         "synthesize_claims",
         "validate_report",
@@ -923,7 +1313,6 @@ def test_scope_safety_cannot_expand_selected_sources() -> None:
     )
     with pytest.raises(WorkflowTransitionError, match="cannot expand"):
         harness.workflow.scope_and_safety(_initial())
-    assert harness.planner.events.count("plan_sources") == 0
     assert harness.collector.calls == []
     assert harness.persistence.calls == 0
 
@@ -939,7 +1328,7 @@ def test_source_planning_rejects_nonpermitted_decision_before_capability() -> No
     corrupt = state.model_copy(update={"safety_decision": blocked})
     with pytest.raises(WorkflowTransitionError, match="permitted safety decision"):
         harness.workflow.plan_sources(corrupt)
-    assert harness.planner.events.count("plan_sources") == 0
+    assert harness.collector.calls == []
 
 
 def test_persisted_post_collection_checkpoint_rejects_pending_selected_task() -> None:
@@ -985,10 +1374,17 @@ def test_resume_does_not_repeat_already_terminal_source_task() -> None:
     harness = Harness(scope=scope)
     state = harness.workflow.run_next(_initial(scope))
     state = harness.workflow.run_next(state)
+    daily_result = _collected_result(SourceType.DAILYMED, scope=scope)
     tasks = tuple(
         SourceTaskState(
             task_id=task.task_id,
             source=task.source,
+            required_operations=(
+                daily_result.required_operations if task.source is SourceType.DAILYMED else ()
+            ),
+            operation_results=(
+                daily_result.operation_results if task.source is SourceType.DAILYMED else ()
+            ),
             status=(
                 SourceTaskStatus.TERMINAL
                 if task.source is SourceType.DAILYMED
@@ -996,14 +1392,10 @@ def test_resume_does_not_repeat_already_terminal_source_task() -> None:
             ),
             attempts=1 if task.source is SourceType.DAILYMED else 0,
             terminal_outcome_ref=(
-                _collected_result(SourceType.DAILYMED).terminal_outcome_ref
-                if task.source is SourceType.DAILYMED
-                else None
+                daily_result.terminal_outcome_ref if task.source is SourceType.DAILYMED else None
             ),
             evidence_refs=(
-                _collected_result(SourceType.DAILYMED).evidence_refs
-                if task.source is SourceType.DAILYMED
-                else ()
+                daily_result.evidence_refs if task.source is SourceType.DAILYMED else ()
             ),
         )
         for task in state.source_tasks
@@ -1021,6 +1413,34 @@ def test_resume_does_not_repeat_already_terminal_source_task() -> None:
     assert collected.current_node is WorkflowNode.COLLECT_EVIDENCE
     advanced = harness.workflow.run_next(collected)
     assert advanced.current_node is WorkflowNode.SYNTHESIZE_CLAIMS
+
+
+def test_collect_replays_forged_terminal_prefix_before_pending_source_plan_or_io() -> None:
+    scope = _scope(SourceType.DAILYMED, SourceType.PUBMED)
+    harness = Harness(scope=scope)
+    collecting = _run_until_node(harness.workflow, _initial(scope), WorkflowNode.COLLECT_EVIDENCE)
+    daily_running = harness.workflow.collect_evidence(collecting)
+    prefix = harness.workflow.collect_evidence(daily_running)
+    first, second = prefix.source_tasks
+    assert first.source is SourceType.DAILYMED
+    assert first.status is SourceTaskStatus.TERMINAL
+    assert second.source is SourceType.PUBMED
+    assert second.status is SourceTaskStatus.PENDING
+    forged = _self_consistent_terminal_child_forgery(prefix)
+    before = (
+        tuple(harness.collector.plan_calls),
+        tuple(harness.collector.calls),
+        forged.checkpoint_id,
+    )
+
+    with pytest.raises(WorkflowTransitionError, match="source terminal replay failed"):
+        harness.new_workflow().collect_evidence(forged)
+    assert before == (
+        tuple(harness.collector.plan_calls),
+        tuple(harness.collector.calls),
+        forged.checkpoint_id,
+    )
+    assert all(source is not SourceType.PUBMED for source, _attempt in harness.collector.plan_calls)
 
 
 def test_prior_source_remains_checkpointed_while_later_source_retries() -> None:
@@ -1086,6 +1506,7 @@ def test_pending_to_running_checkpoints_attempt_before_any_io() -> None:
     task = running.source_tasks[0]
 
     assert harness.collector.calls == []
+    assert harness.collector.plan_calls == [(SourceType.PUBMED, 1)]
     assert task.status is SourceTaskStatus.RUNNING
     assert task.attempts == 1
     assert task.active_attempt is not None
@@ -1093,8 +1514,558 @@ def test_pending_to_running_checkpoints_attempt_before_any_io() -> None:
     assert task.active_attempt.task_id == task.task_id
 
     terminal = harness.workflow.run_next(running)
+    assert harness.collector.plan_calls == [
+        (SourceType.PUBMED, 1),
+        (SourceType.PUBMED, 1),
+    ]
     assert harness.collector.calls == [SourceType.PUBMED]
     assert terminal.source_tasks[0].status is SourceTaskStatus.TERMINAL
+
+
+def test_skipped_plan_rows_remain_visible_without_task_or_outcome() -> None:
+    scope = _scope(SourceType.DAILYMED, SourceType.PUBMED)
+    outcomes = {
+        SourceType.DAILYMED: _collected_result(
+            SourceType.DAILYMED,
+            scope=scope,
+            result=ResultStatus.NO_MATCH,
+        )
+    }
+    harness = Harness(
+        scope=scope,
+        outcomes=outcomes,
+        source_plan=_source_plan(
+            scope,
+            {SourceType.DAILYMED: PlanningStatus.SKIPPED_BY_POLICY},
+        ),
+    )
+    scoped = harness.workflow.scope_and_safety(_initial(scope))
+    planned = harness.workflow.plan_sources(scoped)
+
+    assert tuple(row.source for row in planned.source_plan) == scope.selected_sources
+    assert planned.source_plan[0].planning_status is PlanningStatus.SKIPPED_BY_POLICY
+    assert tuple(task.source for task in planned.source_tasks) == (SourceType.PUBMED,)
+    assert all(task.terminal_outcome_ref is None for task in planned.source_tasks)
+
+    collected = planned
+    while collected.current_node is WorkflowNode.COLLECT_EVIDENCE:
+        collected = harness.workflow.collect_evidence(collected)
+    assert harness.collector.calls == [SourceType.PUBMED]
+    assert all(task.source is not SourceType.DAILYMED for task in collected.source_tasks)
+
+    pending_review = _run_until_node(
+        harness.workflow,
+        collected,
+        WorkflowNode.REQUEST_EXPORT_APPROVAL,
+    )
+    assert pending_review.report_status is ReportStatus.PENDING_REVIEW
+    assert pending_review.pending_draft is not None
+    approved = harness.workflow.request_export_approval(pending_review)
+    exported = harness.workflow.finalize_and_export(approved)
+
+    assert exported.report_status is ReportStatus.EXPORTED
+    assert exported.disposition is WorkflowDisposition.EXPORTED
+    assert exported.export_record is not None
+    assert len(exported.review_history) == 1
+    assert tuple(item.source for item in exported.source_tasks) == (SourceType.PUBMED,)
+    assert tuple(item.source for item in exported.source_plan) == scope.selected_sources
+    assert all(
+        item.outcome.source is not SourceType.DAILYMED
+        for item in exported.review_history[0].source_outcome_refs
+    )
+
+
+def test_coordinated_selected_to_skip_task_removal_fails_before_assessment_effects() -> None:
+    scope = _scope(SourceType.DAILYMED, SourceType.PUBMED)
+    harness = Harness(
+        scope=scope,
+        outcomes={
+            SourceType.DAILYMED: _collected_result(
+                SourceType.DAILYMED,
+                scope=scope,
+                result=ResultStatus.NO_MATCH,
+            )
+        },
+    )
+    validating = _run_until_node(
+        harness.workflow,
+        _initial(scope),
+        WorkflowNode.VALIDATE_REPORT,
+    )
+    forged_plan = tuple(
+        row.model_copy(
+            update={
+                "planning_status": PlanningStatus.SKIPPED_BY_POLICY,
+                "reason_code": SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED,
+                "reason": "coordinated forged skip",
+            }
+        )
+        if row.source is SourceType.DAILYMED
+        else row
+        for row in validating.source_plan
+    )
+    forged = validating.model_copy(
+        update={
+            "source_plan": forged_plan,
+            "source_tasks": tuple(
+                task for task in validating.source_tasks if task.source is not SourceType.DAILYMED
+            ),
+        }
+    )
+    effects = (
+        tuple(harness.collector.calls),
+        tuple(harness.collector.source_stages),
+        len(harness.synthesis.prior_hashes),
+        len(harness.semantic.calls),
+        harness.receipts.save_calls,
+        harness.receipts.load_calls,
+        harness.persistence.calls,
+        harness.approval.calls,
+        harness.export.calls,
+        tuple(harness.collector.replay_calls),
+    )
+
+    with pytest.raises(WorkflowTransitionError, match="source plan replay failed"):
+        harness.workflow.validate_report(forged)
+
+    assert effects == (
+        tuple(harness.collector.calls),
+        tuple(harness.collector.source_stages),
+        len(harness.synthesis.prior_hashes),
+        len(harness.semantic.calls),
+        harness.receipts.save_calls,
+        harness.receipts.load_calls,
+        harness.persistence.calls,
+        harness.approval.calls,
+        harness.export.calls,
+        tuple(harness.collector.replay_calls),
+    )
+
+
+def test_skip_reason_drift_after_receipt_fails_before_any_postvalidation_effect() -> None:
+    scope = _scope(SourceType.DAILYMED, SourceType.PUBMED)
+    harness = Harness(
+        scope=scope,
+        outcomes={
+            SourceType.DAILYMED: _collected_result(
+                SourceType.DAILYMED,
+                scope=scope,
+                result=ResultStatus.NO_MATCH,
+            )
+        },
+        source_plan=_source_plan(
+            scope,
+            {SourceType.DAILYMED: PlanningStatus.SKIPPED_BY_POLICY},
+        ),
+    )
+    saving = _run_until_node(
+        harness.workflow,
+        _initial(scope),
+        WorkflowNode.SAVE_PENDING_DRAFT,
+    )
+    forged_plan = tuple(
+        row.model_copy(update={"reason": "forged postreceipt skip reason"})
+        if row.source is SourceType.DAILYMED
+        else row
+        for row in saving.source_plan
+    )
+    forged = saving.model_copy(update={"source_plan": forged_plan})
+    effects = (
+        harness.receipts.save_calls,
+        harness.receipts.load_calls,
+        harness.persistence.calls,
+        harness.approval.calls,
+        harness.export.calls,
+        tuple(harness.collector.replay_calls),
+    )
+
+    with pytest.raises(WorkflowTransitionError, match="source plan replay failed"):
+        harness.workflow.save_pending_draft(forged)
+
+    assert effects == (
+        harness.receipts.save_calls,
+        harness.receipts.load_calls,
+        harness.persistence.calls,
+        harness.approval.calls,
+        harness.export.calls,
+        tuple(harness.collector.replay_calls),
+    )
+
+
+def test_running_resume_input_subject_drift_fails_before_source_execution() -> None:
+    harness = Harness()
+    planned = _run_until_node(harness.workflow, _initial(), WorkflowNode.COLLECT_EVIDENCE)
+    running = harness.workflow.collect_evidence(planned)
+    harness.collector.drift_on_plan_call = 2
+
+    with pytest.raises(WorkflowTransitionError, match="resumed source operation plan drifted"):
+        harness.workflow.collect_evidence(running)
+    assert harness.collector.plan_calls == [
+        (SourceType.PUBMED, 1),
+        (SourceType.PUBMED, 1),
+    ]
+    assert harness.collector.calls == []
+
+
+@pytest.mark.parametrize("source", [SourceType.PUBMED, SourceType.DAILYMED])
+def test_progress_checkpoint_precedes_fetch_and_fresh_workflow_resumes_without_replay(
+    source: SourceType,
+) -> None:
+    scope = _scope(source)
+    harness = Harness(scope=scope, progress_once={source})
+    collecting = _run_until_node(harness.workflow, _initial(scope), WorkflowNode.COLLECT_EVIDENCE)
+    running = harness.workflow.collect_evidence(collecting)
+    progress = harness.workflow.collect_evidence(running)
+    progress_task = progress.source_tasks[0]
+
+    assert progress.checkpoint_id != running.checkpoint_id
+    assert progress_task.status is SourceTaskStatus.RUNNING
+    assert progress_task.active_attempt == running.source_tasks[0].active_attempt
+    assert len(progress_task.required_operations) > len(running.source_tasks[0].required_operations)
+    assert progress_task.operation_results
+    assert progress_task.terminal_outcome_ref is None
+    assert progress_task.evidence_refs == ()
+    assert progress_task.limitations == ()
+    assert harness.collector.source_stages == [(source, "search_or_discovery")]
+    assert "synthesize_claims" not in harness.events
+
+    fresh = harness.new_workflow()
+    terminal = fresh.collect_evidence(progress)
+    assert terminal.source_tasks[0].status is SourceTaskStatus.TERMINAL
+    assert harness.collector.source_stages == [
+        (source, "search_or_discovery"),
+        (source, "fetch"),
+    ]
+    assert "synthesize_claims" not in harness.events
+    advanced = fresh.collect_evidence(terminal)
+    assert advanced.current_node is WorkflowNode.SYNTHESIZE_CLAIMS
+
+
+def test_resumed_progress_with_alternate_suffix_fails_before_fetch() -> None:
+    source = SourceType.PUBMED
+    scope = _scope(source)
+    harness = Harness(scope=scope, progress_once={source})
+    collecting = _run_until_node(harness.workflow, _initial(scope), WorkflowNode.COLLECT_EVIDENCE)
+    running = harness.workflow.collect_evidence(collecting)
+    progress = harness.workflow.collect_evidence(running)
+    task = progress.source_tasks[0]
+    fetch = task.required_operations[1]
+    alternate = required_source_operation(
+        run_id=fetch.run_id,
+        scope_id=fetch.scope_id,
+        source=fetch.source,
+        ordinal=fetch.ordinal,
+        kind=fetch.kind,
+        query_id=fetch.query_id,
+        input_refs=(
+            SourceOperationInputRef(
+                role=SourceOperationInputRole.PUBMED_PMID,
+                value="99999999",
+            ),
+        ),
+    )
+    forged_task = SourceTaskState.model_validate(
+        {
+            **task.model_dump(mode="python"),
+            "required_operations": (task.required_operations[0], alternate),
+        }
+    )
+    forged = progress.model_copy(update={"source_tasks": (forged_task,)})
+
+    with pytest.raises(WorkflowExecutionError) as captured:
+        harness.new_workflow().collect_evidence(forged)
+    assert isinstance(captured.value.__cause__, ValueError)
+    assert "suffix drift" in str(captured.value.__cause__)
+    assert harness.collector.source_stages == [(source, "search_or_discovery")]
+
+
+@pytest.mark.parametrize("forgery", ["attempt", "plan_prefix"])
+def test_progress_forgery_rejects_without_checkpoint(forgery: str) -> None:
+    source = SourceType.PUBMED
+    scope = _scope(source)
+    harness = Harness(scope=scope)
+    collecting = _run_until_node(harness.workflow, _initial(scope), WorkflowNode.COLLECT_EVIDENCE)
+    running = harness.workflow.collect_evidence(collecting)
+    attempt = running.source_tasks[0].active_attempt
+    assert attempt is not None
+    result = _collected_result(source, scope=scope, attempt=attempt, with_fetch=True)
+    raw = SourceTaskProgressResult(
+        attempt=attempt,
+        required_operations=result.required_operations,
+        operation_results=result.operation_results[:1],
+    )
+    if forgery == "attempt":
+        raw = SourceTaskProgressResult.model_construct(
+            schema_version=raw.schema_version,
+            attempt=source_task_attempt(running.source_tasks[0].task_id, 2),
+            required_operations=raw.required_operations,
+            operation_results=raw.operation_results,
+        )
+    else:
+        foreign_scope = _scope(SourceType.PUBMED, SourceType.DAILYMED)
+        foreign = _collected_result(
+            source,
+            scope=foreign_scope,
+            attempt=attempt,
+            with_fetch=True,
+        )
+        raw = SourceTaskProgressResult(
+            attempt=attempt,
+            required_operations=foreign.required_operations,
+            operation_results=foreign.operation_results[:1],
+        )
+    harness.collector.raw_override = raw
+
+    with pytest.raises((ValidationError, WorkflowTransitionError)):
+        harness.workflow.collect_evidence(running)
+    assert running.source_tasks[0].operation_results == ()
+    assert running.source_tasks[0].status is SourceTaskStatus.RUNNING
+
+
+def test_retry_after_progress_clears_progress_and_replans_new_attempt() -> None:
+    source = SourceType.PUBMED
+    scope = _scope(source)
+    harness = Harness(scope=scope, progress_once={source})
+    collecting = _run_until_node(harness.workflow, _initial(scope), WorkflowNode.COLLECT_EVIDENCE)
+    running = harness.workflow.collect_evidence(collecting)
+    progress = harness.workflow.collect_evidence(running)
+    assert progress.source_tasks[0].operation_results
+    harness.collector.typed_failures[source] = [CollectionFailureClassification.RETRYABLE]
+
+    retry_wait = harness.new_workflow().collect_evidence(progress)
+    assert retry_wait.source_tasks[0].status is SourceTaskStatus.RETRY_WAIT
+    assert retry_wait.source_tasks[0].operation_results == ()
+    replanned = harness.new_workflow().collect_evidence(retry_wait)
+    task = replanned.source_tasks[0]
+    assert task.status is SourceTaskStatus.RUNNING
+    assert task.attempts == 2
+    assert task.operation_results == ()
+    assert len(task.required_operations) == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (SourceType.FAERS, tuple(FAERS_MANDATORY_LIMITATIONS)),
+        (SourceType.CADEC, tuple(CADEC_MANDATORY_LIMITATIONS)),
+    ],
+)
+def test_workflow_terminal_task_retains_exact_source_limitations(
+    source: SourceType,
+    expected: tuple[str, ...],
+) -> None:
+    scope = _scope(source)
+    harness = Harness(scope=scope)
+    collecting = _run_until_node(harness.workflow, _initial(scope), WorkflowNode.COLLECT_EVIDENCE)
+    running = harness.workflow.collect_evidence(collecting)
+    terminal = harness.workflow.collect_evidence(running)
+    task = terminal.source_tasks[0]
+
+    assert task.status is SourceTaskStatus.TERMINAL
+    assert task.limitations == expected
+    assert task.terminal_outcome_ref is not None
+    assert task.terminal_outcome_ref.terminal_outcome_id == derive_identity(
+        "source-task-terminal-outcome", task.terminal_outcome_ref.outcome
+    )
+    assert task.terminal_outcome_ref.operation_acquisition_ids == tuple(
+        item.acquisition.acquisition_id for item in task.operation_results
+    )
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["synthesis", "validation", "save", "approval", "export", "terminal_return"],
+)
+def test_terminal_replay_rejects_self_consistent_child_forgery_before_downstream_effects(
+    route: str,
+) -> None:
+    harness = Harness()
+    if route == "terminal_return":
+        valid = _run_until_terminal(harness.workflow, _initial())
+        operation = harness.workflow.run_next
+    else:
+        node = {
+            "synthesis": WorkflowNode.SYNTHESIZE_CLAIMS,
+            "validation": WorkflowNode.VALIDATE_REPORT,
+            "save": WorkflowNode.SAVE_PENDING_DRAFT,
+            "approval": WorkflowNode.REQUEST_EXPORT_APPROVAL,
+            "export": WorkflowNode.FINALIZE_AND_EXPORT,
+        }[route]
+        valid = _run_until_node(harness.workflow, _initial(), node)
+        operation = {
+            "synthesis": harness.workflow.synthesize_claims,
+            "validation": harness.workflow.validate_report,
+            "save": harness.workflow.save_pending_draft,
+            "approval": harness.workflow.request_export_approval,
+            "export": harness.workflow.finalize_and_export,
+        }[route]
+    forged = _self_consistent_terminal_child_forgery(valid)
+    before = (
+        tuple(harness.events),
+        tuple(harness.synthesis.prior_hashes),
+        len(harness.semantic.calls),
+        harness.persistence.calls,
+        harness.approval.calls,
+        harness.export.calls,
+        forged.checkpoint_id,
+    )
+
+    with pytest.raises(WorkflowTransitionError, match="source terminal replay failed"):
+        operation(forged)
+    assert before == (
+        tuple(harness.events),
+        tuple(harness.synthesis.prior_hashes),
+        len(harness.semantic.calls),
+        harness.persistence.calls,
+        harness.approval.calls,
+        harness.export.calls,
+        forged.checkpoint_id,
+    )
+
+
+def test_valid_terminal_replay_reaches_every_trusted_entry_and_terminal_return() -> None:
+    harness = Harness()
+    exported = _run_until_terminal(harness.workflow, _initial())
+    assert harness.collector.replay_calls == [SourceType.PUBMED] * 6
+
+    assert harness.workflow.run_next(exported) == exported
+    assert harness.workflow.finalize_and_export(exported) == exported
+    assert harness.collector.replay_calls == [SourceType.PUBMED] * 8
+
+
+def test_replay_only_validation_is_noop_before_collection_and_on_valid_terminal_state() -> None:
+    harness = Harness()
+    initial = _initial()
+    assert harness.workflow.validate_terminal_sources(initial) == initial
+    assert harness.collector.replay_calls == []
+
+    terminal = _run_until_terminal(harness.workflow, initial)
+    before = (
+        terminal.checkpoint_id,
+        tuple(harness.events),
+        harness.persistence.calls,
+        harness.approval.calls,
+        harness.export.calls,
+    )
+    assert harness.workflow.validate_terminal_sources(terminal) == terminal
+    assert before == (
+        terminal.checkpoint_id,
+        tuple(harness.events),
+        harness.persistence.calls,
+        harness.approval.calls,
+        harness.export.calls,
+    )
+
+
+@pytest.mark.parametrize("drift", ["terminal_outcome_id", "operation_acquisition_ids"])
+def test_mismatched_terminal_aggregate_binding_rejects_before_checkpoint(drift: str) -> None:
+    harness = Harness()
+    collecting = _run_until_node(harness.workflow, _initial(), WorkflowNode.COLLECT_EVIDENCE)
+    running = harness.workflow.collect_evidence(collecting)
+    attempt = running.source_tasks[0].active_attempt
+    assert attempt is not None
+    valid = _collected_result(SourceType.PUBMED, attempt=attempt)
+    terminal = valid.terminal_outcome_ref
+    terminal_payload = {
+        "schema_version": terminal.schema_version,
+        "terminal_outcome_id": terminal.terminal_outcome_id,
+        "operation_acquisition_ids": terminal.operation_acquisition_ids,
+        "acquisition": terminal.acquisition,
+        "outcome": terminal.outcome,
+    }
+    if drift == "terminal_outcome_id":
+        terminal_payload["terminal_outcome_id"] = derive_identity(
+            "source-task-terminal-outcome", {"foreign": True}
+        )
+    else:
+        terminal_payload["operation_acquisition_ids"] = (
+            derive_identity("source-operation-acquisition", {"foreign": True}),
+        )
+    malformed_terminal = TerminalSourceOutcomeRef.model_construct(**terminal_payload)
+    harness.collector.raw_override = CollectedEvidenceResult.model_construct(
+        schema_version=valid.schema_version,
+        attempt=valid.attempt,
+        required_operations=valid.required_operations,
+        operation_results=valid.operation_results,
+        terminal_outcome_ref=malformed_terminal,
+        evidence_refs=valid.evidence_refs,
+        limitations=valid.limitations,
+    )
+
+    with pytest.raises(ValidationError):
+        harness.workflow.collect_evidence(running)
+    assert harness.collector.calls == [SourceType.PUBMED]
+    assert running.source_tasks[0].status is SourceTaskStatus.RUNNING
+
+
+def test_degraded_cadec_observation_rejects_during_durable_state_reconstruction() -> None:
+    scope = _scope(SourceType.CADEC)
+    harness = Harness(scope=scope)
+    collecting = _run_until_node(harness.workflow, _initial(scope), WorkflowNode.COLLECT_EVIDENCE)
+    failed = _collected_result(
+        SourceType.CADEC,
+        execution=ExecutionStatus.FAILED,
+        coverage=CoverageStatus.UNAVAILABLE,
+        result=ResultStatus.INDETERMINATE,
+    )
+    matched = _collected_result(SourceType.CADEC)
+    foreign_evidence = matched.evidence_refs[0]
+    final_result = failed.operation_results[-1]
+    forbidden_observation = source_operation_observation(
+        operation=final_result.operation,
+        acquisition=final_result.acquisition,
+        evidence_id=foreign_evidence.evidence_id,
+        content_hash=foreign_evidence.content_hash,
+        locator_ref=foreign_evidence.locator_ref,
+    )
+    malformed_results = (
+        *failed.operation_results[:-1],
+        final_result.model_copy(update={"observations": (forbidden_observation,)}),
+    )
+    malformed_task = SourceTaskState.model_construct(
+        schema_version="m3.source-task.v3",
+        task_id=collecting.source_tasks[0].task_id,
+        source=SourceType.CADEC,
+        required_operations=failed.required_operations,
+        operation_results=malformed_results,
+        status=SourceTaskStatus.TERMINAL,
+        attempts=1,
+        active_attempt=None,
+        failure_history=(),
+        terminal_outcome_ref=failed.terminal_outcome_ref,
+        evidence_refs=(foreign_evidence,),
+        limitations=failed.limitations,
+    )
+    corrupt = collecting.model_copy(update={"source_tasks": (malformed_task,)})
+
+    with pytest.raises(WorkflowTransitionError, match="valid durable checkpoint"):
+        harness.workflow.collect_evidence(corrupt)
+    assert harness.collector.plan_calls == []
+    assert harness.collector.calls == []
+
+
+@pytest.mark.parametrize("drift", ["missing", "duplicate", "foreign"])
+def test_scope_plan_row_identity_fails_before_task_or_source_execution(drift: str) -> None:
+    scope = _scope(SourceType.DAILYMED, SourceType.PUBMED)
+    rows = tuple(
+        M1BSourcePlanEntryV1(source=source, planning_status=PlanningStatus.SELECTED)
+        for source in scope.selected_sources
+    )
+    if drift == "missing":
+        forged = rows[:1]
+    elif drift == "duplicate":
+        forged = (rows[0], rows[0])
+    else:
+        forged = (
+            rows[0],
+            M1BSourcePlanEntryV1(
+                source=SourceType.FAERS,
+                planning_status=PlanningStatus.SELECTED,
+            ),
+        )
+
+    with pytest.raises(SourceCapabilityContractError, match="exactly one canonical plan row"):
+        CanonicalSourcePlanningAuthority(scope, forged)
 
 
 @pytest.mark.parametrize("target", ["failure_attempt", "result_attempt", "source", "run"])
@@ -1120,9 +2091,14 @@ def test_collection_result_bindings_reject_before_checkpoint(target: str) -> Non
         )
         message = "result belongs to another attempt"
     elif target == "source":
-        harness.collector.raw_override = _collected_result(
-            SourceType.DAILYMED,
+        foreign = _collected_result(SourceType.DAILYMED)
+        harness.collector.raw_override = CollectedEvidenceResult.model_construct(
+            schema_version=foreign.schema_version,
             attempt=attempt,
+            required_operations=foreign.required_operations,
+            operation_results=foreign.operation_results,
+            terminal_outcome_ref=foreign.terminal_outcome_ref,
+            evidence_refs=foreign.evidence_refs,
         )
         message = "result belongs to another source"
     else:
@@ -1138,7 +2114,8 @@ def test_collection_result_bindings_reject_before_checkpoint(target: str) -> Non
         )
         message = "result belongs to another run"
     checkpoint = running.checkpoint_id
-    with pytest.raises(WorkflowTransitionError, match=message):
+    expected_error = ValidationError if target in {"source", "run"} else WorkflowTransitionError
+    with pytest.raises(expected_error, match=message if target not in {"source", "run"} else None):
         harness.workflow.collect_evidence(running)
     assert running.checkpoint_id == checkpoint
     assert harness.persistence.calls == 0
@@ -1239,6 +2216,7 @@ def test_retry_exhausted_terminal_failure_is_not_repeated_on_resume() -> None:
     state = harness.workflow.run_next(state)
     failed = _collected_result(
         SourceType.PUBMED,
+        attempt=source_task_attempt(state.source_tasks[0].task_id, 2),
         execution=ExecutionStatus.FAILED,
         coverage=CoverageStatus.UNAVAILABLE,
         result=ResultStatus.INDETERMINATE,
@@ -1246,9 +2224,12 @@ def test_retry_exhausted_terminal_failure_is_not_repeated_on_resume() -> None:
     terminal_task = SourceTaskState(
         task_id=state.source_tasks[0].task_id,
         source=SourceType.PUBMED,
+        required_operations=failed.required_operations,
+        operation_results=failed.operation_results,
         status=SourceTaskStatus.TERMINAL,
         attempts=2,
         terminal_outcome_ref=failed.terminal_outcome_ref,
+        evidence_refs=failed.evidence_refs,
     )
     resumed = OrchestrationState.model_validate(
         {
@@ -1975,7 +2956,7 @@ def test_loaded_pending_draft_drift_fails_before_receipt_or_later_effect(
     assert effects == (harness.persistence.calls, harness.approval.calls, harness.export.calls)
 
 
-def test_instance_shadowed_binding_helper_cannot_bypass_invalid_preflight() -> None:
+def test_workflow_is_final_slotted_and_immutable_without_bypassing_preflight() -> None:
     harness = Harness()
     saving = _run_until_node(
         harness.workflow,
@@ -1983,22 +2964,31 @@ def test_instance_shadowed_binding_helper_cannot_bypass_invalid_preflight() -> N
         WorkflowNode.SAVE_PENDING_DRAFT,
     )
 
-    class ShadowingWorkflow(ControlledOrchestrationWorkflow):
-        pass
+    with pytest.raises(TypeError, match="workflow is final"):
 
-    workflow = ShadowingWorkflow(
-        scope_safety=harness.scope_safety,
-        source_planning=harness.planner,
-        evidence_collection=harness.collector,
-        synthesis=harness.synthesis,
-        validation_registry=harness.registry,
-        semantic_result_provider=harness.semantic,
-        validation_receipt_store=harness.receipts,
-        draft_persistence=harness.persistence,
-        export_approval=harness.approval,
-        export=harness.export,
-    )
-    workflow.__dict__["_verify_binding"] = lambda *args, **kwargs: None
+        class ShadowingWorkflow(ControlledOrchestrationWorkflow):  # type: ignore[misc]
+            pass
+
+    workflow = harness.workflow
+    with pytest.raises(SourceCapabilityContractError, match="canonical source planning authority"):
+        ControlledOrchestrationWorkflow(
+            scope_safety=harness.scope_safety,
+            source_planning=object(),  # type: ignore[arg-type]
+            evidence_collection=harness.collector,
+            synthesis=harness.synthesis,
+            validation_registry=harness.registry,
+            semantic_result_provider=harness.semantic,
+            validation_receipt_store=harness.receipts,
+            draft_persistence=harness.persistence,
+            export_approval=harness.approval,
+            export=harness.export,
+        )
+    assert not hasattr(workflow, "__dict__")
+    for name in ControlledOrchestrationWorkflow.__slots__:
+        with pytest.raises(AttributeError, match="immutable after construction"):
+            setattr(workflow, name, object())
+    with pytest.raises(AttributeError):
+        workflow._verify_binding = lambda *args, **kwargs: None  # type: ignore[method-assign]
     unknown = ValidationReceiptRef(
         receipt_id="validation-receipt:sha256:" + "f" * 64,
         receipt_content_hash=HASH_TWO,
@@ -2017,7 +3007,6 @@ def test_instance_shadowed_binding_helper_cannot_bypass_invalid_preflight() -> N
     ):
         workflow.save_pending_draft(corrupt)
 
-    assert workflow.__dict__["_verify_binding"] is not None
     assert harness.receipts.load_calls == receipt_load_calls + 1
     assert effects == (
         harness.persistence.calls,
@@ -2114,7 +3103,7 @@ def test_public_node_guards_reject_terminal_and_wrong_current_node() -> None:
     active_harness = Harness()
     with pytest.raises(WorkflowTransitionError, match="expected current node"):
         active_harness.workflow.plan_sources(_initial())
-    assert active_harness.planner.events.count("plan_sources") == 0
+    assert active_harness.collector.calls == []
 
 
 @pytest.mark.parametrize("target", ["permission", "missing_synthesis", "repeated"])
@@ -2355,7 +3344,24 @@ def test_duplicate_evidence_id_across_valid_selected_tasks_hits_application_guar
     duplicate_id_evidence = second_evidence.model_copy(
         update={"evidence_id": first_evidence.evidence_id}
     )
-    corrupt_second = second.model_copy(update={"evidence_refs": (duplicate_id_evidence,)})
+    final_result = second.operation_results[-1]
+    duplicate_observation = source_operation_observation(
+        operation=final_result.operation,
+        acquisition=final_result.acquisition,
+        evidence_id=first_evidence.evidence_id,
+        content_hash=second_evidence.content_hash,
+        locator_ref=second_evidence.locator_ref,
+    )
+    corrupt_results = (
+        *second.operation_results[:-1],
+        final_result.model_copy(update={"observations": (duplicate_observation,)}),
+    )
+    corrupt_second = second.model_copy(
+        update={
+            "operation_results": corrupt_results,
+            "evidence_refs": (duplicate_id_evidence,),
+        }
+    )
     corrupt = synthesized.model_copy(update={"source_tasks": (first, corrupt_second)})
     harness = Harness(scope=scope)
 
@@ -2575,6 +3581,62 @@ def test_closed_application_composition_ast_and_runtime_inventory() -> None:
             and isinstance(item.func, ast.Name)
             and item.func.id == name
         ]
+
+    def class_call_lines(method: str, attribute: str) -> list[int]:
+        return [
+            item.lineno
+            for item in ast.walk(methods[method])
+            if isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Attribute)
+            and isinstance(item.func.value, ast.Name)
+            and item.func.value.id == "__class__"
+            and item.func.attr == attribute
+        ]
+
+    workflow_classes = [
+        item
+        for item in tree.body
+        if isinstance(item, ast.ClassDef) and item.name == "ControlledOrchestrationWorkflow"
+    ]
+    assert len(workflow_classes) == 1
+    assert any(
+        isinstance(item, ast.Name) and item.id == "final"
+        for item in workflow_classes[0].decorator_list
+    )
+    authority_plan_calls = [
+        item
+        for item in ast.walk(methods["plan_sources"])
+        if isinstance(item, ast.Call)
+        and isinstance(item.func, ast.Attribute)
+        and isinstance(item.func.value, ast.Name)
+        and item.func.value.id == "CanonicalSourcePlanningAuthority"
+        and item.func.attr == "plan"
+    ]
+    assert len(authority_plan_calls) == 1
+    assert not any(
+        isinstance(item, ast.Call)
+        and isinstance(item.func, ast.Attribute)
+        and item.func.attr == "plan"
+        and isinstance(item.func.value, ast.Attribute)
+        and isinstance(item.func.value.value, ast.Name)
+        and item.func.value.value.id == "self"
+        for item in ast.walk(methods["plan_sources"])
+    )
+    for method in (
+        "collect_evidence",
+        "synthesize_claims",
+        "validate_report",
+        "save_pending_draft",
+        "request_export_approval",
+        "finalize_and_export",
+    ):
+        assert len(class_call_lines(method, "validate_terminal_sources")) == 1
+    for method in ("run_next", "validate_terminal_sources"):
+        plan_lines = class_call_lines(method, "_replay_source_plan")
+        terminal_lines = class_call_lines(method, "_replay_terminal_tasks")
+        assert len(plan_lines) == len(terminal_lines) == 1
+        assert plan_lines[0] < terminal_lines[0]
+    assert len(named_call_lines("_build_validation_request", "source_plan_identity")) == 1
 
     calls = [
         item
