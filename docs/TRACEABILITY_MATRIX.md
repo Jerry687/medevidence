@@ -42,6 +42,63 @@ dependency, route, and index gates passed. Persisting audit evidence changes
 the candidate bytes; final-byte rebind and Git remain pending, with no
 completion, integration, or FAERS-002 claim.
 
+## M3-005 LangGraph PostgreSQL checkpoint-runtime candidate
+
+Owner authorization `OWNER FULL M3 RUNTIME AUTHORIZATION - V1`, accepted
+2026-08-28 with SHA-256
+`e6b812f6411b8e8a62a559ae0182b45cae25bc70d0173c135b94e97b8cd73fa8`,
+freezes this work item against baseline
+`b29c2b5805dbb3d6be251cac2480f050f81928b7`. [ADR-017](decisions/ADR-017-langgraph-postgres-checkpoint-runtime.md)
+governs the exact dependency, topology, checkpoint, serialization, and
+infrastructure boundary.
+
+| Requirement | M3-005 implementation evidence | Candidate acceptance and remaining gate |
+|---|---|---|
+| [`V1-FR-012`](PRD.md#v1-fr-012--controlled-orchestration) | `langgraph_runtime.py` coordinates exactly the eight frozen `WorkflowNode` capabilities; graph code owns no connector, source parser, retrieval, validation-policy, receipt, or export-persistence logic and defines no retry policy | Exact topology, route, completed-task recovery, source-failure visibility, and dependency-boundary tests must pass fresh review |
+| [`V1-FR-014`](PRD.md#v1-fr-014--human-approved-export) | The compiled graph has one `interrupt_before`, exactly at `request_export_approval`; `save_pending_draft` precedes it and `finalize_and_export` remains a separate application capability | Approval/rejection/export business semantics remain in the accepted workflow; M3-005 adds no lifecycle record or export destination and cannot claim full export acceptance |
+| [`V1-NFR-002`](PRD.md#v1-nfr-002--provenance-and-reproducibility) | Runtime derives `thread_id = run_id`, fixes namespace `m3.orchestration-state.v2`, and rejects cross-run or namespace drift | Exact version, lock, schema, run, namespace, and code identities must be rebound before audit |
+| [`V1-NFR-004`](PRD.md#v1-nfr-004--offline-deterministic-tests) | Unit tests use in-memory checkpointing with socket disabled; PostgreSQL is a separately selected disposable local integration | Full unit/contract suite remains offline; no default test may start PostgreSQL or access a medical/provider endpoint |
+| [`V1-NFR-005`](PRD.md#v1-nfr-005--replaceable-infrastructure) | The application runtime accepts `BaseCheckpointSaver`; the infrastructure adapter alone imports `PostgresSaver`; inner layers do not import infrastructure or query checkpoint tables | Architecture/dependency tests must prove no LangGraph/PostgreSQL-native object crosses application contracts |
+| [`V1-NFR-006`](PRD.md#v1-nfr-006--observability) | Run/thread and fixed namespace are deterministic checkpoint identities | Timings, source operation, model/config, approval, and export observability are deferred to their authorized M3-006+ work items |
+
+The exact M3-005 allowlist contains 15 paths: two dependency files, the
+dependency-audit script and boundary test, two orchestration sources, two
+infrastructure sources, three focused runtime/infrastructure test files,
+ADR-017, the ADR index, this matrix, and the delivery record. It excludes
+contracts, workflow, persistence models/migrations, API/OpenAPI, source,
+provider, and export-lifecycle changes. Fourteen paths currently differ from
+baseline; the allowlisted orchestration package root is restored exactly to
+baseline.
+
+The dependency boundary is baseline 86 to current 107 governed identities:
+21 new package names plus the sole dev-tool security upgrade from
+`pip==26.1.2` to `pip==26.2.1` for `PYSEC-2026-3721` /
+`CVE-2026-13346` (`fixed>=26.2`). Both Owner-frozen direct pins remain exact.
+Fresh supervisor evidence is focused `214 passed`, full offline `2559 passed`
+with `82%` coverage, and Ruff, format, strict MyPy, lock, scope, diff, secret,
+and dependency gates PASS. Because this matrix is itself a dependency-audit
+candidate path, it does not embed or claim its own current dependency candidate
+identity or evidence-manifest hash. Exact dependency evidence is generated
+externally only after all candidate-path documents freeze, then recorded in the
+non-candidate-path delivery/terminal handoff.
+
+Round-6 independent review remains immutable
+`FAIL — P0 0 / P1 3 / P2 2`. Round 7 closed all executable findings; its fresh
+re-review verified those closures and returned immutable
+`FAIL — P0 0 / P1 0 / P2 1` solely because the delivery record still described
+earlier bytes and evidence. Round 8 updates only the four governance/evidence
+paths. Its re-review returned immutable `FAIL — P0 0 / P1 0 / P2 1` because
+embedding a pre-document dependency candidate identity in this candidate-path
+matrix recreated a self-binding stale-evidence cycle. Round 9 removes that
+claim in phase 1, freezes all dependency-audit candidate paths, runs the exact
+dependency audit externally, and only then records its identities in the
+delivery file, which is not a dependency-audit candidate path. Fresh re-review
+remains pending. The earlier primitive fixed-namespace
+PostgreSQL test passed `1/1`; the final real eight-node runtime PostgreSQL test
+is implemented but remains unexecuted after the Docker host crashed. Exact-
+byte rebind and terminal audit remain pending. No final PASS, commit, push, PR,
+merge, Holdout, medical-source, provider, or model claim is made.
+
 ## 1. Purpose and use
 
 This matrix maps every V1 requirement to exact governing design locations,
