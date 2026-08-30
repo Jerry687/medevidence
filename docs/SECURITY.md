@@ -1,5 +1,24 @@
 # Security, Medical Safety, and Trust Boundaries
 
+## M3-008B DeepSeek calibration-provider boundary
+
+ADR-021 replaces only the not-yet-executed formal M3-008B provider decision.
+The active calibration adapter permits only
+`POST https://api.deepseek.com/responses`, `deepseek-v4-pro`, high reasoning,
+empty tools, disabled web search, and exact bounded structured output. It is a
+dedicated DeepSeek envelope and transport authority, not an OpenAI base-URL
+swap or runtime provider selector. The environment credential is excluded from
+request evidence, hashes, logs, errors, and persistence.
+
+DeepSeek's stateless response/conversation interface does not imply zero
+operational or privacy retention. Prompts, inputs, outputs, account, and network
+data may be processed/stored under the provider policy, with varying retention
+and possible processing/storage in the PRC. Owner acceptance is public-data V1
+only: PHI, identifiable patient information, private clinical records,
+credentials, and Holdout content are prohibited. Exact packet validation,
+explicit live authorization, absent external output, and key presence all fail
+closed before provider effects.
+
 ## FAERS-001 closed trust metadata
 
 `FAERS_M1B_CONSTRAINED_V1` is a frozen, non-weakenable design tuple, not network
@@ -717,7 +736,7 @@ contracts, and Holdout-20 remain unchanged and sealed.
 
 ## 24. M3-008A independent Stage-2 evaluator trust boundary
 
-The only approved Stage-2 provider surface is
+For the immutable M3-008A historical framework, the approved provider surface was
 `POST https://api.openai.com/v1/responses` through existing HTTPX with model
 `gpt-5.6-terra` and reasoning effort `medium`. Requests set `store=false` and
 `background=false`, provide no tools, and do not opt into extended prompt-cache
@@ -759,9 +778,10 @@ final, release, or Holdout inputs. It requires the exact current evaluator
 model and prompt/rubric/schema/configuration hashes. Raw artifacts are append-
 only and versioned; raw provider output is strictly re-parsed and cross-bound
 to parsed semantic fields, rationale, input, trace, and response identity before
-metrics. Holdout-20 remains sealed. Because no approved human semantic packet
-and no provider key are currently available, M3-008B calibration is
-`BLOCKED_EXTERNAL_INPUTS`; absence of either input cannot become a fake PASS.
+metrics. Holdout-20 remains sealed. The later Project-Owner packet is frozen,
+and ADR-021 replaces only the unexecuted formal M3-008B provider decision.
+DeepSeek pre-network review and calibration evidence remain pending; a missing
+credential or invalid input cannot become a fake PASS.
 
 The exact Round 5 closure-candidate hashes are prompt
 `sha256:36958196b5de6f21c73d05957564da6cb8887338686e748bbdb9db85365b5ba1`,

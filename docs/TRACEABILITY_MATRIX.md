@@ -1,5 +1,17 @@
 # V1 Traceability Matrix
 
+## M3-008B DeepSeek Development calibration
+
+ADR-021 freezes the only active formal calibration provider as the dedicated
+DeepSeek Responses profile. It binds the unchanged 36-case Project-Owner
+resolution identity, canonical Stage-1 request bytes, exact credential-free
+request/response bytes, response identity, usage, and configuration hash.
+Pre-network review and audit must pass before the first call. The live runner
+uses no labels, tools, web search, conversation continuation, Holdout content,
+or medical-source network. Calibration acceptance is recomputed from saved raw
+evidence using the Owner-frozen zero-tolerance, agreement, per-state count, and
+per-state recall thresholds.
+
 ## M3-008A independent Stage-2 evaluator framework
 
 Owner Decisions L and M authorize only the isolated M3-008A framework at
@@ -31,11 +43,11 @@ schema
 and configuration
 `sha256:603e5cc567c3e0bb6ec006de6835ab5309adf39dc333912b18622cbfe6ed1934`.
 
-No Owner-approved human semantic packet and no provider key are currently
-available. M3-008A may implement and validate the offline framework;
-M3-008B calibration remains `BLOCKED_EXTERNAL_INPUTS`. This section claims no
-framework PASS, calibration PASS, provider execution, independent review,
-audit, commit, push, PR, merge, workflow integration, or Holdout access.
+This is immutable historical M3-008A configuration evidence. The later frozen
+Project-Owner packet is now available and ADR-021 replaces only the unexecuted
+M3-008B provider decision. DeepSeek pre-network review, calibration execution,
+and terminal evidence remain pending; this historical section makes no such
+PASS, provider-execution, workflow-integration, or Holdout claim.
 
 Review001 returned immutable `FAIL — P0 0 / P1 4 / P2 0`; Review002 returned
 immutable `FAIL — P0 0 / P1 5 / P2 1`; Review003 returned immutable

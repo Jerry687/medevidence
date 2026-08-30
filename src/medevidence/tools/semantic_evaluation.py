@@ -58,6 +58,12 @@ SEMANTIC_EVALUATION_MODEL = "gpt-5.6-terra"
 SEMANTIC_EVALUATION_REASONING_EFFORT = "medium"
 SEMANTIC_EVALUATION_ENDPOINT = "https://api.openai.com/v1/responses"
 
+DEEPSEEK_SEMANTIC_EVALUATION_CONFIG_VERSION = "m3.semantic-evaluation.deepseek-responses.v1"
+DEEPSEEK_SEMANTIC_EVALUATION_METHOD = "deepseek.responses.independent_semantic_evaluation"
+DEEPSEEK_SEMANTIC_EVALUATION_MODEL = "deepseek-v4-pro"
+DEEPSEEK_SEMANTIC_EVALUATION_REASONING_EFFORT = "high"
+DEEPSEEK_SEMANTIC_EVALUATION_ENDPOINT = "https://api.deepseek.com/responses"
+
 MAX_EVALUATION_INPUT_BYTES = 65_536
 MAX_EVALUATION_OUTPUT_BYTES = 16_384
 MAX_EVALUATION_PROVIDER_REQUEST_BYTES = 262_144
@@ -471,9 +477,10 @@ class SemanticEvaluationResult(DurableModel):
     explanation: BoundedExplanation
     explanation_hash: Sha256Digest
     human_review_required: bool
-    method: Literal["openai.responses.independent_semantic_evaluation"] = (
-        "openai.responses.independent_semantic_evaluation"
-    )
+    method: Literal[
+        "openai.responses.independent_semantic_evaluation",
+        "deepseek.responses.independent_semantic_evaluation",
+    ] = "openai.responses.independent_semantic_evaluation"
     version: Literal["m3.semantic-evaluation.v1"] = "m3.semantic-evaluation.v1"
     prompt_version: Literal["m3.semantic-evaluation.prompt.v1"] = "m3.semantic-evaluation.prompt.v1"
     prompt_hash: Sha256Digest
@@ -483,12 +490,38 @@ class SemanticEvaluationResult(DurableModel):
         "m3.semantic-evaluation.result.v1"
     )
     response_schema_hash: Sha256Digest
-    configuration_version: Literal["m3.semantic-evaluation.openai-responses.v1"] = (
-        "m3.semantic-evaluation.openai-responses.v1"
-    )
+    configuration_version: Literal[
+        "m3.semantic-evaluation.openai-responses.v1",
+        "m3.semantic-evaluation.deepseek-responses.v1",
+    ] = "m3.semantic-evaluation.openai-responses.v1"
     configuration_hash: Sha256Digest
-    model: Literal["gpt-5.6-terra"] = "gpt-5.6-terra"
-    reasoning_effort: Literal["medium"] = "medium"
+    model: Literal["gpt-5.6-terra", "deepseek-v4-pro"] = "gpt-5.6-terra"
+    reasoning_effort: Literal["medium", "high"] = "medium"
+
+    @model_validator(mode="after")
+    def validate_exact_provider_profile(self) -> Self:
+        observed = (
+            self.method,
+            self.configuration_version,
+            self.model,
+            self.reasoning_effort,
+        )
+        if observed not in {
+            (
+                SEMANTIC_EVALUATION_METHOD,
+                SEMANTIC_EVALUATION_CONFIG_VERSION,
+                SEMANTIC_EVALUATION_MODEL,
+                SEMANTIC_EVALUATION_REASONING_EFFORT,
+            ),
+            (
+                DEEPSEEK_SEMANTIC_EVALUATION_METHOD,
+                DEEPSEEK_SEMANTIC_EVALUATION_CONFIG_VERSION,
+                DEEPSEEK_SEMANTIC_EVALUATION_MODEL,
+                DEEPSEEK_SEMANTIC_EVALUATION_REASONING_EFFORT,
+            ),
+        }:
+            raise ValueError("semantic evaluation provider profile drift")
+        return self
 
 
 class SemanticEvaluationConfiguration(DurableModel):
@@ -534,6 +567,63 @@ class SemanticEvaluationConfiguration(DurableModel):
             raise ValueError("semantic evaluation backoff must be exactly 0.25 seconds")
         if self.retryable_statuses != SEMANTIC_EVALUATION_RETRYABLE_STATUSES:
             raise ValueError("semantic evaluation retry statuses drift")
+        return self
+
+
+class DeepSeekSemanticEvaluationConfiguration(DurableModel):
+    """Exact DeepSeek-only M3-008B provider profile without a runtime selector."""
+
+    provider: Literal["DeepSeek API"] = "DeepSeek API"
+    configuration_version: Literal["m3.semantic-evaluation.deepseek-responses.v1"] = (
+        "m3.semantic-evaluation.deepseek-responses.v1"
+    )
+    endpoint: Literal["https://api.deepseek.com/responses"] = "https://api.deepseek.com/responses"
+    provider_contract_url: Literal["https://api-docs.deepseek.com/guides/responses_api"] = (
+        "https://api-docs.deepseek.com/guides/responses_api"
+    )
+    provider_privacy_policy_url: Literal[
+        "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html"
+    ] = "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html"
+    provider_policy_review_date: Literal["2026-08-30"] = "2026-08-30"
+    public_research_data_only: Literal[True] = True
+    model: Literal["deepseek-v4-pro"] = "deepseek-v4-pro"
+    reasoning_effort: Literal["high"] = "high"
+    prompt_version: Literal["m3.semantic-evaluation.prompt.v1"] = "m3.semantic-evaluation.prompt.v1"
+    prompt_hash: Sha256Digest
+    rubric_version: Literal["m3.semantic-evaluation.rubric.v1"] = "m3.semantic-evaluation.rubric.v1"
+    rubric_hash: Sha256Digest
+    response_schema_version: Literal["m3.semantic-evaluation.result.v1"] = (
+        "m3.semantic-evaluation.result.v1"
+    )
+    response_schema_hash: Sha256Digest
+    tools: tuple[()] = ()
+    tool_choice: Literal["none"] = "none"
+    web_search_enabled: Literal[False] = False
+    max_input_bytes: Literal[65536] = 65_536
+    max_output_bytes: Literal[16384] = 16_384
+    max_provider_request_bytes: Literal[262144] = 262_144
+    max_provider_response_bytes: Literal[131072] = 131_072
+    max_input_tokens: Literal[65536] = 65_536
+    max_output_tokens: Literal[4096] = 4_096
+    max_total_tokens: Literal[69632] = 69_632
+    max_attempts: Literal[3] = 3
+    connect_timeout_seconds: Literal[5] = 5
+    read_timeout_seconds: Literal[30] = 30
+    write_timeout_seconds: Literal[10] = 10
+    pool_timeout_seconds: Literal[5] = 5
+    total_deadline_seconds: Literal[45] = 45
+    retry_after_cap_seconds: Literal[2] = 2
+    backoff_base_seconds: float = 0.25
+    retryable_statuses: tuple[
+        Literal[429], Literal[500], Literal[502], Literal[503], Literal[504]
+    ] = (429, 500, 502, 503, 504)
+
+    @model_validator(mode="after")
+    def validate_exact_transport_profile(self) -> Self:
+        if type(self.backoff_base_seconds) is not float or self.backoff_base_seconds != 0.25:
+            raise ValueError("DeepSeek evaluation backoff must be exactly 0.25 seconds")
+        if self.retryable_statuses != SEMANTIC_EVALUATION_RETRYABLE_STATUSES:
+            raise ValueError("DeepSeek evaluation retry statuses drift")
         return self
 
 
@@ -645,6 +735,22 @@ def semantic_evaluation_configuration_bytes() -> bytes:
 
 
 SEMANTIC_EVALUATION_CONFIGURATION_HASH = _sha256(semantic_evaluation_configuration_bytes())
+
+DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION = DeepSeekSemanticEvaluationConfiguration(
+    prompt_hash=SEMANTIC_EVALUATION_PROMPT_HASH,
+    rubric_hash=SEMANTIC_EVALUATION_RUBRIC_HASH,
+    response_schema_hash=SEMANTIC_EVALUATION_SCHEMA_HASH,
+)
+
+
+def deepseek_semantic_evaluation_configuration_bytes() -> bytes:
+    payload = BaseModel.model_dump(DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION, mode="json")
+    return _canonical_json(payload).encode("utf-8")
+
+
+DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH = _sha256(
+    deepseek_semantic_evaluation_configuration_bytes()
+)
 
 
 def reconstruct_semantic_evaluation_usage(value: object) -> SemanticEvaluationUsage:
@@ -1139,6 +1245,37 @@ def build_semantic_evaluation_result(
         rubric_hash=SEMANTIC_EVALUATION_RUBRIC_HASH,
         response_schema_hash=SEMANTIC_EVALUATION_SCHEMA_HASH,
         configuration_hash=SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+    )
+
+
+def build_deepseek_semantic_evaluation_result(
+    request: SemanticEvaluationRequest,
+    candidate: SemanticEvaluationCandidate,
+) -> SemanticEvaluationResult:
+    """Bind one advisory candidate to the exact DeepSeek M3-008B profile."""
+
+    bound = _reconstruct_request(request)
+    output = _reconstruct_candidate(candidate)
+    expected_review = _human_review_required(bound, output)
+    if output.human_review_required is not expected_review:
+        raise SemanticEvaluationContractError("human_review_binding_invalid")
+    _validate_result_rationale(bound, output)
+    return SemanticEvaluationResult(
+        input_digest=bound.input_digest,
+        result=output.result,
+        rationale_codes=output.rationale_codes,
+        rationale_codes_hash=_rationale_codes_hash(output.rationale_codes),
+        explanation=output.explanation,
+        explanation_hash=_sha256(output.explanation.encode("utf-8")),
+        human_review_required=output.human_review_required,
+        method="deepseek.responses.independent_semantic_evaluation",
+        prompt_hash=SEMANTIC_EVALUATION_PROMPT_HASH,
+        rubric_hash=SEMANTIC_EVALUATION_RUBRIC_HASH,
+        response_schema_hash=SEMANTIC_EVALUATION_SCHEMA_HASH,
+        configuration_version="m3.semantic-evaluation.deepseek-responses.v1",
+        configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+        model="deepseek-v4-pro",
+        reasoning_effort="high",
     )
 
 
@@ -2236,11 +2373,15 @@ def _reconstruct_result(value: SemanticEvaluationResult) -> SemanticEvaluationRe
         raise SemanticEvaluationContractError("evaluation_result_invalid")
     _exact_tuple_of(object.__getattribute__(value, "rationale_codes"), SemanticRationaleCode)
     rebuilt = SemanticEvaluationResult.model_validate(BaseModel.model_dump(value, mode="python"))
+    configuration_hashes = {
+        SEMANTIC_EVALUATION_METHOD: SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+        DEEPSEEK_SEMANTIC_EVALUATION_METHOD: (DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH),
+    }
     if (
         rebuilt.prompt_hash != SEMANTIC_EVALUATION_PROMPT_HASH
         or rebuilt.rubric_hash != SEMANTIC_EVALUATION_RUBRIC_HASH
         or rebuilt.response_schema_hash != SEMANTIC_EVALUATION_SCHEMA_HASH
-        or rebuilt.configuration_hash != SEMANTIC_EVALUATION_CONFIGURATION_HASH
+        or rebuilt.configuration_hash != configuration_hashes.get(rebuilt.method)
     ):
         raise SemanticEvaluationContractError("evaluation_provenance_drift")
     return rebuilt

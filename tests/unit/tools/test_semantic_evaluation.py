@@ -38,6 +38,9 @@ from medevidence.tools.report_validation import (
     canonical_semantic_input_digest,
 )
 from medevidence.tools.semantic_evaluation import (
+    DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION,
+    DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+    DEEPSEEK_SEMANTIC_EVALUATION_METHOD,
     MAX_EVALUATION_EXPLANATION_CHARACTERS,
     MAX_EVALUATION_INPUT_TOKENS,
     MAX_EVALUATION_OUTPUT_BYTES,
@@ -62,6 +65,7 @@ from medevidence.tools.semantic_evaluation import (
     build_canonical_citation_stage1_binding,
     build_canonical_stage1_admission,
     build_comparability_metadata,
+    build_deepseek_semantic_evaluation_result,
     build_empty_comparability_metadata,
     build_formal_claim_citation_topology,
     build_semantic_evaluation_request,
@@ -1132,3 +1136,25 @@ def test_nested_request_mutation_breaks_exact_content_binding() -> None:
 
     with pytest.raises(SemanticEvaluationContractError, match="evaluation_request_invalid"):
         semantic_evaluation_input_bytes(request)
+
+
+def test_deepseek_profile_is_exact_and_result_authority_is_not_interchangeable() -> None:
+    request = _request(_input())
+    result = build_deepseek_semantic_evaluation_result(
+        request, _candidate(SemanticSupport.SUPPORTED, review=False)
+    )
+    assert result.method == DEEPSEEK_SEMANTIC_EVALUATION_METHOD
+    assert result.model == "deepseek-v4-pro"
+    assert result.reasoning_effort == "high"
+    assert result.configuration_hash == DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH
+    assert DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION.tools == ()
+    assert DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION.web_search_enabled is False
+    assert DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION.public_research_data_only is True
+    assert "privacy-policy" in (
+        DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION.provider_privacy_policy_url
+    )
+    assert to_semantic_result_input(result).method == DEEPSEEK_SEMANTIC_EVALUATION_METHOD
+
+    object.__setattr__(result, "configuration_hash", SEMANTIC_EVALUATION_CONFIGURATION_HASH)
+    with pytest.raises(SemanticEvaluationContractError, match="evaluation_provenance_drift"):
+        to_semantic_result_input(result)

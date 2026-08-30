@@ -1,5 +1,26 @@
 # Evaluation Plan
 
+## M3-008B Stage-2 Development calibration
+
+The frozen Development-grounded 36-case packet and Project-Owner resolution
+identity are immutable calibration truth. The only active formal provider is
+the ADR-021 DeepSeek Responses profile. Before any call, offline regression,
+independent review, exact-byte rebind, and terminal pre-network audit must pass.
+The runner verifies packet hashes, ordered case IDs, immutable projections,
+canonical Stage-1 admission, and 12 cases in each human state before checking
+only for the presence of `DEEPSEEK_API_KEY`.
+It also binds the exact frozen category inventory, audited code revision, and
+implementation-manifest hash. Each completed case is fsynced before the next
+provider call; a later failure publishes prior raw evidence with redacted
+failure metadata and cannot publish an accepted calibration artifact.
+
+Version 1 is accepted without further tuning when all categories are exercised,
+unsupported-to-supported and uncertain-to-supported are both zero, overall
+exact agreement is at least 0.85, each human state has at least eight cases,
+and each state recall is at least 0.75. Exact requests, responses, usage, and
+disagreements are written once to an absent external directory. Holdout-20 is
+sealed and human labels are never sent or changed.
+
 ## M1B-FAERS-001 offline contract evaluation
 
 Socket-disabled tests cover the exact PT mapping and inference negatives; both
@@ -908,10 +929,10 @@ schema
 and configuration
 `sha256:603e5cc567c3e0bb6ec006de6835ab5309adf39dc333912b18622cbfe6ed1934`.
 
-No approved human semantic packet and no provider key are currently available.
-Consequently M3-008A may complete only the offline framework graph, while
-M3-008B calibration is `BLOCKED_EXTERNAL_INPUTS`. Synthetic framework tests do
-not substitute for calibration and cannot support an agreement, threshold,
+This paragraph records immutable historical M3-008A evidence. The later frozen
+Project-Owner packet is now available and ADR-021 replaces only the unexecuted
+M3-008B provider decision. Offline framework tests still do not substitute for
+the pending DeepSeek calibration and cannot support an agreement, threshold,
 provider-execution, or calibration PASS claim. Holdout-20 remains sealed.
 
 The current canonical validator consumes a precommitted semantic-expectation

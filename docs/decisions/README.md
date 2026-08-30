@@ -1,5 +1,16 @@
 # Architecture Decision Records
 
+## Owner-accepted M3-008B DeepSeek calibration-provider record
+
+- [ADR-021: DeepSeek Responses Stage-2 evaluator](ADR-021-deepseek-responses-stage2-evaluator.md)
+
+ADR-021 replaces only the not-yet-executed formal M3-008B provider decision.
+It freezes a dedicated DeepSeek Responses adapter, model `deepseek-v4-pro`,
+high reasoning, no tools or web search, and the unchanged Project-Owner ground
+truth identity. The OpenAI implementation remains isolated historical code;
+no runtime provider selector, new SDK/dependency, Holdout access, or semantic
+change is authorized.
+
 Architecture Decision Records (ADRs) capture consequential decisions that
 affect multiple layers, evidence semantics, safety policy, public contracts, or
 production dependencies.
@@ -261,10 +272,10 @@ adjudication remains mandatory where required.
 M3-008A adds no dependency, public API/schema, persistence migration, workflow
 integration, source/evidence semantic change, retrieval/router/qrels/corpus/
 metric change, or Holdout access. The existing precommitted semantic-expectation
-composition is deferred to M3-009. No approved human semantic packet or
-provider key is currently available, so M3-008B calibration remains
-`BLOCKED_EXTERNAL_INPUTS`; no calibration or overall implementation PASS is
-claimed.
+composition is deferred to M3-009. This is immutable historical M3-008A
+evidence; the later Project-Owner packet is frozen and ADR-021 replaces only
+the unexecuted M3-008B provider decision. No DeepSeek calibration or overall
+implementation PASS is claimed here.
 
 The exact Round 1 closure-candidate bindings are prompt
 `sha256:36958196b5de6f21c73d05957564da6cb8887338686e748bbdb9db85365b5ba1`,

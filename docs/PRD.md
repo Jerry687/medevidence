@@ -1,5 +1,15 @@
 # Product Requirements Document
 
+## M3-008B DeepSeek calibration provider
+
+ADR-021 replaces the unexecuted M3-008B provider profile with a dedicated
+DeepSeek Responses adapter using `deepseek-v4-pro`, high reasoning, strict
+application-validated JSON Schema output, and no tools or web search. The
+existing semantic rubric and frozen 36-case Project-Owner ground truth remain
+unchanged. This provider is advisory only and is authorized solely for public
+research data; no PHI, private clinical record, Holdout content, or label may
+enter a provider request.
+
 ## M1B FAERS aggregate contract candidate
 
 M1B adds a bounded, research-only FAERS aggregate domain contract without
