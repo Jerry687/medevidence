@@ -159,6 +159,80 @@ def test_pubmed_search_progress_read_rejects_oversize(tmp_path: Path) -> None:
         snapshots.read_pubmed_search_progress(run_id)
 
 
+def test_generation_receipt_is_run_scoped_bounded_and_requires_writer(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    run_id = "run:00000000-0000-4000-8000-000000000002"
+    receipt_id = "generation-receipt:sha256:" + "d" * 64
+    raw = b'{"marker":"M3_GENERATION_RECEIPT_V1"}'
+
+    with pytest.raises(SnapshotBusyError, match="writer lock"):
+        snapshots.publish_generation_receipt(raw, run_id=run_id, receipt_id=receipt_id)
+    with snapshots.writer():
+        first = snapshots.publish_generation_receipt(raw, run_id=run_id, receipt_id=receipt_id)
+        second = snapshots.publish_generation_receipt(raw, run_id=run_id, receipt_id=receipt_id)
+
+    assert snapshots.read_generation_receipt(run_id=run_id, receipt_id=receipt_id) == raw
+    assert not first.reused_existing
+    assert second.reused_existing
+    assert first.path == (
+        snapshots.root
+        / "journal"
+        / "00000000-0000-4000-8000-000000000002"
+        / "generation"
+        / f"{'d' * 64}.json"
+    )
+    with snapshots.writer(), pytest.raises(SnapshotCapacityError, match="invalid size"):
+        snapshots.publish_generation_receipt(b"x" * 65_537, run_id=run_id, receipt_id=receipt_id)
+
+
+def test_generation_receipt_rejects_invalid_identity_collision_and_missing(
+    tmp_path: Path,
+) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    run_id = "run:00000000-0000-4000-8000-000000000002"
+    receipt_id = "generation-receipt:sha256:" + "e" * 64
+    with snapshots.writer():
+        snapshots.publish_generation_receipt(
+            b'{"exact":true}', run_id=run_id, receipt_id=receipt_id
+        )
+        with pytest.raises(SnapshotIntegrityError, match="size or type"):
+            snapshots.publish_generation_receipt(
+                b'{"exact":false}', run_id=run_id, receipt_id=receipt_id
+            )
+    for bad_run, bad_receipt in (
+        ("../foreign", receipt_id),
+        (run_id, "../foreign"),
+        (run_id, "generation-receipt:sha256:" + "g" * 64),
+    ):
+        with pytest.raises(SnapshotContainmentError, match="receipt identity"):
+            snapshots.read_generation_receipt(run_id=bad_run, receipt_id=bad_receipt)
+    with pytest.raises(SnapshotIntegrityError, match="missing"):
+        snapshots.read_generation_receipt(
+            run_id=run_id,
+            receipt_id="generation-receipt:sha256:" + "f" * 64,
+        )
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unsupported")
+def test_generation_receipt_read_rejects_reparse_parent(tmp_path: Path) -> None:
+    snapshots = store(tmp_path / "snapshots")
+    snapshots.initialize()
+    run_root = snapshots.root / "journal" / "00000000-0000-4000-8000-000000000002"
+    run_root.mkdir(parents=True)
+    outside = tmp_path / "outside-generation"
+    outside.mkdir()
+    try:
+        (run_root / "generation").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable to this test process")
+
+    with pytest.raises(SnapshotContainmentError, match=r"symlink|reparse"):
+        snapshots.read_generation_receipt(
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            receipt_id="generation-receipt:sha256:" + "a" * 64,
+        )
+
+
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks unsupported")
 def test_pubmed_search_progress_read_rejects_reparse_leaf(tmp_path: Path) -> None:
     snapshots = store(tmp_path / "snapshots")

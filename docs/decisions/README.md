@@ -227,3 +227,16 @@ selected sources while preserving skipped rows without tasks/outcomes, and
 conditionally composes exact source groups for all 15 nonempty subsets. Status
 is `AWAITING_FRESH_REVIEW_AFTER_ROUND_8`; no PASS or Git integration is
 claimed.
+
+## Owner-accepted M3 OpenAI generation-gateway record
+
+- [ADR-019: OpenAI Responses generation gateway](ADR-019-openai-responses-generation-gateway.md)
+
+ADR-019 resolves `ME-000B` for the exact bounded M3 generation gateway. It
+freezes OpenAI Responses API access through existing HTTPX, model
+`gpt-5.6-sol`, medium reasoning, no tools, `store=false`, `background=false`,
+strict structured candidates, deterministic untrusted-evidence prompting, and
+an immutable version/hash receipt. Default validation remains offline; only an
+explicit live-provider test may contact OpenAI. It adds no dependency, public
+API/schema, persistence migration, medical-source network, workflow
+integration, Stage-2 evaluator behavior, or Holdout access.

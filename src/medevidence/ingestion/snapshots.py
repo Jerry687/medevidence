@@ -26,6 +26,7 @@ RAW_RESPONSE_BYTE_CAPACITY: Final = 5_242_880
 PUBMED_SEARCH_PROGRESS_BYTE_CAPACITY: Final = 16_384
 PUBMED_TERMINAL_PROGRESS_BYTE_CAPACITY: Final = 262_144
 SOURCE_REPLAY_RECORD_BYTE_CAPACITY: Final = 262_144
+GENERATION_RECEIPT_BYTE_CAPACITY: Final = 65_536
 INITIAL_FREE_SPACE_FLOOR_BYTES: Final = 13_958_643_712
 PER_WRITE_FREE_SPACE_RESERVE_BYTES: Final = 1_073_741_824
 ROOT_LOCK_FILENAME: Final = ".m1a-constrained-v1.lock"
@@ -34,6 +35,7 @@ _RUN_ID_PATTERN: Final = re.compile(
     r"^run:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
 )
 _SOURCE_TASK_ATTEMPT_PATTERN: Final = re.compile(r"^source-task-attempt:sha256:([0-9a-f]{64})$")
+_GENERATION_RECEIPT_ID_PATTERN: Final = re.compile(r"^generation-receipt:sha256:([0-9a-f]{64})$")
 
 type SourceReplayKind = Literal["dailymed-discovery", "dailymed-fetch", "faers-aggregate"]
 
@@ -380,6 +382,52 @@ class SnapshotStore:
             raise SnapshotIntegrityError("source replay record changed during read")
         return raw
 
+    def publish_generation_receipt(
+        self,
+        data: bytes,
+        *,
+        run_id: str,
+        receipt_id: str,
+    ) -> PublishedFile:
+        """Insert or verify one exact bounded generation receipt."""
+
+        if not data or len(data) > GENERATION_RECEIPT_BYTE_CAPACITY:
+            raise SnapshotCapacityError("generation receipt has invalid size")
+        relative = SnapshotStore._generation_receipt_relative_path(
+            self,
+            run_id=run_id,
+            receipt_id=receipt_id,
+        )
+        return SnapshotStore.publish_bytes(
+            self,
+            relative.as_posix(),
+            data,
+            artifact_class="journal",
+        )
+
+    def read_generation_receipt(self, *, run_id: str, receipt_id: str) -> bytes:
+        """Read one exact bounded generation receipt and no arbitrary path."""
+
+        if not self._initialized:
+            SnapshotStore.initialize(self)
+        relative = SnapshotStore._generation_receipt_relative_path(
+            self,
+            run_id=run_id,
+            receipt_id=receipt_id,
+        )
+        target = self.root.joinpath(*relative.parts)
+        SnapshotStore._require_safe_path(self, target, allow_missing_leaf=True)
+        if not target.is_file():
+            raise SnapshotIntegrityError("generation receipt is missing")
+        size = target.stat().st_size
+        if size <= 0 or size > GENERATION_RECEIPT_BYTE_CAPACITY:
+            raise SnapshotIntegrityError("generation receipt has invalid size")
+        raw = target.read_bytes()
+        SnapshotStore._require_safe_path(self, target, allow_missing_leaf=False)
+        if len(raw) != size:
+            raise SnapshotIntegrityError("generation receipt changed during read")
+        return raw
+
     def store_raw_body(self, body: bytes) -> SnapshotWrite:
         """Publish one exact bounded PubMed response body."""
 
@@ -590,6 +638,23 @@ class SnapshotStore:
             "projection.json",
         )
         return relative, source, run_uuid
+
+    def _generation_receipt_relative_path(
+        self,
+        *,
+        run_id: str,
+        receipt_id: str,
+    ) -> PurePosixPath:
+        run_match = _RUN_ID_PATTERN.fullmatch(run_id)
+        receipt_match = _GENERATION_RECEIPT_ID_PATTERN.fullmatch(receipt_id)
+        if run_match is None or receipt_match is None:
+            raise SnapshotContainmentError("invalid generation receipt identity")
+        return PurePosixPath(
+            "journal",
+            run_match.group(1),
+            "generation",
+            f"{receipt_match.group(1)}.json",
+        )
 
     def _source_replay_key_digest(self, value: str) -> str:
         if not isinstance(value, str):
