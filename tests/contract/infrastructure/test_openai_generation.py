@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 import medevidence.infrastructure.openai_generation as openai_adapter
+import medevidence.infrastructure.responses_transport as responses_adapter
 from medevidence.domain import (
     CoverageStatus,
     ExecutionBounds,
@@ -605,7 +606,7 @@ def test_retry_after_is_capped_and_gateway_transport_can_be_reused(
             return httpx.Response(429, request=request, headers={"Retry-After": "9999"})
         return httpx.Response(200, request=request, content=_response_bytes())
 
-    monkeypatch.setattr(openai_adapter.time, "sleep", delays.append)
+    monkeypatch.setattr(responses_adapter.time, "sleep", delays.append)
     gateway = _gateway(handler)
     assert gateway.generate(_input()).attempts == 2
     assert gateway.generate(_input()).attempts == 2
@@ -898,9 +899,9 @@ def test_attempt_timeout_uses_remaining_deadline_and_stream_checks_total_deadlin
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = [100.0]
-    monkeypatch.setattr(openai_adapter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(responses_adapter.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
-        openai_adapter.time,
+        responses_adapter.time,
         "sleep",
         lambda seconds: clock.__setitem__(0, clock[0] + seconds),
     )
@@ -923,7 +924,7 @@ def test_attempt_timeout_uses_remaining_deadline_and_stream_checks_total_deadlin
     class SlowChunks(httpx.SyncByteStream):
         def __iter__(self) -> Iterator[bytes]:
             yield b"{"
-            openai_adapter.time.sleep(0.02)
+            responses_adapter.time.sleep(0.02)
             yield b"}"
 
     def slow_handler(request: httpx.Request) -> httpx.Response:
@@ -1313,7 +1314,7 @@ def test_public_error_drops_all_internal_cause_and_context_material(
         leaked = f"Bearer {bearer} {request.content.decode('utf-8')}"
         raise httpx.ConnectError(leaked, request=request)
 
-    monkeypatch.setattr(openai_adapter.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(responses_adapter.time, "sleep", lambda _seconds: None)
     gateway = OpenAIResponsesGenerationGateway(
         api_key=bearer,
         transport=httpx.MockTransport(handler),

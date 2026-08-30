@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import time
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import Any, final
 
 import httpx
 
-from medevidence.domain import Sha256Digest, canonical_json, sha256_digest
+from medevidence.domain import canonical_json
+from medevidence.infrastructure.responses_transport import (
+    ResponsesRawRequest,
+    ResponsesRawTransport,
+    ResponsesTransportError,
+    ResponsesTransportErrorCode,
+    ResponsesTransportProfile,
+)
 from medevidence.tools.generation import (
     GENERATION_BACKOFF_BASE_SECONDS,
     GENERATION_CONFIGURATION,
@@ -48,14 +51,6 @@ from medevidence.tools.generation import (
     reconstruct_generation_provider_result,
     validate_generation_candidate,
 )
-
-_SUM_PHASE_TIMEOUT_SECONDS = (
-    GENERATION_CONNECT_TIMEOUT_SECONDS
-    + GENERATION_READ_TIMEOUT_SECONDS
-    + GENERATION_WRITE_TIMEOUT_SECONDS
-    + GENERATION_POOL_TIMEOUT_SECONDS
-)
-_RAW_RESPONSE_CHUNK_BYTES = 16_384
 
 
 class OpenAIGenerationErrorCode(StrEnum):
@@ -148,102 +143,33 @@ class OpenAIResponsesGenerationGateway(GenerationGatewayPort):
         except (GenerationContractError, UnicodeDecodeError, ValueError) as error:
             raise OpenAIGenerationError(OpenAIGenerationErrorCode.REQUEST_INTEGRITY) from error
 
-        request_hash = sha256_digest(request_bytes)
-        started_at = datetime.now(UTC)
-        started_monotonic = time.monotonic()
-        attempts = 0
-
-        headers = {
-            "Accept": "application/json",
-            "Accept-Encoding": "identity",
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
         try:
-            with httpx.Client(
-                transport=_BorrowedTransport(self._transport),
-                timeout=_attempt_timeout(started_monotonic),
-                follow_redirects=False,
-                trust_env=False,
-            ) as client:
-                while attempts < MAX_GENERATION_ATTEMPTS:
-                    _require_remaining_deadline(started_monotonic)
-                    attempts += 1
-                    try:
-                        response, response_bytes = _send_bounded(
-                            client,
-                            request_bytes=request_bytes,
-                            headers=headers,
-                            started_monotonic=started_monotonic,
-                        )
-                    except _PreBodyTransportFailure as error:
-                        if attempts >= MAX_GENERATION_ATTEMPTS:
-                            raise OpenAIGenerationError(
-                                OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE
-                            ) from error
-                        _sleep_before_retry(
-                            request_hash=request_hash,
-                            attempt=attempts,
-                            started_monotonic=started_monotonic,
-                            retry_after=None,
-                        )
-                        continue
-                    except _PostBodyTransportFailure as error:
-                        raise OpenAIGenerationError(
-                            OpenAIGenerationErrorCode.RESPONSE_INVALID
-                        ) from error
+            raw_request = ResponsesRawRequest(
+                api_key=self._api_key,
+                endpoint=GENERATION_ENDPOINT,
+                request_bytes=request_bytes,
+                profile=_generation_transport_profile(),
+            )
+            raw_reply = ResponsesRawTransport(transport=self._transport).send(raw_request)
+        except ResponsesTransportError as error:
+            raise _generation_transport_error(error) from None
 
-                    status_code = response.status_code
-                    if status_code in GENERATION_RETRYABLE_STATUSES:
-                        if attempts >= MAX_GENERATION_ATTEMPTS:
-                            raise OpenAIGenerationError(
-                                OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE,
-                                status_code=status_code,
-                            )
-                        _sleep_before_retry(
-                            request_hash=request_hash,
-                            attempt=attempts,
-                            started_monotonic=started_monotonic,
-                            retry_after=response.headers.get("Retry-After"),
-                        )
-                        continue
-                    if status_code in {401, 403}:
-                        raise OpenAIGenerationError(
-                            OpenAIGenerationErrorCode.AUTHENTICATION,
-                            status_code=status_code,
-                        )
-                    if status_code != 200:
-                        raise OpenAIGenerationError(
-                            OpenAIGenerationErrorCode.PROVIDER_REJECTED,
-                            status_code=status_code,
-                        )
-
-                    candidate, response_id, usage = _parse_completed_response(
-                        response_bytes,
-                        exact_input,
-                    )
-                    try:
-                        return reconstruct_generation_provider_result(
-                            GenerationProviderResult(
-                                candidate=candidate,
-                                request_hash=request_hash,
-                                response_hash=sha256_digest(response_bytes),
-                                provider_response_id=response_id,
-                                attempts=attempts,
-                                usage=usage,
-                                started_at_utc=started_at,
-                                completed_at_utc=datetime.now(UTC),
-                            )
-                        )
-                    except ValueError as error:
-                        raise OpenAIGenerationError(
-                            OpenAIGenerationErrorCode.RESPONSE_INVALID
-                        ) from error
-        except OpenAIGenerationError:
-            raise
-        except httpx.TransportError as error:
-            raise OpenAIGenerationError(OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE) from error
-        raise OpenAIGenerationError(OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE)
+        candidate, response_id, usage = _parse_completed_response(raw_reply.body, exact_input)
+        try:
+            return reconstruct_generation_provider_result(
+                GenerationProviderResult(
+                    candidate=candidate,
+                    request_hash=raw_reply.request_hash,
+                    response_hash=raw_reply.response_hash,
+                    provider_response_id=response_id,
+                    attempts=raw_reply.attempts,
+                    usage=usage,
+                    started_at_utc=raw_reply.started_at_utc,
+                    completed_at_utc=raw_reply.completed_at_utc,
+                )
+            )
+        except ValueError as error:
+            raise OpenAIGenerationError(OpenAIGenerationErrorCode.RESPONSE_INVALID) from error
 
 
 def _request_body(content: str) -> dict[str, object]:
@@ -263,90 +189,6 @@ def _request_body(content: str) -> dict[str, object]:
         "tools": [],
         "truncation": GENERATION_TRUNCATION,
     }
-
-
-def _send_bounded(
-    client: httpx.Client,
-    *,
-    request_bytes: bytes,
-    headers: dict[str, str],
-    started_monotonic: float,
-) -> tuple[httpx.Response, bytes]:
-    received = False
-    try:
-        with client.stream(
-            "POST",
-            GENERATION_ENDPOINT,
-            content=request_bytes,
-            headers=headers,
-            timeout=_attempt_timeout(started_monotonic),
-        ) as response:
-            request = response.request
-            if request.method != "POST" or request.url != httpx.URL(GENERATION_ENDPOINT):
-                raise OpenAIGenerationError(OpenAIGenerationErrorCode.REQUEST_INTEGRITY)
-            body = bytearray()
-            if response.headers.get("Transfer-Encoding") is not None:
-                raise OpenAIGenerationError(
-                    OpenAIGenerationErrorCode.RESPONSE_INVALID,
-                    status_code=response.status_code,
-                )
-            encoding = response.headers.get("Content-Encoding")
-            if encoding is not None and encoding.strip().lower() != "identity":
-                raise OpenAIGenerationError(
-                    OpenAIGenerationErrorCode.RESPONSE_INVALID,
-                    status_code=response.status_code,
-                )
-            content_type = response.headers.get("Content-Type")
-            if content_type not in {
-                "application/json",
-                "application/json; charset=utf-8",
-            }:
-                raise OpenAIGenerationError(
-                    OpenAIGenerationErrorCode.RESPONSE_INVALID,
-                    status_code=response.status_code,
-                )
-            content_length = response.headers.get("Content-Length")
-            declared_length: int | None = None
-            if content_length is not None:
-                canonical_length = content_length == "0" or (
-                    content_length.isascii()
-                    and content_length[:1] in "123456789"
-                    and (len(content_length) == 1 or content_length[1:].isdigit())
-                )
-                if not canonical_length:
-                    raise OpenAIGenerationError(
-                        OpenAIGenerationErrorCode.RESPONSE_INVALID,
-                        status_code=response.status_code,
-                    )
-                declared_length = int(content_length)
-                if declared_length > MAX_PROVIDER_RESPONSE_BYTES:
-                    raise OpenAIGenerationError(
-                        OpenAIGenerationErrorCode.RESPONSE_TOO_LARGE,
-                        status_code=response.status_code,
-                    )
-            for chunk in response.iter_raw(chunk_size=_RAW_RESPONSE_CHUNK_BYTES):
-                _require_remaining_deadline(started_monotonic)
-                if chunk:
-                    received = True
-                    if len(body) + len(chunk) > MAX_PROVIDER_RESPONSE_BYTES:
-                        raise OpenAIGenerationError(
-                            OpenAIGenerationErrorCode.RESPONSE_TOO_LARGE,
-                            status_code=response.status_code,
-                        )
-                    body.extend(chunk)
-            _require_remaining_deadline(started_monotonic)
-            if declared_length is not None and declared_length != len(body):
-                raise OpenAIGenerationError(
-                    OpenAIGenerationErrorCode.RESPONSE_INVALID,
-                    status_code=response.status_code,
-                )
-            return response, bytes(body)
-    except OpenAIGenerationError:
-        raise
-    except httpx.TransportError as error:
-        if received:
-            raise _PostBodyTransportFailure from error
-        raise _PreBodyTransportFailure from error
 
 
 def _parse_completed_response(
@@ -649,84 +491,59 @@ def _optional_detail(value: object, key: str) -> int:
     return _nonnegative_int(value.get(key, 0))
 
 
-def _sleep_before_retry(
-    *,
-    request_hash: Sha256Digest,
-    attempt: int,
-    started_monotonic: float,
-    retry_after: str | None,
-) -> None:
-    delay = _retry_after_seconds(retry_after)
-    if delay is None:
-        base = GENERATION_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
-        jitter_byte = hashlib.sha256(f"{request_hash}:{attempt}".encode()).digest()[0]
-        delay = base + (base * 0.1 * jitter_byte / 255.0)
-    elapsed = time.monotonic() - started_monotonic
-    if elapsed + delay >= GENERATION_TOTAL_DEADLINE_SECONDS:
-        raise OpenAIGenerationError(OpenAIGenerationErrorCode.DEADLINE_EXCEEDED)
-    time.sleep(delay)
-    _require_remaining_deadline(started_monotonic)
+def _generation_transport_profile() -> ResponsesTransportProfile:
+    """Reconstruct the exact generation transport profile at the authority boundary."""
 
-
-def _retry_after_seconds(value: str | None) -> float | None:
-    if value is None:
-        return None
-    try:
-        seconds = float(value)
-        if seconds < 0:
-            return None
-    except ValueError:
-        try:
-            instant = parsedate_to_datetime(value)
-            if instant.tzinfo is None:
-                return None
-            seconds = max(0.0, (instant - datetime.now(UTC)).total_seconds())
-        except (TypeError, ValueError, OverflowError):
-            return None
-    return min(seconds, GENERATION_RETRY_AFTER_CAP_SECONDS)
-
-
-def _require_remaining_deadline(started_monotonic: float) -> None:
-    if time.monotonic() - started_monotonic >= GENERATION_TOTAL_DEADLINE_SECONDS:
-        raise OpenAIGenerationError(OpenAIGenerationErrorCode.DEADLINE_EXCEEDED)
-
-
-def _attempt_timeout(started_monotonic: float) -> httpx.Timeout:
-    remaining = GENERATION_TOTAL_DEADLINE_SECONDS - (time.monotonic() - started_monotonic)
-    if remaining <= 0:
-        raise OpenAIGenerationError(OpenAIGenerationErrorCode.DEADLINE_EXCEEDED)
-    scale = min(1.0, remaining / _SUM_PHASE_TIMEOUT_SECONDS)
-    return httpx.Timeout(
-        connect=max(0.001, GENERATION_CONNECT_TIMEOUT_SECONDS * scale),
-        read=max(0.001, GENERATION_READ_TIMEOUT_SECONDS * scale),
-        write=max(0.001, GENERATION_WRITE_TIMEOUT_SECONDS * scale),
-        pool=max(0.001, GENERATION_POOL_TIMEOUT_SECONDS * scale),
+    return ResponsesTransportProfile(
+        max_request_bytes=MAX_PROVIDER_REQUEST_BYTES,
+        max_response_bytes=MAX_PROVIDER_RESPONSE_BYTES,
+        max_attempts=MAX_GENERATION_ATTEMPTS,
+        retryable_statuses=tuple(sorted(GENERATION_RETRYABLE_STATUSES)),
+        total_deadline_seconds=GENERATION_TOTAL_DEADLINE_SECONDS,
+        connect_timeout_seconds=GENERATION_CONNECT_TIMEOUT_SECONDS,
+        read_timeout_seconds=GENERATION_READ_TIMEOUT_SECONDS,
+        write_timeout_seconds=GENERATION_WRITE_TIMEOUT_SECONDS,
+        pool_timeout_seconds=GENERATION_POOL_TIMEOUT_SECONDS,
+        backoff_base_seconds=GENERATION_BACKOFF_BASE_SECONDS,
+        retry_after_cap_seconds=GENERATION_RETRY_AFTER_CAP_SECONDS,
     )
+
+
+def _generation_transport_error(error: ResponsesTransportError) -> OpenAIGenerationError:
+    mapping = {
+        ResponsesTransportErrorCode.INVALID_CREDENTIAL: (
+            OpenAIGenerationErrorCode.INVALID_CREDENTIAL
+        ),
+        ResponsesTransportErrorCode.REQUEST_INTEGRITY: OpenAIGenerationErrorCode.REQUEST_INTEGRITY,
+        ResponsesTransportErrorCode.AUTHENTICATION: OpenAIGenerationErrorCode.AUTHENTICATION,
+        ResponsesTransportErrorCode.PROVIDER_REJECTED: OpenAIGenerationErrorCode.PROVIDER_REJECTED,
+        ResponsesTransportErrorCode.PROVIDER_UNAVAILABLE: (
+            OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE
+        ),
+        ResponsesTransportErrorCode.DEADLINE_EXCEEDED: OpenAIGenerationErrorCode.DEADLINE_EXCEEDED,
+        ResponsesTransportErrorCode.RESPONSE_TOO_LARGE: (
+            OpenAIGenerationErrorCode.RESPONSE_TOO_LARGE
+        ),
+        ResponsesTransportErrorCode.RESPONSE_INVALID: OpenAIGenerationErrorCode.RESPONSE_INVALID,
+    }
+    if type(error) is not ResponsesTransportError:
+        return OpenAIGenerationError(OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE)
+    try:
+        code = object.__getattribute__(error, "code")
+        status_code = object.__getattribute__(error, "status_code")
+    except Exception:
+        return OpenAIGenerationError(OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE)
+    mapped = mapping.get(code)
+    if mapped is None:
+        return OpenAIGenerationError(OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE)
+    valid_status = status_code is None or (type(status_code) is int and 100 <= status_code <= 599)
+    if not valid_status:
+        return OpenAIGenerationError(OpenAIGenerationErrorCode.PROVIDER_UNAVAILABLE)
+    return OpenAIGenerationError(mapped, status_code=status_code)
 
 
 class _DuplicateKeyError(ValueError):
     pass
-
-
-class _PreBodyTransportFailure(RuntimeError):
-    pass
-
-
-class _PostBodyTransportFailure(RuntimeError):
-    pass
-
-
-class _BorrowedTransport(httpx.BaseTransport):
-    """Let the composition root, not a per-call client, own transport lifetime."""
-
-    def __init__(self, transport: httpx.BaseTransport) -> None:
-        self._transport = transport
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        return self._transport.handle_request(request)
-
-    def close(self) -> None:
-        return None
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

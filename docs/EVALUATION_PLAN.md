@@ -832,3 +832,102 @@ compactness is `1791/1800`.
 Status is `AWAITING_FRESH_REVIEW_AFTER_ROUND_5`. Fresh independent review,
 documentation-inclusive reruns, exact-byte rebind, and terminal audit remain
 required. Holdout-20 remains sealed.
+
+## 20. M3-008A independent Stage-2 evaluator framework
+
+M3-008A evaluates one exact current-run citation tuple per request only after an
+application-constructed canonical Stage-1 admission binds the exact validation
+request, registry, task/outcome topology, Stage-1 result, and explicit
+comparability/conflict metadata. A bare
+`SemanticEvaluationInput` cannot invoke the provider. The admitted tuple has
+one material claim, one formal citation, the exact one cited evidence object,
+and only the source-policy, citation-relationship, comparability, conflict, and
+safety metadata needed for that tuple. Its OpenAI Responses configuration is
+exact: model `gpt-5.6-terra`, reasoning `medium`, `store=false`,
+`background=false`, and no tools.
+
+The evaluator prompt and rubric are versioned separately from generation.
+Evaluation input excludes generator reasoning, provider reasoning, retrieval
+rank/score as truth, expected result labels, answer keys, qrels, and Holdout-20.
+Stage 1 is terminal: any deterministic structural or policy failure ends the
+tuple before a provider call and cannot be repaired by Stage 2. A failed Stage
+1 tuple produces zero evaluator attempts or outputs and is not admitted as a
+semantic calibration case.
+
+Strict structured model output is limited to the existing `supported`,
+`uncertain`, or `unsupported` state plus bounded semantic rationale fields and
+the human-review indication. Application code derives every hash and exact
+admission/tuple/prompt/rubric/schema/model/reasoning/configuration/provider
+provenance; provider-authored hashes are never authoritative. The result is
+advisory rather than sole ground truth. `unsupported` is excluded from a formal
+report. `uncertain`, a nominally supported contradiction, and material safety/
+conflict cases require recorded human adjudication or removal.
+
+Focused framework evaluation must include:
+
+- mandatory canonical admission and exact validation/registry/task/outcome/
+  result/comparability binding; a bare semantic tuple,
+  missing comparability envelope, or foreign, stale, duplicate, missing, or
+  substituted identity fails before provider access;
+- Stage-1-failure zero-provider-call cases;
+- byte/version separation between generation and evaluator prompts;
+- prompt-injection and prohibited-input cases proving absence of generator
+  reasoning, answer labels, retrieval-score truth, tools, and Holdout data;
+- all three result states, semantic-only provider output, application-derived
+  hashes, malformed/unknown/oversized output, bounded rationale, and exact
+  provenance reconstruction;
+- provider timeout, retry classification, deadline, redirect, credential
+  redaction, and absent-key blocked behavior; and
+- human-review routing for uncertain, supported contradiction, safety, and
+  conflict material.
+
+Calibration may use only Owner-approved adjudicated Development data or
+synthetic adjudicated fixtures, never test, final, release, or Holdout inputs.
+The calibration configuration must equal the current evaluator model and exact
+prompt, rubric, schema, and configuration hashes; arbitrary or stale
+configuration fails closed. Raw inputs and provider outputs are append-only and
+versioned. Every case stores the canonical request bytes, evaluator-input hash,
+provider request hash, provider response ID/hash, complete bounded Responses
+envelope, and inner structured output separately. Every read strictly re-parses
+all three byte surfaces and cross-binds them to stored parsed state, rationale,
+trace, usage, and response identity before metrics. Every case has an
+adjudicated human expected state and packet provenance. Derived metrics must
+recompute from exact dataset/packet, evaluator method/version, prompt, rubric,
+schema, model, reasoning, 40-hex code revision, implementation-manifest, and
+raw-result identities.
+Provider output cannot overwrite expected labels or silently discard
+disagreements.
+
+The exact Round 5 closure-candidate calibration authority is model
+`gpt-5.6-terra`, reasoning `medium`, prompt
+`sha256:36958196b5de6f21c73d05957564da6cb8887338686e748bbdb9db85365b5ba1`,
+rubric
+`sha256:78a83aaba18982a45879feb6a5850d86f73525fac9618e00a791c5c32501f562`,
+schema
+`sha256:4b13f6eec4a043e6b0a5e83f95e76b430565da206af2f342277f9b2e3465596c`,
+and configuration
+`sha256:603e5cc567c3e0bb6ec006de6835ab5309adf39dc333912b18622cbfe6ed1934`.
+
+No approved human semantic packet and no provider key are currently available.
+Consequently M3-008A may complete only the offline framework graph, while
+M3-008B calibration is `BLOCKED_EXTERNAL_INPUTS`. Synthetic framework tests do
+not substitute for calibration and cannot support an agreement, threshold,
+provider-execution, or calibration PASS claim. Holdout-20 remains sealed.
+
+The current canonical validator consumes a precommitted semantic-expectation
+contract. M3-008A does not change or integrate that contract; M3-009 owns the
+composition resolution. Full socket-disabled validation, Ruff, format, strict
+MyPy, lock/scope/diff/secret/dependency checks, independent review, exact-byte
+rebind, and terminal audit remain required before any M3-008A implementation
+PASS claim.
+
+Review001 through Review005 are immutable `FAIL — P0 0 / P1 4 / P2 0`,
+`FAIL — P0 0 / P1 5 / P2 1`, `FAIL — P0 0 / P1 4 / P2 0`, and
+`FAIL — P0 0 / P1 1 / P2 0`, and `FAIL — P0 0 / P1 1 / P2 0`.
+Round 5 remediation is represented only by a closure candidate with complete
+same-run per-citation Stage-1 topology, canonical comparability,
+truthful gateway observation persistence, adjudicated resolutions, exact
+request replay, production-equivalent envelope/result policy, and evaluator
+code identity. Focused
+integration and fresh review remain pending. No framework, calibration,
+provider-execution, audit, or Git PASS is claimed by this section.

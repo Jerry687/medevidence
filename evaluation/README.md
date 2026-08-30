@@ -1,3 +1,58 @@
+# Stage-2 evaluator calibration framework
+
+`evaluation.stage2_calibration` defines the offline calibration-evidence
+contract for the independent Stage-2 semantic evaluator. It accepts only an
+exact canonical `SemanticEvaluationRequest` produced by the current production
+authority. The full durable request bytes are retained and reparsed through the
+public request parser, including the exact Stage-1 admission, citation topology,
+comparability, and content hashes. The calibration configuration binds the
+evaluator method/version, model/reasoning, prompt/rubric/schema/configuration
+identities, exact 40-hex code revision, implementation manifest, calibration
+dataset, and human-resolution packet.
+
+The formal citation topology is explicitly run-wide: its run identity must
+equal the current admitted semantic tuple, and every supporting,
+contradicting, or context citation entry must carry that same exact run. A
+locally valid citation from another run cannot satisfy the current claim's
+support requirement, including after topology, admission, request, calibration
+set, and artifact hashes are recomputed.
+
+Each admitted case is an adjudicated synthetic or Development case with an
+exact expected state, human resolution, authority, notes, packet identity, and
+matching packet provenance. Unresolved and Stage-1-failed observations are not
+semantic-agreement cases. Gateway evidence separates the evaluator-input hash
+from the full provider request. It retains the credential-free provider request
+bytes/hash and reconstructs the exact model/reasoning/prompt/input/schema,
+store/background, and tool-free profile from the canonical semantic request.
+It also retains the response ID, full raw Responses envelope bytes/hash, exact
+inner structured-output bytes/hash, attempts, usage, and UTC timestamps.
+Validation applies production-equivalent closed envelope, message, content,
+reasoning, and configuration rules; rejects tools, refusals, unknown or
+multiple output, and configuration drift; and cross-binds response ID, usage,
+and inner bytes. The inner candidate must pass the public canonical
+semantic-result authority before its state, rationale/explanation hashes, and
+human-review flag can enter metrics. No independent input dictionary, direct
+candidate state, or substituted hash is authoritative.
+
+The raw response byte count and hex length are checked against the shared
+131,072-byte provider-response maximum before hex decoding or JSON parsing.
+Response IDs use the shared bounded `resp_` authority, and token accounting is
+reconstructed with the shared `SemanticEvaluationUsage` authority, including
+input/output/total maxima, exact total arithmetic, cached-input bounds, and
+reasoning-output bounds. Calibration contains no weaker local identity or usage
+contract.
+
+Artifacts are written to a new external directory with an exact hash sidecar.
+Existing outputs, pending transactions, repository-contained paths, and
+symlinked ancestry fail closed. The operational UTC timestamp is retained but
+excluded from the semantic artifact identity.
+
+Current status: **`AWAITING_APPROVED_CALIBRATION_PACKET`**. No approved
+calibration fixture or human labels are present, no calibration result is
+claimed, and Holdout-20 remains sealed. Unit tests exercise the framework with
+tiny synthetic nonmedical cases only; they are framework validation, not model
+calibration evidence.
+
 # M2 retrieval evaluation
 
 This harness compares BM25, classical latent-semantic dense retrieval, and
