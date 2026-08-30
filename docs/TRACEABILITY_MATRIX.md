@@ -1,5 +1,59 @@
 # V1 Traceability Matrix
 
+## M3-008A independent Stage-2 evaluator framework
+
+Owner Decisions L and M authorize only the isolated M3-008A framework at
+baseline `fd9bd9cae3cea5e69ded92134d386487c736469d`. The governing design is
+[ADR-020](decisions/ADR-020-independent-stage2-evaluator.md).
+
+| Requirement | M3-008A framework mapping | Remaining evidence or boundary |
+|---|---|---|
+| [`V1-FR-009`](PRD.md#v1-fr-009--claims-and-citations) | One request binds exactly one current-run claim, citation, and evidence object after canonical admission; the model emits only existing semantic state/rationale fields and application code derives hashes/provenance | Focused tests and independent review must prove exact tuple/admission binding, substitution rejection, no provider-authored hashes, and no multi-citation aggregation |
+| [`V1-FR-010`](PRD.md#v1-fr-010--comparability-and-conflict) | Canonical admission requires explicit governed comparability/conflict metadata, never source majority or retrieval score as truth | Missing or drifted comparability binding must fail before provider access; supported contradiction and safety/conflict material routes to human adjudication or removal |
+| [`V1-FR-013`](PRD.md#v1-fr-013--citation-and-safety-gates) | Provider access requires exact Stage-1 admission plus validation/registry/task/outcome/result bindings; a bare `SemanticEvaluationInput` has no provider capability | Stage-1 failure must produce zero evaluator attempt/output; M3-009 owns the actual canonical-validator adapter and precommitted `SemanticExpectation` resolution |
+| [`V1-NFR-001`](PRD.md#v1-nfr-001--research-only-safety) | Separate evaluator prompt/rubric excludes generator reasoning, answer labels, retrieval-score truth, tools, and Holdout content; uncertain and governed safety/conflict cases require human handling | Prompt-injection, prohibited-input, three-state, and human-routing negatives must pass |
+| [`V1-NFR-002`](PRD.md#v1-nfr-002--provenance-and-reproducibility) | Application-derived result provenance binds exact admission/tuple, prompt, rubric, schema, model `gpt-5.6-terra`, medium reasoning, configuration, and provider execution; calibration requires their exact current hashes and append-only raw artifacts | Raw output must be re-parsed and cross-bound to parsed fields/input/trace/response; M3-008B cannot claim calibration until approved human semantic data and provider execution artifacts exist |
+| [`V1-NFR-004`](PRD.md#v1-nfr-004--offline-deterministic-tests) | Ordinary validation remains socket-disabled; Holdout-20 is sealed | No provider key is currently available; an absent key is a blocked live/calibration gate, not PASS |
+| [`V1-NFR-005`](PRD.md#v1-nfr-005--replaceable-infrastructure) | Provider-neutral contracts expose no HTTPX, credential, provider-response, or model-vendor object; gateway alone owns the exact Responses transport | Layering, dependency, scope, and actual-diff review remain required |
+
+M3-008A uses the existing HTTPX dependency and exact OpenAI Responses endpoint
+with `gpt-5.6-terra`, reasoning `medium`, `store=false`, `background=false`, and
+no tools. It adds no dependency, public API/schema, persistence migration,
+medical-source network, generation change, source/evidence semantic change,
+retrieval/router/qrels/corpus/metric change, or Holdout authority.
+
+The exact Round 5 closure-candidate hashes are prompt
+`sha256:36958196b5de6f21c73d05957564da6cb8887338686e748bbdb9db85365b5ba1`,
+rubric
+`sha256:78a83aaba18982a45879feb6a5850d86f73525fac9618e00a791c5c32501f562`,
+schema
+`sha256:4b13f6eec4a043e6b0a5e83f95e76b430565da206af2f342277f9b2e3465596c`,
+and configuration
+`sha256:603e5cc567c3e0bb6ec006de6835ab5309adf39dc333912b18622cbfe6ed1934`.
+
+No Owner-approved human semantic packet and no provider key are currently
+available. M3-008A may implement and validate the offline framework;
+M3-008B calibration remains `BLOCKED_EXTERNAL_INPUTS`. This section claims no
+framework PASS, calibration PASS, provider execution, independent review,
+audit, commit, push, PR, merge, workflow integration, or Holdout access.
+
+Review001 returned immutable `FAIL — P0 0 / P1 4 / P2 0`; Review002 returned
+immutable `FAIL — P0 0 / P1 5 / P2 1`; Review003 returned immutable
+`FAIL — P0 0 / P1 4 / P2 0`; Review004 returned immutable
+`FAIL — P0 0 / P1 1 / P2 0`; Review005 returned immutable
+`FAIL — P0 0 / P1 1 / P2 0`. Their findings require mandatory
+complete supporting-citation topology and canonical full comparability,
+application-derived hashes, Stage-1-failure zero calibration attempt/output,
+and exact current configuration plus raw-output reparse/cross-binding. The
+Round 5 closure candidate addresses these findings, adds full same-run per-citation
+Stage-1 topology, production-equivalent response/result replay, truthful raw
+gateway request/response persistence, exact code/packet identity, and one
+shared response-ID/usage/byte-cap authority for production and calibration;
+focused integration and fresh independent review remain pending. This record
+makes no PASS claim.
+M3-009 continues to own canonical-validator integration and resolution of the
+precommitted expectation contract.
+
 ## M3-007 OpenAI generation-gateway candidate
 
 Owner Decisions I, J, and K authorize

@@ -240,3 +240,45 @@ an immutable version/hash receipt. Default validation remains offline; only an
 explicit live-provider test may contact OpenAI. It adds no dependency, public
 API/schema, persistence migration, medical-source network, workflow
 integration, Stage-2 evaluator behavior, or Holdout access.
+
+## Owner-accepted M3 independent Stage-2 evaluator record
+
+- [ADR-020: Independent Stage-2 semantic-support evaluator](ADR-020-independent-stage2-evaluator.md)
+
+ADR-020 records Owner Decisions L and M for the isolated M3-008A evaluator
+framework. It freezes OpenAI Responses API access through existing HTTPX,
+model `gpt-5.6-terra`, medium reasoning, no tools, `store=false`, and
+`background=false`; a separate prompt/rubric; and exactly one bound claim,
+citation, and evidence object per evaluation. Provider invocation requires a
+canonical Stage-1 admission binding validation, registry, task/outcome, result,
+and explicit comparability metadata; a bare
+`SemanticEvaluationInput` cannot invoke the provider. The model emits only
+semantic fields while application code derives hashes and provenance. The
+output is advisory and uses the existing `supported` / `uncertain` /
+`unsupported` states. Deterministic Stage 1 remains terminal and governed human
+adjudication remains mandatory where required.
+
+M3-008A adds no dependency, public API/schema, persistence migration, workflow
+integration, source/evidence semantic change, retrieval/router/qrels/corpus/
+metric change, or Holdout access. The existing precommitted semantic-expectation
+composition is deferred to M3-009. No approved human semantic packet or
+provider key is currently available, so M3-008B calibration remains
+`BLOCKED_EXTERNAL_INPUTS`; no calibration or overall implementation PASS is
+claimed.
+
+The exact Round 1 closure-candidate bindings are prompt
+`sha256:36958196b5de6f21c73d05957564da6cb8887338686e748bbdb9db85365b5ba1`,
+rubric
+`sha256:78a83aaba18982a45879feb6a5850d86f73525fac9618e00a791c5c32501f562`,
+schema
+`sha256:4b13f6eec4a043e6b0a5e83f95e76b430565da206af2f342277f9b2e3465596c`,
+and configuration
+`sha256:bbdb360d2bbe81f1238dad268c41ef6749bd529f1238fff60f409d0e14b9509a`.
+
+M3-008A Review001 is immutable
+`FAIL — P0 0 / P1 4 / P2 0`. The Round 1 closure candidate addresses canonical
+admission, application-owned result hashes, Stage-1-failure zero-attempt/output
+calibration, and exact current-configuration plus raw-output reparse/cross-
+binding. Focused integration and fresh review remain pending. M3-009 still owns
+the actual canonical-validator adapter and resolution of the precommitted
+semantic-expectation contract. No Round 1 or overall PASS is claimed.

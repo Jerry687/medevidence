@@ -714,3 +714,72 @@ or change Stage-2 semantic support. M3-008 owns the evaluator and a later
 authorized item owns workflow composition. Public API/OpenAPI, persistence
 schema, source/evidence semantics, retrieval/router/qrels/corpus/metric
 contracts, and Holdout-20 remain unchanged and sealed.
+
+## 24. M3-008A independent Stage-2 evaluator trust boundary
+
+The only approved Stage-2 provider surface is
+`POST https://api.openai.com/v1/responses` through existing HTTPX with model
+`gpt-5.6-terra` and reasoning effort `medium`. Requests set `store=false` and
+`background=false`, provide no tools, and do not opt into extended prompt-cache
+retention. No SDK or new dependency is added.
+
+The evaluator uses a static prompt and rubric distinct from the M3-007
+generation prompt. Provider invocation requires an application-constructed
+canonical Stage-1 admission binding the exact validation request, registry,
+source task/outcome topology, Stage-1 result, and explicit
+canonical comparability/conflict metadata. A bare `SemanticEvaluationInput`
+cannot invoke the provider. After admission, one request contains exactly one
+current-run claim, its one formal citation, the exact one cited evidence object,
+and only the bound source-policy, citation-relationship, comparability,
+conflict, and safety metadata required to assess that tuple. Untrusted claim/
+evidence text is delimited and cannot change policy, schema, model
+configuration, or capability scope.
+
+Generator reasoning, provider reasoning, retrieval ranks or scores as truth,
+expected semantic results, answer labels, qrels, and Holdout material are never
+evaluation inputs. The model has no credential, filesystem, database, MCP,
+web, retrieval, source-connector, persistence, approval, export, or other tool
+capability. The bearer credential remains gateway-only and is excluded from
+model context, logs, errors, receipts, and artifacts.
+
+Deterministic Stage 1 is terminal. A Stage-1 failure causes zero evaluator
+attempts, provider responses, and parsed Stage-2 outputs; Stage 2 cannot waive
+or reinterpret it. The model emits only `supported`, `uncertain`, or
+`unsupported` plus bounded semantic rationale fields and the human-review
+indication. Application code derives all content hashes and exact admission/
+prompt/rubric/schema/model/reasoning/configuration/tuple provenance. Provider-
+supplied identity or hash fields cannot become authority. The evaluator is
+advisory, not sole ground truth: `unsupported` is removed; `uncertain`, a
+nominally supported contradiction, and governed safety/conflict material
+require human adjudication or removal.
+
+Default validation is offline and socket-disabled. Calibration may use only
+Owner-approved adjudicated Development or synthetic fixtures, never test,
+final, release, or Holdout inputs. It requires the exact current evaluator
+model and prompt/rubric/schema/configuration hashes. Raw artifacts are append-
+only and versioned; raw provider output is strictly re-parsed and cross-bound
+to parsed semantic fields, rationale, input, trace, and response identity before
+metrics. Holdout-20 remains sealed. Because no approved human semantic packet
+and no provider key are currently available, M3-008B calibration is
+`BLOCKED_EXTERNAL_INPUTS`; absence of either input cannot become a fake PASS.
+
+The exact Round 5 closure-candidate hashes are prompt
+`sha256:36958196b5de6f21c73d05957564da6cb8887338686e748bbdb9db85365b5ba1`,
+rubric
+`sha256:78a83aaba18982a45879feb6a5850d86f73525fac9618e00a791c5c32501f562`,
+response schema
+`sha256:4b13f6eec4a043e6b0a5e83f95e76b430565da206af2f342277f9b2e3465596c`,
+and configuration
+`sha256:603e5cc567c3e0bb6ec006de6835ab5309adf39dc333912b18622cbfe6ed1934`.
+
+M3-008A does not enter the controlled workflow. M3-009 owns resolution of the
+existing precommitted semantic-expectation composition. Public API/OpenAPI,
+persistence schema, source/evidence semantics, generation, retrieval/router/
+qrels/corpus/metric contracts, and Holdout access remain unchanged.
+
+Review001 through Review005 are preserved as immutable
+`FAIL — P0 0 / P1 4 / P2 0`, `FAIL — P0 0 / P1 5 / P2 1`, and
+`FAIL — P0 0 / P1 4 / P2 0`, `FAIL — P0 0 / P1 1 / P2 0`, and
+`FAIL — P0 0 / P1 1 / P2 0`. The Round 5 closure candidate awaits focused
+integration and fresh review; no implementation PASS, calibration PASS,
+provider run, or Git claim is made.
