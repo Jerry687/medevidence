@@ -1,5 +1,56 @@
 # V1 Traceability Matrix
 
+## M3-007 OpenAI generation-gateway candidate
+
+Owner Decisions I, J, and K authorize
+`M3-007-OPENAI-GENERATION-GATEWAY` from baseline
+`978b8c0ee8579f9bb14282909e830bf27021c106`.
+[ADR-019](decisions/ADR-019-openai-responses-generation-gateway.md) freezes the
+provider, model, prompt-policy, retention, and work-item boundaries.
+
+| Requirement | M3-007 authorized design evidence | Remaining gate |
+|---|---|---|
+| [`V1-FR-013`](PRD.md#v1-fr-013--citation-and-safety-gates) | Strict structured output is an untrusted candidate that may reference only current-run evidence; deterministic reconstruction and both citation stages remain authoritative | M3-007 does not implement Stage 2 or workflow integration; offline adversarial tests and independent review must verify no candidate can bypass later gates |
+| [`V1-NFR-001`](PRD.md#v1-nfr-001--research-only-safety) | The exact prompt forbids diagnosis, treatment, dose, emergency/individualized advice, unsupported incidence/causality/risk/ranking, invented completeness, or warning removal | Focused prompt-injection, zero-evidence, missing-coverage, conflict, and prohibited-claim tests must pass |
+| [`V1-NFR-002`](PRD.md#v1-nfr-002--provenance-and-reproducibility) | Immutable `M3_GENERATION_RECEIPT_V1` binds exact prompt/config/model/reasoning/schema identities, versions, and hashes plus canonical candidate identity | Receipt persistence, reload, substitution, stale/foreign binding, and exact-byte tests must pass |
+| [`V1-NFR-003`](PRD.md#v1-nfr-003--external-call-resilience) | Versioned gateway configuration owns finite request/response/token/deadline/timeout/attempt/retry bounds; redirects and malformed/oversized output fail closed | HTTPX contract tests must cover timeout, 429/5xx, retry classification, deadline, redirects, malformed output, and byte ceilings |
+| [`V1-NFR-004`](PRD.md#v1-nfr-004--offline-deterministic-tests) | Import, construction, unit, contract, CI, and ordinary validation perform no network; live provider access requires an explicit marker/run and injected key | Full socket-disabled suite and an explicit absent-key blocked test remain required; a live call is optional and separately reported |
+| [`V1-NFR-005`](PRD.md#v1-nfr-005--replaceable-infrastructure) | Provider-neutral application contracts expose no HTTPX, OpenAI SDK, provider response, authorization header, or model-vendor object | Layering, dependency, and actual-diff review remain required |
+| [`V1-NFR-006`](PRD.md#v1-nfr-006--observability) | Receipt metadata records bounded provider execution, model/config identities, retry/token metadata where available, and actual ZDR status without raw evidence, generated prose, reasoning, or secrets | Redaction, secret-scan, receipt-content, and error-path tests remain required |
+
+The exact provider is OpenAI Responses API using existing HTTPX, model
+`gpt-5.6-sol`, reasoning `medium`, `store=false`, `background=false`, no tools,
+and no extended prompt-cache retention. Generation is limited to bounded
+candidate research-report claims and evidence selections. It cannot acquire
+evidence, change source semantics, or establish validation, approval, or export
+authority.
+
+The current implementation candidate occupies the exact 14-path scope. Its
+provider-neutral contract, static prompt, and strict schema are in
+`src/medevidence/tools/generation.py`; bounded service/reconstruction is in
+`src/medevidence/tools/generation_service.py`; the exact HTTPX Responses
+gateway is in `src/medevidence/infrastructure/openai_generation.py`; and the
+immutable receipt authority uses
+`src/medevidence/infrastructure/generation_receipts.py` plus the existing
+snapshot journal in `src/medevidence/ingestion/snapshots.py`. Focused unit and
+contract coverage occupies the corresponding five test paths, and the four
+governance paths record this boundary. The candidate is not integrated into
+the controlled workflow and does not implement Stage 2.
+
+Default network activity remains none. An explicit live-provider test may
+contact only the approved OpenAI endpoint; absence of its environment-injected
+key is blocked, not PASS. No medical-source network, dependency, public API or
+schema, migration, workflow integration, Stage-2 evaluator change, or Holdout
+access is authorized.
+
+The current focused candidate suite returned `200 passed`. Independent
+Review001 through Review009 remain immutable FAIL history. Review010 found no
+P0 or P1 code finding and identified this stale-status text as its P2
+documentation finding. The documentation correction, fresh exact validation,
+exact-byte rebind, and terminal audit remain pending gates; therefore no
+overall PASS, commit, push, PR, merge, or provider/network execution is
+claimed.
+
 ## M3-006 source-capability adapter candidate
 
 Owner `OWNER DECISION: A - APPROVED WITH EXACT CLARIFICATIONS` continues

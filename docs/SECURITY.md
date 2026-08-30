@@ -657,3 +657,60 @@ synthesis, deterministic/semantic validation, pending save, approval, export,
 and idempotent returns. A self-consistent but non-replayable child therefore
 fails before any later capability. Fresh review, rebind, and audit remain
 required; no PASS or Git claim is made.
+
+## 23. M3-007 OpenAI generation-gateway trust boundary
+
+The only approved model-provider surface is
+`POST https://api.openai.com/v1/responses` through existing HTTPX with model
+`gpt-5.6-sol` and reasoning effort `medium`. Requests set `store=false` and
+`background=false`, provide no tools, and do not opt into extended prompt-cache
+retention. No SDK or new dependency is added.
+
+The gateway is a bounded candidate generator, not an evidence, validation,
+approval, or export authority. The model, typed request input, and generated
+candidate have no credential, filesystem, database, MCP, web, retrieval,
+source-connector, or other tool access. The gateway alone receives the
+environment-injected OpenAI bearer credential solely to authorize the exact
+approved endpoint. Evidence content is explicitly labeled and delimited as
+untrusted data; instructions in that content cannot change policy, request
+configuration, schemas, or permissions. Only exact evidence identities
+supplied for the current run may be selected.
+
+Structured output is parsed strictly and then reconstructed by application
+code. Unknown, duplicate, missing, stale, foreign, or out-of-bounds identities;
+unsupported fields; malformed JSON; oversized data; and prohibited claim forms
+fail closed. Zero evidence cannot produce a claim. Missing, partial,
+unavailable, and conflicting evidence remain visible. The generator cannot
+invent completion, limitations, numerical context, agreement, incidence,
+causality, relative or absolute risk, regulatory authority, product-risk
+ordering, comparative safety, diagnosis, treatment, dosage, or individualized
+advice.
+
+The versioned prompt/config/schema contract owns finite request, response,
+token, deadline, timeout, attempt, backoff, and retry bounds. Redirects are
+forbidden. The bearer credential never enters model context and is excluded
+from prompts, receipts, errors, logs, and persisted artifacts. Untrusted
+evidence text, generated prose, authorization headers, and provider reasoning
+are likewise excluded from logs and receipts.
+
+An immutable `M3_GENERATION_RECEIPT_V1` binds the exact prompt, configuration,
+model, reasoning, and schema identities, versions, and hashes, the canonical
+candidate hash, and bounded provider execution metadata. It records the actual
+Zero Data Retention status rather than assuming ZDR is active. The Owner has
+accepted applicable OpenAI API business-data retention for the public-data V1
+boundary with `store=false` and `background=false`. Receipt persistence reuses
+the existing immutable application journal and adds no database migration.
+
+All default tests and validation remain offline and socket-disabled. Live
+provider access requires an explicit live-provider marker/run and an
+environment-injected key; a missing key blocks that live gate and is not a fake
+PASS. Import and construction perform no network activity. An authorized live
+provider test may contact only the approved OpenAI endpoint and is reported
+separately from medical-source activity. No PubMed, NCBI, DailyMed, FAERS,
+CADEC, or other medical-source network is authorized.
+
+M3-007 does not integrate generation into the workflow and does not implement
+or change Stage-2 semantic support. M3-008 owns the evaluator and a later
+authorized item owns workflow composition. Public API/OpenAPI, persistence
+schema, source/evidence semantics, retrieval/router/qrels/corpus/metric
+contracts, and Holdout-20 remain unchanged and sealed.
