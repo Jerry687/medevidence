@@ -1,5 +1,11 @@
 # V1 Traceability Matrix
 
+## M3-008B secure provider-attempt evidence
+
+ADR-022 maps provider execution to an isolated START/TERMINAL/RECOVERY ledger,
+bounded credential detection, exact safe raw bindings, and ledger-recomputed
+attempt/status projections. Historical attempts remain immutable.
+
 ## M3-008B DeepSeek Development calibration
 
 ADR-021 freezes the only active formal calibration provider as the dedicated

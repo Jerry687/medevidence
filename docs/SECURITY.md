@@ -1,5 +1,12 @@
 # Security, Medical Safety, and Trust Boundaries
 
+## Secure provider-attempt evidence
+
+ADR-022 detects the finite approved credential representation set entirely in
+memory before response hashing/persistence. Secret-bearing buffers are cleared;
+only safe metadata reaches the insert-only ledger. Safe raw bytes are external,
+content-addressed, and bound by terminal events after START was committed.
+
 ## M3-008B DeepSeek calibration-provider boundary
 
 The immutable first live attempt failed closed at case 1 with

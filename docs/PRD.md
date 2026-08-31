@@ -1,5 +1,11 @@
 # Product Requirements Document
 
+## M3-008B secure provider-attempt successor
+
+ADR-022 requires committed START-before-send, insert-only terminal/recovery
+truth, credential-echo suppression, safe raw-before-parse persistence, and
+ledger-derived external calibration evidence.
+
 ## M3-008B DeepSeek calibration provider
 
 ADR-021 replaces the unexecuted M3-008B provider profile with a dedicated

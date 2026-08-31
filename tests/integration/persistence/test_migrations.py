@@ -26,6 +26,8 @@ MIGRATION_DIR = ROOT / "alembic" / "versions"
 M3_MIGRATION = MIGRATION_DIR / "20260827_01_m3_validation_receipt.py"
 M3_REVISION = "m3validationreceipt001"
 M3_DOWN_REVISION = "m1bfaers002001"
+LEDGER_MIGRATION = MIGRATION_DIR / "20260831_01_m3_provider_attempt_ledger.py"
+LEDGER_REVISION = "m3providerattempt001"
 M3_DDL_PAYLOAD_SHA256 = "9d531079f5b73a7a4c2b32f20c6b8a07a23d77756785223e4ab5b7f59fda41c3"
 RECEIPT_TABLE = "m3_validation_receipts"
 
@@ -51,6 +53,7 @@ EXPECTED_TABLE_NAMES = {
     "m1b_snapshots",
     "m1b_source_outcomes",
     RECEIPT_TABLE,
+    "m3_provider_attempt_events",
     "publication_version",
     "registration_observation",
     "research_report",
@@ -156,6 +159,7 @@ def test_migration_chain_imports_and_has_exact_head() -> None:
         ("20260809_01_m1b_dailymed.py", "m1bdm002001", "m1a003b0001"),
         ("20260809_02_m1b_faers.py", M3_DOWN_REVISION, "m1bdm002001"),
         (M3_MIGRATION.name, M3_REVISION, M3_DOWN_REVISION),
+        (LEDGER_MIGRATION.name, LEDGER_REVISION, M3_REVISION),
     )
 
     actual_chain = []
@@ -167,8 +171,8 @@ def test_migration_chain_imports_and_has_exact_head() -> None:
 
     assert tuple(actual_chain) == expected_chain
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == [M3_REVISION]
-    assert script.get_current_head() == M3_REVISION
+    assert script.get_heads() == [LEDGER_REVISION]
+    assert script.get_current_head() == LEDGER_REVISION
 
 
 def test_m3_embedded_ddl_is_exact_and_receipt_only() -> None:
@@ -412,16 +416,16 @@ def test_upgrade_downgrade_upgrade_and_exact_catalog() -> None:
         engine.dispose()
 
     assert table_names == EXPECTED_TABLE_NAMES
-    assert constraint_counts == {"c": 138, "f": 56, "p": 31, "u": 64}
+    assert constraint_counts == {"c": 145, "f": 57, "p": 32, "u": 66}
     assert secondary_indexes == 12
-    assert len(fk_rows) == 56
+    assert len(fk_rows) == 57
     assert all(row["confupdtype"] == "r" and row["confdeltype"] == "r" for row in fk_rows)
     assert {row["conname"] for row in fk_rows if row["condeferrable"] or row["condeferred"]} == {
         "fk_research_run_report"
     }
     assert receipt_constraints == EXPECTED_RECEIPT_CONSTRAINTS
     assert receipt_columns == EXPECTED_RECEIPT_CATALOG_COLUMNS
-    assert version == M3_REVISION
+    assert version == LEDGER_REVISION
     assert version_schema == "public"
     assert forbidden_objects == 0
     assert raw_byte_columns == 0

@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections import Counter
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import evaluation.stage2_deepseek_calibration as calibration_module
@@ -15,9 +16,18 @@ from evaluation.stage2_deepseek_calibration import (
     DeepSeekCalibrationError,
     FrozenCalibrationCase,
     acceptance_metrics,
+    begin_pending_calibration_run,
     build_calibration_artifact,
     calibration_configuration,
+    persist_provider_event_projection,
+    provider_attempt_run_id,
+    provider_event_projection,
+    publish_successful_calibration_run,
+    reconcile_case_evidence,
+    validate_authoritative_provider_events,
     validate_calibration_artifact,
+    validate_provider_event_projection,
+    verify_external_run,
     write_calibration_artifact,
 )
 from pydantic import BaseModel
@@ -29,8 +39,10 @@ from medevidence.infrastructure.deepseek_semantic_evaluator import (
     deepseek_provider_request_bytes,
     deepseek_response_format,
 )
+from medevidence.persistence import ProviderAttemptEvent, make_provider_attempt_event
 from medevidence.tools.report_validation import SemanticSupport
 from medevidence.tools.semantic_evaluation import (
+    DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
     SEMANTIC_EVALUATION_PROMPT_BYTES,
     SemanticEvaluationCandidate,
     SemanticEvaluationUsage,
@@ -42,6 +54,56 @@ from medevidence.tools.semantic_evaluation import (
 
 CODE_REVISION = "a" * 40
 MANIFEST_HASH = "sha256:" + "b" * 64
+
+
+class _StaticLedger:
+    def __init__(self, events: tuple[ProviderAttemptEvent, ...]) -> None:
+        self.events = events
+
+    def list_events(self, provider_run_id: str) -> tuple[ProviderAttemptEvent, ...]:
+        return tuple(item for item in self.events if item.provider_run_id == provider_run_id)
+
+
+def _complete_provider_events(  # type: ignore[no-untyped-def]
+    raw_root, observations, provider_run_id="provider-attempt-run:sha256:" + "a" * 64
+):
+    events = []
+    for ordinal in range(1, 37):
+        start = make_provider_attempt_event(
+            provider_run_id=provider_run_id,
+            case_id=f"M3-008B-CAL-{ordinal:03d}",
+            case_ordinal=ordinal,
+            attempt_ordinal=1,
+            event_kind="START",
+            configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+            request_hash=observations[ordinal - 1].assessment.provider_request_hash,
+            started_at_utc=datetime(2026, 8, 31, tzinfo=UTC),
+        )
+        raw = observations[ordinal - 1].assessment.raw_response_envelope_bytes
+        terminal = make_provider_attempt_event(
+            provider_run_id=start.provider_run_id,
+            case_id=start.case_id,
+            case_ordinal=ordinal,
+            attempt_ordinal=1,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=start.configuration_hash,
+            request_hash=start.request_hash,
+            started_at_utc=start.started_at_utc,
+            completed_at_utc=start.started_at_utc,
+            http_status=200,
+            disposition="success",
+            body_complete=True,
+            body_byte_count=len(raw),
+            body_hash="sha256:" + hashlib.sha256(raw).hexdigest(),
+            body_relative_path=f"raw/case-{ordinal:03d}.bin",
+            observed_body_bytes_lower_bound=len(raw),
+        )
+        path = raw_root / f"raw/case-{ordinal:03d}.bin"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        events.extend((start, terminal))
+    return tuple(events)
 
 
 def _observation(index: int, human: SemanticSupport, predicted: SemanticSupport):
@@ -240,19 +302,31 @@ def test_configuration_separately_binds_deepseek_and_unchanged_owner_truth() -> 
 
 def test_artifact_reparses_every_byte_surface_and_rejects_mutation(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     observations = _cases()
+    events = _complete_provider_events(tmp_path, observations)
+    frozen_cases = tuple(item.case for item in observations)
+    expected_provider_run_id = events[0].provider_run_id
     _freeze_test_inventory(monkeypatch, observations)
     artifact = build_calibration_artifact(
         observations,
         completed_at_utc=datetime(2026, 1, 2, tzinfo=UTC),
         code_revision=CODE_REVISION,
         implementation_manifest_hash=MANIFEST_HASH,
+        provider_attempt_events=events,
+        provider_raw_root=tmp_path,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
     )
     validate_calibration_artifact(
         artifact,
         code_revision=CODE_REVISION,
         implementation_manifest_hash=MANIFEST_HASH,
+        provider_attempt_events=events,
+        provider_raw_root=tmp_path,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
     )
     for field, value, match in (
         ("evaluator_input_hash", "sha256:" + "0" * 64, "provider request drift"),
@@ -267,6 +341,10 @@ def test_artifact_reparses_every_byte_surface_and_rejects_mutation(
                 changed,
                 code_revision=CODE_REVISION,
                 implementation_manifest_hash=MANIFEST_HASH,
+                provider_attempt_events=events,
+                provider_raw_root=tmp_path,
+                frozen_cases=frozen_cases,
+                expected_provider_run_id=expected_provider_run_id,
             )
 
     changed_code = deepcopy(artifact)
@@ -277,6 +355,10 @@ def test_artifact_reparses_every_byte_surface_and_rejects_mutation(
             changed_code,
             code_revision=CODE_REVISION,
             implementation_manifest_hash=MANIFEST_HASH,
+            provider_attempt_events=events,
+            provider_raw_root=tmp_path,
+            frozen_cases=frozen_cases,
+            expected_provider_run_id=expected_provider_run_id,
         )
 
     changed_manifest = deepcopy(artifact)
@@ -287,6 +369,10 @@ def test_artifact_reparses_every_byte_surface_and_rejects_mutation(
             changed_manifest,
             code_revision=CODE_REVISION,
             implementation_manifest_hash=MANIFEST_HASH,
+            provider_attempt_events=events,
+            provider_raw_root=tmp_path,
+            frozen_cases=frozen_cases,
+            expected_provider_run_id=expected_provider_run_id,
         )
 
     missing_category = deepcopy(artifact)
@@ -299,6 +385,10 @@ def test_artifact_reparses_every_byte_surface_and_rejects_mutation(
             missing_category,
             code_revision=CODE_REVISION,
             implementation_manifest_hash=MANIFEST_HASH,
+            provider_attempt_events=events,
+            provider_raw_root=tmp_path,
+            frozen_cases=frozen_cases,
+            expected_provider_run_id=expected_provider_run_id,
         )
 
     duplicate_response = deepcopy(artifact)
@@ -311,11 +401,15 @@ def test_artifact_reparses_every_byte_surface_and_rejects_mutation(
     second["provider_response_hash"] = "sha256:" + hashlib.sha256(second_raw).hexdigest()
     second["raw_provider_response_hex"] = second_raw.hex()
     _rebind_artifact(duplicate_response)
-    with pytest.raises(DeepSeekCalibrationError, match="duplicate provider response"):
+    with pytest.raises(DeepSeekCalibrationError, match="response differs from ledger"):
         validate_calibration_artifact(
             duplicate_response,
             code_revision=CODE_REVISION,
             implementation_manifest_hash=MANIFEST_HASH,
+            provider_attempt_events=events,
+            provider_raw_root=tmp_path,
+            frozen_cases=frozen_cases,
+            expected_provider_run_id=expected_provider_run_id,
         )
 
 
@@ -355,6 +449,361 @@ def test_atomic_writer_cleans_pending_directory_on_partial_failure(
             output,
             code_revision=CODE_REVISION,
             implementation_manifest_hash=MANIFEST_HASH,
+            provider_attempt_events=(),
+            provider_raw_root=tmp_path,
+            frozen_cases=(),
+            expected_provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
         )
     assert not output.exists()
     assert not (tmp_path / ".external-result.pending").exists()
+
+
+def test_external_projection_cannot_override_authoritative_ledger_truth() -> None:
+    source = _cases()[0]
+    run_id = "provider-attempt-run:sha256:" + "a" * 64
+    start = make_provider_attempt_event(
+        provider_run_id=run_id,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+        request_hash=source.assessment.provider_request_hash,
+        started_at_utc=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    projection = provider_event_projection(
+        (start,), frozen_cases=(source.case,), expected_provider_run_id=run_id
+    )
+    assert projection["attempt_count"] == 1
+    assert projection["status"] == "NONFINAL"
+    changed = dict(projection)
+    changed["status"] = "COMPLETE"
+    semantic = dict(changed)
+    semantic.pop("projection_hash")
+    changed["projection_hash"] = (
+        "sha256:" + hashlib.sha256(canonical_json(semantic).encode()).hexdigest()
+    )
+    with pytest.raises(DeepSeekCalibrationError, match="differs from ledger"):
+        validate_provider_event_projection(
+            changed,
+            (start,),
+            frozen_cases=(source.case,),
+            expected_provider_run_id=run_id,
+        )
+
+
+def test_projection_verifies_exact_ledger_bound_raw_file(tmp_path) -> None:
+    source = _cases()[0]
+    raw = b'{"safe":"raw-before-parse"}'
+    relative = "provider-attempt-raw/a/case-001-attempt-001-raw.bin"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw)
+    start = make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+        request_hash=source.assessment.provider_request_hash,
+        started_at_utc=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    terminal = make_provider_attempt_event(
+        provider_run_id=start.provider_run_id,
+        case_id=start.case_id,
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="TERMINAL",
+        start_event=start,
+        configuration_hash=start.configuration_hash,
+        request_hash=start.request_hash,
+        started_at_utc=start.started_at_utc,
+        completed_at_utc=start.started_at_utc,
+        http_status=200,
+        disposition="response_invalid",
+        error_code="response_invalid",
+        body_complete=True,
+        body_byte_count=len(raw),
+        body_hash="sha256:" + hashlib.sha256(raw).hexdigest(),
+        body_relative_path=relative,
+        observed_body_bytes_lower_bound=len(raw),
+        approved_header_names=("content-type",),
+    )
+    projection = provider_event_projection(
+        (start, terminal),
+        frozen_cases=(source.case,),
+        expected_provider_run_id=start.provider_run_id,
+        raw_root=tmp_path,
+    )
+    validate_provider_event_projection(
+        projection,
+        (start, terminal),
+        frozen_cases=(source.case,),
+        expected_provider_run_id=start.provider_run_id,
+        raw_root=tmp_path,
+    )
+    path.write_bytes(b"tampered")
+    with pytest.raises(DeepSeekCalibrationError, match="raw provider body differs"):
+        validate_provider_event_projection(
+            projection,
+            (start, terminal),
+            frozen_cases=(source.case,),
+            expected_provider_run_id=start.provider_run_id,
+            raw_root=tmp_path,
+        )
+
+
+def test_projection_rejects_terminal_only_and_dual_closure() -> None:
+    source = _cases()[0]
+    start = make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+        request_hash=source.assessment.provider_request_hash,
+        started_at_utc=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    terminal = make_provider_attempt_event(
+        provider_run_id=start.provider_run_id,
+        case_id=start.case_id,
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="TERMINAL",
+        start_event=start,
+        configuration_hash=start.configuration_hash,
+        request_hash=start.request_hash,
+        started_at_utc=start.started_at_utc,
+        completed_at_utc=start.started_at_utc,
+        disposition="provider_rejected",
+        error_code="provider_rejected",
+    )
+    recovery = make_provider_attempt_event(
+        provider_run_id=start.provider_run_id,
+        case_id=start.case_id,
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="RECOVERY",
+        start_event=start,
+        configuration_hash=start.configuration_hash,
+        request_hash=start.request_hash,
+        started_at_utc=start.started_at_utc,
+        completed_at_utc=start.started_at_utc,
+        disposition="interrupted_unknown_after_start",
+        error_code="interrupted_unknown_after_start",
+    )
+    with pytest.raises(DeepSeekCalibrationError, match="START authority"):
+        provider_event_projection(
+            (terminal,),
+            frozen_cases=(source.case,),
+            expected_provider_run_id=start.provider_run_id,
+        )
+    with pytest.raises(DeepSeekCalibrationError, match="closure topology drift"):
+        provider_event_projection(
+            (start, terminal, recovery),
+            frozen_cases=(source.case,),
+            expected_provider_run_id=start.provider_run_id,
+        )
+
+
+@pytest.mark.parametrize("closure_kind", ("TERMINAL", "RECOVERY"))
+def test_authoritative_events_reject_failed_or_recovered_wrong_request(
+    closure_kind: str,
+) -> None:
+    source = _cases()[0]
+    run_id = "provider-attempt-run:sha256:" + "a" * 64
+    start = make_provider_attempt_event(
+        provider_run_id=run_id,
+        case_id=source.case.case_id,
+        case_ordinal=source.case.ordinal,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+        request_hash="sha256:" + "0" * 64,
+        started_at_utc=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    closure = make_provider_attempt_event(
+        provider_run_id=run_id,
+        case_id=start.case_id,
+        case_ordinal=start.case_ordinal,
+        attempt_ordinal=1,
+        event_kind=closure_kind,
+        start_event=start,
+        configuration_hash=start.configuration_hash,
+        request_hash=start.request_hash,
+        started_at_utc=start.started_at_utc,
+        completed_at_utc=start.started_at_utc,
+        disposition=(
+            "provider_rejected" if closure_kind == "TERMINAL" else "interrupted_unknown_after_start"
+        ),
+        error_code=(
+            "provider_rejected" if closure_kind == "TERMINAL" else "interrupted_unknown_after_start"
+        ),
+    )
+    with pytest.raises(DeepSeekCalibrationError, match="request differs"):
+        validate_authoritative_provider_events(
+            (start, closure),
+            frozen_cases=(source.case,),
+            expected_provider_run_id=run_id,
+        )
+
+
+def test_authoritative_events_reject_configuration_mismatch_on_any_event() -> None:
+    source = _cases()[0]
+    run_id = "provider-attempt-run:sha256:" + "a" * 64
+    start = make_provider_attempt_event(
+        provider_run_id=run_id,
+        case_id=source.case.case_id,
+        case_ordinal=source.case.ordinal,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+        request_hash=source.assessment.provider_request_hash,
+        started_at_utc=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    terminal = make_provider_attempt_event(
+        provider_run_id=run_id,
+        case_id=start.case_id,
+        case_ordinal=start.case_ordinal,
+        attempt_ordinal=1,
+        event_kind="TERMINAL",
+        start_event=start,
+        configuration_hash=start.configuration_hash,
+        request_hash=start.request_hash,
+        started_at_utc=start.started_at_utc,
+        completed_at_utc=start.started_at_utc,
+        disposition="provider_rejected",
+        error_code="provider_rejected",
+    )
+    foreign_terminal = replace(terminal, configuration_hash="sha256:" + "0" * 64)
+    with pytest.raises(DeepSeekCalibrationError, match="frozen authority"):
+        validate_authoritative_provider_events(
+            (start, foreign_terminal),
+            frozen_cases=(source.case,),
+            expected_provider_run_id=run_id,
+        )
+
+
+def test_external_run_verifier_reconstructs_and_rejects_rebound_file_mutations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    observations = _cases()
+    frozen_cases = tuple(item.case for item in observations)
+    _freeze_test_inventory(monkeypatch, observations)
+    configuration = calibration_configuration(
+        code_revision=CODE_REVISION,
+        implementation_manifest_hash=MANIFEST_HASH,
+    )
+    run_id = provider_attempt_run_id(configuration)
+    events = _complete_provider_events(tmp_path, observations, run_id)
+    output = tmp_path / "verified-run"
+    pending = begin_pending_calibration_run(
+        output,
+        code_revision=CODE_REVISION,
+        implementation_manifest_hash=MANIFEST_HASH,
+    )
+    reconcile_case_evidence(
+        pending,
+        frozen_cases,
+        events,
+        tmp_path,
+        expected_provider_run_id=run_id,
+    )
+    persist_provider_event_projection(
+        pending,
+        events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=run_id,
+    )
+    artifact = build_calibration_artifact(
+        observations,
+        completed_at_utc=datetime(2026, 8, 31, tzinfo=UTC),
+        code_revision=CODE_REVISION,
+        implementation_manifest_hash=MANIFEST_HASH,
+        provider_attempt_events=events,
+        provider_raw_root=tmp_path,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=run_id,
+    )
+    publish_successful_calibration_run(
+        pending,
+        artifact,
+        provider_attempt_events=events,
+        provider_raw_root=tmp_path,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=run_id,
+    )
+    repository = _StaticLedger(events)
+    verify_kwargs = {
+        "expected_provider_run_id": run_id,
+        "expected_code_revision": CODE_REVISION,
+        "expected_implementation_manifest_hash": MANIFEST_HASH,
+        "frozen_cases": frozen_cases,
+    }
+    verified = verify_external_run(repository, output, **verify_kwargs)  # type: ignore[arg-type]
+    assert verified["status"] == "COMPLETE"
+
+    configuration_path = output / "run-configuration.json"
+    original_configuration = configuration_path.read_bytes()
+    changed_configuration = json.loads(original_configuration)
+    changed_configuration["configuration"]["code_revision"] = "c" * 40
+    changed_configuration["configuration_binding_hash"] = (
+        "sha256:"
+        + hashlib.sha256(
+            canonical_json(changed_configuration["configuration"]).encode()
+        ).hexdigest()
+    )
+    configuration_path.write_bytes(canonical_json(changed_configuration).encode())
+    with pytest.raises(DeepSeekCalibrationError, match="run configuration differs"):
+        verify_external_run(repository, output, **verify_kwargs)  # type: ignore[arg-type]
+    configuration_path.write_bytes(original_configuration)
+
+    status_path = output / "run-status.json"
+    original_status = status_path.read_bytes()
+    changed_status = json.loads(original_status)
+    changed_status["status"] = "FAILED"
+    status_semantic = dict(changed_status)
+    status_semantic.pop("status_binding_hash")
+    changed_status["status_binding_hash"] = (
+        "sha256:" + hashlib.sha256(canonical_json(status_semantic).encode()).hexdigest()
+    )
+    status_path.write_bytes(canonical_json(changed_status).encode())
+    with pytest.raises(DeepSeekCalibrationError, match="run status differs"):
+        verify_external_run(repository, output, **verify_kwargs)  # type: ignore[arg-type]
+    status_path.write_bytes(original_status)
+
+    case_path = output / "case-001-evidence.json"
+    original_case = case_path.read_bytes()
+    changed_case = json.loads(original_case)
+    changed_case["evidence"]["human_notes"] = "rebound mutation"
+    changed_case["evidence_binding_hash"] = (
+        "sha256:" + hashlib.sha256(canonical_json(changed_case["evidence"]).encode()).hexdigest()
+    )
+    case_path.write_bytes(canonical_json(changed_case).encode())
+    with pytest.raises(DeepSeekCalibrationError, match="case evidence differs"):
+        verify_external_run(repository, output, **verify_kwargs)  # type: ignore[arg-type]
+    case_path.write_bytes(original_case)
+
+    artifact_path = output / "m3-008b-deepseek-calibration.json"
+    sidecar_path = output / "m3-008b-deepseek-calibration.json.sha256"
+    original_artifact = artifact_path.read_bytes()
+    original_sidecar = sidecar_path.read_bytes()
+    changed_artifact = json.loads(original_artifact)
+    changed_artifact["holdout_accessed"] = True
+    _rebind_artifact(changed_artifact)
+    changed_artifact_raw = canonical_json(changed_artifact).encode()
+    artifact_path.write_bytes(changed_artifact_raw)
+    sidecar_path.write_text(
+        f"{hashlib.sha256(changed_artifact_raw).hexdigest()}  {artifact_path.name}\n",
+        encoding="ascii",
+    )
+    with pytest.raises(DeepSeekCalibrationError, match="artifact boundary drift"):
+        verify_external_run(repository, output, **verify_kwargs)  # type: ignore[arg-type]
+    artifact_path.write_bytes(original_artifact)
+    sidecar_path.write_bytes(original_sidecar)
+
+    sidecar_path.write_text("0" * 64 + f"  {artifact_path.name}\n", encoding="ascii")
+    with pytest.raises(DeepSeekCalibrationError, match="artifact/status binding drift"):
+        verify_external_run(repository, output, **verify_kwargs)  # type: ignore[arg-type]

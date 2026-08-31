@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, final
 
@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from medevidence.domain import canonical_json
 from medevidence.infrastructure.deepseek_responses_transport import (
+    DeepSeekOneOperationObservation,
     DeepSeekRawRequest,
     DeepSeekRawTransport,
     DeepSeekTransportError,
@@ -64,6 +65,7 @@ class DeepSeekSemanticEvaluatorErrorCode(StrEnum):
     RESPONSE_TOOL_OUTPUT = "response_tool_output"
     RESPONSE_MODEL_MISMATCH = "response_model_mismatch"
     CANDIDATE_INVALID = "candidate_invalid"
+    CREDENTIAL_ECHO = "credential_echo"
 
 
 class DeepSeekSemanticEvaluatorError(RuntimeError):
@@ -82,7 +84,7 @@ class DeepSeekSemanticEvaluatorError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class DeepSeekRawSemanticObservation:
-    """Exact credential-free transport evidence available before provider parsing."""
+    """Legacy durable raw observation type retained for offline artifact compatibility."""
 
     evaluator_input_hash: str
     provider_request_hash: str
@@ -164,132 +166,119 @@ class DeepSeekResponsesSemanticEvaluator:
         del name, value
         raise AttributeError("DeepSeek semantic evaluator is frozen")
 
-    def observe(self, request: SemanticEvaluationRequest) -> DeepSeekRawSemanticObservation:
-        """Return fsync-ready raw evidence without parsing the provider envelope."""
+    def observe(
+        self,
+        request: SemanticEvaluationRequest,
+        *,
+        total_deadline_seconds: float = SEMANTIC_EVALUATION_TOTAL_DEADLINE_SECONDS,
+    ) -> DeepSeekOneOperationObservation:
+        """Perform one provider operation without response validation or hashing."""
 
         try:
-            evaluator_input = semantic_evaluation_input_bytes(request)
             request_bytes = deepseek_provider_request_bytes(request)
             raw_request = DeepSeekRawRequest(
                 api_key=object.__getattribute__(self, "_api_key"),
                 endpoint=DEEPSEEK_SEMANTIC_EVALUATION_ENDPOINT,
                 request_bytes=request_bytes,
-                profile=_profile(),
+                profile=_profile(total_deadline_seconds),
             )
-            raw_reply = DeepSeekRawTransport(
+            return DeepSeekRawTransport(
                 transport=object.__getattribute__(self, "_transport")
-            ).send(raw_request)
+            ).execute_one(raw_request)
         except DeepSeekTransportError as error:
             raise _transport_error(error) from None
         except (SemanticEvaluationContractError, TypeError, ValueError, UnicodeError):
             raise DeepSeekSemanticEvaluatorError(
                 DeepSeekSemanticEvaluatorErrorCode.REQUEST_INTEGRITY
             ) from None
-        return DeepSeekRawSemanticObservation(
-            evaluator_input_hash=_sha256(evaluator_input),
-            provider_request_hash=raw_reply.request_hash,
-            raw_provider_request_bytes=request_bytes,
-            provider_response_hash=raw_reply.response_hash,
-            raw_response_envelope_bytes=raw_reply.body,
-            status_code=raw_reply.status_code,
-            attempts=raw_reply.attempts,
-            started_at_utc=raw_reply.started_at_utc,
-            completed_at_utc=raw_reply.completed_at_utc,
-        )
-
-    def evaluate(self, request: SemanticEvaluationRequest) -> DeepSeekSemanticAssessment:
-        """Compatibility composition; formal calibration journals before finalize."""
-
-        return finalize_deepseek_semantic_observation(request, self.observe(request))
 
 
-def finalize_deepseek_semantic_observation(
+def finalize_deepseek_one_operation(
     request: SemanticEvaluationRequest,
-    observation: DeepSeekRawSemanticObservation,
+    observation: DeepSeekOneOperationObservation,
 ) -> DeepSeekSemanticAssessment:
-    """Strictly finalize one already-journalable raw observation."""
+    """Apply unchanged transport/envelope/result validation after safe raw persistence."""
 
-    raw = _reconstruct_raw_observation(request, observation)
-    candidate, response_id, usage, output_bytes = parse_deepseek_completed_response(
-        raw.raw_response_envelope_bytes
-    )
+    if type(observation) is not DeepSeekOneOperationObservation:
+        raise DeepSeekSemanticEvaluatorError(DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID)
+    if observation.credential_echo:
+        raise DeepSeekSemanticEvaluatorError(DeepSeekSemanticEvaluatorErrorCode.CREDENTIAL_ECHO)
+    if observation.transport_error is not None:
+        mapping = {
+            DeepSeekTransportErrorCode.DEADLINE_EXCEEDED: (
+                DeepSeekSemanticEvaluatorErrorCode.DEADLINE_EXCEEDED
+            ),
+            DeepSeekTransportErrorCode.RESPONSE_TOO_LARGE: (
+                DeepSeekSemanticEvaluatorErrorCode.RESPONSE_TOO_LARGE
+            ),
+            DeepSeekTransportErrorCode.RESPONSE_INVALID: (
+                DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID
+            ),
+            DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE: (
+                DeepSeekSemanticEvaluatorErrorCode.PROVIDER_UNAVAILABLE
+            ),
+        }
+        raise DeepSeekSemanticEvaluatorError(
+            mapping.get(
+                observation.transport_error,
+                DeepSeekSemanticEvaluatorErrorCode.PROVIDER_UNAVAILABLE,
+            ),
+            status_code=observation.http_status,
+        )
+    status = observation.http_status
+    if status in {401, 403}:
+        raise DeepSeekSemanticEvaluatorError(
+            DeepSeekSemanticEvaluatorErrorCode.AUTHENTICATION, status_code=status
+        )
+    if status != 200:
+        code = (
+            DeepSeekSemanticEvaluatorErrorCode.PROVIDER_UNAVAILABLE
+            if status in {429, 500, 502, 503, 504}
+            else DeepSeekSemanticEvaluatorErrorCode.PROVIDER_REJECTED
+        )
+        raise DeepSeekSemanticEvaluatorError(code, status_code=status)
+    headers = observation.approved_headers
+    if headers.get("content-encoding", "identity").lower() != "identity":
+        raise DeepSeekSemanticEvaluatorError(DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID)
+    if "transfer-encoding" in headers or headers.get("content-type") not in {
+        "application/json",
+        "application/json; charset=utf-8",
+    }:
+        raise DeepSeekSemanticEvaluatorError(DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID)
+    raw = observation.raw_body
+    if type(raw) is not bytes or not observation.body_complete:
+        raise DeepSeekSemanticEvaluatorError(DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID)
+    declared = headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) != len(raw):
+                raise ValueError
+        except ValueError:
+            raise DeepSeekSemanticEvaluatorError(
+                DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID
+            ) from None
+    candidate, response_id, usage, output_bytes = parse_deepseek_completed_response(raw)
     try:
         result = build_deepseek_semantic_evaluation_result(request, candidate)
     except (SemanticEvaluationContractError, TypeError, ValueError):
         raise DeepSeekSemanticEvaluatorError(
             DeepSeekSemanticEvaluatorErrorCode.CANDIDATE_INVALID
         ) from None
+    request_bytes = deepseek_provider_request_bytes(request)
     return DeepSeekSemanticAssessment(
         result=result,
-        evaluator_input_hash=raw.evaluator_input_hash,
-        provider_request_hash=raw.provider_request_hash,
-        raw_provider_request_bytes=raw.raw_provider_request_bytes,
+        evaluator_input_hash=_sha256(semantic_evaluation_input_bytes(request)),
+        provider_request_hash=_sha256(request_bytes),
+        raw_provider_request_bytes=request_bytes,
         provider_response_id=response_id,
-        provider_response_hash=raw.provider_response_hash,
-        raw_response_envelope_bytes=raw.raw_response_envelope_bytes,
+        provider_response_hash=_sha256(raw),
+        raw_response_envelope_bytes=raw,
         structured_output_bytes=output_bytes,
         structured_output_hash=_sha256(output_bytes),
-        attempts=raw.attempts,
+        attempts=1,
         usage=usage,
-        started_at_utc=raw.started_at_utc,
-        completed_at_utc=raw.completed_at_utc,
-    )
-
-
-def _reconstruct_raw_observation(
-    request: SemanticEvaluationRequest,
-    value: DeepSeekRawSemanticObservation,
-) -> DeepSeekRawSemanticObservation:
-    if type(value) is not DeepSeekRawSemanticObservation:
-        raise DeepSeekSemanticEvaluatorError(DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID)
-    try:
-        evaluator_input_hash = object.__getattribute__(value, "evaluator_input_hash")
-        provider_request_hash = object.__getattribute__(value, "provider_request_hash")
-        request_bytes = object.__getattribute__(value, "raw_provider_request_bytes")
-        provider_response_hash = object.__getattribute__(value, "provider_response_hash")
-        response_bytes = object.__getattribute__(value, "raw_response_envelope_bytes")
-        status_code = object.__getattribute__(value, "status_code")
-        attempts = object.__getattribute__(value, "attempts")
-        started = object.__getattribute__(value, "started_at_utc")
-        completed = object.__getattribute__(value, "completed_at_utc")
-        expected_request = deepseek_provider_request_bytes(request)
-        expected_input = semantic_evaluation_input_bytes(request)
-    except (AttributeError, SemanticEvaluationContractError, UnicodeError):
-        raise DeepSeekSemanticEvaluatorError(
-            DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID
-        ) from None
-    if (
-        type(request_bytes) is not bytes
-        or request_bytes != expected_request
-        or provider_request_hash != _sha256(request_bytes)
-        or evaluator_input_hash != _sha256(expected_input)
-        or type(response_bytes) is not bytes
-        or not response_bytes
-        or len(response_bytes) > MAX_EVALUATION_PROVIDER_RESPONSE_BYTES
-        or provider_response_hash != _sha256(response_bytes)
-        or type(status_code) is not int
-        or status_code != 200
-        or type(attempts) is not int
-        or not 1 <= attempts <= MAX_EVALUATION_ATTEMPTS
-        or not isinstance(started, datetime)
-        or started.tzinfo is None
-        or started.utcoffset() != UTC.utcoffset(started)
-        or not isinstance(completed, datetime)
-        or completed.tzinfo is None
-        or completed.utcoffset() != UTC.utcoffset(completed)
-        or completed < started
-    ):
-        raise DeepSeekSemanticEvaluatorError(DeepSeekSemanticEvaluatorErrorCode.RESPONSE_INVALID)
-    return DeepSeekRawSemanticObservation(
-        evaluator_input_hash=evaluator_input_hash,
-        provider_request_hash=provider_request_hash,
-        raw_provider_request_bytes=request_bytes,
-        provider_response_hash=provider_response_hash,
-        raw_response_envelope_bytes=response_bytes,
-        status_code=status_code,
-        attempts=attempts,
-        started_at_utc=started,
-        completed_at_utc=completed,
+        started_at_utc=observation.started_at_utc,
+        completed_at_utc=observation.completed_at_utc,
     )
 
 
@@ -514,12 +503,12 @@ def _response_id(value: object) -> str:
     return value
 
 
-def _profile() -> DeepSeekTransportProfile:
+def _profile(total_deadline_seconds: float) -> DeepSeekTransportProfile:
     return DeepSeekTransportProfile(
         max_request_bytes=MAX_EVALUATION_PROVIDER_REQUEST_BYTES,
         max_response_bytes=MAX_EVALUATION_PROVIDER_RESPONSE_BYTES,
         max_attempts=MAX_EVALUATION_ATTEMPTS,
-        total_deadline_seconds=SEMANTIC_EVALUATION_TOTAL_DEADLINE_SECONDS,
+        total_deadline_seconds=total_deadline_seconds,
         connect_timeout_seconds=SEMANTIC_EVALUATION_CONNECT_TIMEOUT_SECONDS,
         read_timeout_seconds=SEMANTIC_EVALUATION_READ_TIMEOUT_SECONDS,
         write_timeout_seconds=SEMANTIC_EVALUATION_WRITE_TIMEOUT_SECONDS,

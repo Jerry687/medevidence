@@ -68,7 +68,11 @@ M1A_EXPECTED_TABLES = (
     "artifact_integrity_event",
     "registration_observation",
 )
-EXPECTED_TABLES = (*M1A_EXPECTED_TABLES, "m3_validation_receipts")
+EXPECTED_TABLES = (
+    *M1A_EXPECTED_TABLES,
+    "m3_validation_receipts",
+    "m3_provider_attempt_events",
+)
 
 EXPECTED_IDENTITY_CONSTRAINTS = {
     "artifact": "pk_artifact",
@@ -85,6 +89,7 @@ EXPECTED_IDENTITY_CONSTRAINTS = {
     "artifact_integrity_event": "uq_integrity_event_natural",
     "registration_observation": "uq_registration_observation_natural",
     "m3_validation_receipts": "pk_m3_validation_receipts",
+    "m3_provider_attempt_events": "pk_m3_provider_attempt_events",
 }
 
 
@@ -133,13 +138,22 @@ def _m3_validation_receipt_migration_module() -> ModuleType:
     return module
 
 
+def _provider_attempt_migration_module() -> ModuleType:
+    path = Path("alembic/versions/20260831_01_m3_provider_attempt_ledger.py")
+    spec = importlib.util.spec_from_file_location("m3providerattempt_revision", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_exact_object_counts_and_names() -> None:
     assert tuple(table.name for table in models.TABLE_ORDER) == EXPECTED_TABLES
-    assert len(models.metadata.tables) == 31
-    assert len(_constraints(sa.CheckConstraint)) == 67
-    assert len(_constraints(sa.ForeignKeyConstraint)) == 17
-    assert len(_constraints(sa.PrimaryKeyConstraint)) == 14
-    assert len(_constraints(sa.UniqueConstraint)) == 23
+    assert len(models.metadata.tables) == 32
+    assert len(_constraints(sa.CheckConstraint)) == 74
+    assert len(_constraints(sa.ForeignKeyConstraint)) == 18
+    assert len(_constraints(sa.PrimaryKeyConstraint)) == 15
+    assert len(_constraints(sa.UniqueConstraint)) == 25
     assert sum(len(table.indexes) for table in models.TABLE_ORDER) == 12
     assert _constraints(sa.CheckConstraint) == set(models.EXPECTED_CHECK_NAMES)
 
@@ -217,6 +231,87 @@ def test_validation_receipt_table_is_exact_and_immutable() -> None:
         for name in models.EXPECTED_CHECK_NAMES
         if name.startswith("ck_m3_validation_receipts_")
     }
+
+
+def test_provider_attempt_ledger_is_single_insert_only_event_table() -> None:
+    table = models.m3_provider_attempt_events
+    assert tuple(column.name for column in table.columns) == (
+        "event_id",
+        "schema_version",
+        "provider_run_id",
+        "case_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "event_kind",
+        "event_slot",
+        "start_event_id",
+        "start_event_kind",
+        "provider",
+        "endpoint",
+        "model",
+        "configuration_hash",
+        "request_hash",
+        "started_at_utc",
+        "completed_at_utc",
+        "http_status",
+        "disposition",
+        "error_code",
+        "credential_echo",
+        "body_complete",
+        "body_byte_count",
+        "body_hash",
+        "body_relative_path",
+        "observed_body_bytes_lower_bound",
+        "approved_header_names",
+        "persisted_at_utc",
+    )
+    checks = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    assert checks == {
+        name
+        for name in models.EXPECTED_CHECK_NAMES
+        if name.startswith("ck_m3_provider_attempt_events_")
+    }
+    headers_check = models.CHECK_SQL["ck_m3_provider_attempt_events_headers"]
+    assert "approved_header_names <@ ARRAY" in headers_check
+    assert "::varchar[]" in headers_check
+    assert "::text[]" not in headers_check
+    unique = next(
+        item
+        for item in table.constraints
+        if isinstance(item, sa.UniqueConstraint)
+        and item.name == "uq_m3_provider_attempt_event_slot"
+    )
+    assert unique.name == "uq_m3_provider_attempt_event_slot"
+    assert tuple(column.name for column in unique.columns) == (
+        "provider_run_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "event_slot",
+    )
+    assert not hasattr(repository_module.ProviderAttemptLedgerRepository, "update")
+    assert not hasattr(repository_module.ProviderAttemptLedgerRepository, "delete")
+
+
+def test_provider_attempt_migration_is_single_table_after_receipts() -> None:
+    module = _provider_attempt_migration_module()
+    assert module.revision == "m3providerattempt001"
+    assert module.down_revision == "m3validationreceipt001"
+    assert module.TABLE_ORDER == ("m3_provider_attempt_events",)
+    assert len(module._ddl_statements()) == 1
+    statement = module._ddl_statements()[0]
+    assert "approved_header_names <@ ARRAY" in statement
+    assert "::varchar[]" in statement
+    assert "::text[]" not in statement
+    balance = 0
+    for character in statement:
+        balance += (character == "(") - (character == ")")
+        assert balance >= 0
+    assert balance == 0
+    assert "medevidence.persistence" not in Path(module.__file__).read_text(encoding="utf-8")
 
 
 def test_validation_receipt_migration_embeds_exact_application_metadata() -> None:
@@ -782,7 +877,7 @@ class _CapacityConnection:
         return self._count
 
 
-@pytest.mark.parametrize("table_name", EXPECTED_TABLES)
+@pytest.mark.parametrize("table_name", EXPECTED_TABLES[:-1])
 @pytest.mark.parametrize(
     "state",
     ("capacity_minus_one", "full_identical", "full_conflict", "full_new_identity"),

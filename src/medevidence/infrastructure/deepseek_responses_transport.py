@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
+import base64
 import json
 import math
+import re
 import time
 from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import cast, final
+from urllib.parse import quote_from_bytes
 
 import httpx
 
@@ -238,6 +239,96 @@ class DeepSeekRawReply:
 
 
 @final
+class DeepSeekOneOperationObservation:
+    """Bounded in-memory result of exactly one HTTP operation, before validation."""
+
+    __slots__ = (
+        "approved_headers",
+        "body_complete",
+        "completed_at_utc",
+        "credential_echo",
+        "http_status",
+        "observed_body_bytes_lower_bound",
+        "raw_body",
+        "retry_after",
+        "started_at_utc",
+        "transport_error",
+    )
+    http_status: int | None
+    approved_headers: dict[str, str]
+    raw_body: bytes | None
+    retry_after: str | None
+    body_complete: bool
+    observed_body_bytes_lower_bound: int
+    credential_echo: bool
+    transport_error: DeepSeekTransportErrorCode | None
+    started_at_utc: datetime
+    completed_at_utc: datetime
+
+    def __init__(
+        self,
+        *,
+        http_status: int | None,
+        approved_headers: dict[str, str],
+        raw_body: bytes | None,
+        body_complete: bool,
+        observed_body_bytes_lower_bound: int,
+        credential_echo: bool,
+        transport_error: DeepSeekTransportErrorCode | None,
+        started_at_utc: datetime,
+        completed_at_utc: datetime,
+        retry_after: str | None = None,
+    ) -> None:
+        object.__setattr__(self, "http_status", http_status)
+        object.__setattr__(self, "approved_headers", approved_headers)
+        object.__setattr__(self, "raw_body", raw_body)
+        object.__setattr__(self, "body_complete", body_complete)
+        object.__setattr__(self, "observed_body_bytes_lower_bound", observed_body_bytes_lower_bound)
+        object.__setattr__(self, "credential_echo", credential_echo)
+        object.__setattr__(self, "transport_error", transport_error)
+        object.__setattr__(self, "started_at_utc", started_at_utc)
+        object.__setattr__(self, "completed_at_utc", completed_at_utc)
+        object.__setattr__(self, "retry_after", retry_after)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        del name, value
+        raise AttributeError("DeepSeek one-operation observation is frozen")
+
+
+def credential_representations(api_key: str) -> tuple[bytes, ...]:
+    """Return the finite Owner-frozen credential representation set in memory only."""
+
+    if not _valid_key(api_key):
+        raise DeepSeekTransportError(DeepSeekTransportErrorCode.INVALID_CREDENTIAL)
+    literal = api_key.encode("ascii")
+    std = base64.b64encode(literal)
+    url = base64.urlsafe_b64encode(literal)
+    escaped = json.dumps(api_key, ensure_ascii=True)[1:-1].encode("ascii")
+    full_percent_upper = "".join(f"%{byte:02X}" for byte in literal).encode("ascii")
+    full_percent_lower = full_percent_upper.lower()
+    quoted_upper_text = quote_from_bytes(literal, safe="")
+    quoted_lower_text = re.sub(
+        r"%[0-9A-F]{2}", lambda match: match.group(0).lower(), quoted_upper_text
+    )
+    values = {
+        literal,
+        std,
+        std.rstrip(b"="),
+        url,
+        url.rstrip(b"="),
+        literal.hex().encode("ascii"),
+        literal.hex().upper().encode("ascii"),
+        full_percent_upper,
+        full_percent_lower,
+        quoted_upper_text.encode("ascii"),
+        quoted_lower_text.encode("ascii"),
+    }
+    if escaped != literal:
+        values.add(escaped)
+    return tuple(sorted(values))
+
+
+@final
 class DeepSeekRawTransport:
     __slots__ = ("_transport",)
 
@@ -250,84 +341,54 @@ class DeepSeekRawTransport:
         del name, value
         raise AttributeError("DeepSeek transport composition is frozen")
 
-    def send(self, request: DeepSeekRawRequest) -> DeepSeekRawReply:
-        """Execute only the reconstructed exact request with bounded retries."""
+    def execute_one(self, request: DeepSeekRawRequest) -> DeepSeekOneOperationObservation:
+        """Perform exactly one bounded operation and detect credential echo before hashing."""
 
+        if type(request) is not DeepSeekRawRequest:
+            raise DeepSeekTransportError(DeepSeekTransportErrorCode.REQUEST_INTEGRITY)
+        started_utc = datetime.now(UTC)
+        started = time.monotonic()
+        key = object.__getattribute__(request, "_api_key")
+        representations = credential_representations(key)
         try:
-            if type(request) is not DeepSeekRawRequest:
-                raise DeepSeekTransportError(DeepSeekTransportErrorCode.REQUEST_INTEGRITY)
-            profile = object.__getattribute__(request, "profile")
-            if type(profile) is not DeepSeekTransportProfile:
-                raise DeepSeekTransportError(DeepSeekTransportErrorCode.REQUEST_INTEGRITY)
-            started_utc = datetime.now(UTC)
-            started = time.monotonic()
-            attempts = 0
             with httpx.Client(
                 transport=_BorrowedTransport(object.__getattribute__(self, "_transport")),
-                timeout=httpx.Timeout(
-                    connect=profile.connect_timeout_seconds,
-                    read=profile.read_timeout_seconds,
-                    write=profile.write_timeout_seconds,
-                    pool=profile.pool_timeout_seconds,
-                ),
+                timeout=_attempt_timeout(started, request.profile),
                 follow_redirects=False,
                 trust_env=False,
             ) as client:
-                while attempts < profile.max_attempts:
-                    _deadline(started, profile)
-                    attempts += 1
-                    try:
-                        response, body = _send_once(client, request, started)
-                    except httpx.TransportError:
-                        if attempts >= profile.max_attempts:
-                            raise DeepSeekTransportError(
-                                DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE
-                            ) from None
-                        _sleep(request.request_hash, attempts, started, profile, None)
-                        continue
-                    status = response.status_code
-                    if status in profile.retryable_statuses:
-                        if attempts >= profile.max_attempts:
-                            raise DeepSeekTransportError(
-                                DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE,
-                                status_code=status,
-                            )
-                        _sleep(
-                            request.request_hash,
-                            attempts,
-                            started,
-                            profile,
-                            response.headers.get("Retry-After"),
-                        )
-                        continue
-                    if status in {401, 403}:
-                        raise DeepSeekTransportError(
-                            DeepSeekTransportErrorCode.AUTHENTICATION,
-                            status_code=status,
-                        )
-                    if status != 200:
-                        raise DeepSeekTransportError(
-                            DeepSeekTransportErrorCode.PROVIDER_REJECTED,
-                            status_code=status,
-                        )
-                    _validate_json(body)
-                    return DeepSeekRawReply(
-                        body=body,
-                        attempts=attempts,
-                        request_hash=request.request_hash,
-                        started_at_utc=started_utc,
-                        completed_at_utc=datetime.now(UTC),
-                    )
-        except DeepSeekTransportError:
-            raise
-        except Exception:
-            raise DeepSeekTransportError(DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE) from None
-        raise DeepSeekTransportError(DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE)
+                return _capture_one(
+                    client,
+                    request,
+                    started,
+                    started_utc,
+                    representations,
+                )
+        except (httpx.TransportError, DeepSeekTransportError) as error:
+            return DeepSeekOneOperationObservation(
+                http_status=None,
+                approved_headers={},
+                raw_body=None,
+                body_complete=False,
+                observed_body_bytes_lower_bound=0,
+                credential_echo=False,
+                transport_error=(
+                    error.code
+                    if type(error) is DeepSeekTransportError
+                    else DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE
+                ),
+                started_at_utc=started_utc,
+                completed_at_utc=datetime.now(UTC),
+            )
 
 
-def _send_once(
-    client: httpx.Client, request: DeepSeekRawRequest, started: float
-) -> tuple[httpx.Response, bytes]:
+def _capture_one(
+    client: httpx.Client,
+    request: DeepSeekRawRequest,
+    started: float,
+    started_utc: datetime,
+    representations: tuple[bytes, ...],
+) -> DeepSeekOneOperationObservation:
     profile = request.profile
     with client.stream(
         "POST",
@@ -342,38 +403,44 @@ def _send_once(
         timeout=_attempt_timeout(started, profile),
     ) as response:
         sent = response.request
-        if (
-            sent.method != "POST"
-            or str(sent.url) != DEEPSEEK_RESPONSES_ENDPOINT
-            or sent.headers.get("host") != "api.deepseek.com"
-            or sent.content != request.request_bytes
-            or hashlib.sha256(sent.content).digest()
-            != hashlib.sha256(request.request_bytes).digest()
-        ):
+        if sent.method != "POST" or sent.content != request.request_bytes:
             raise DeepSeekTransportError(DeepSeekTransportErrorCode.REQUEST_INTEGRITY)
-        if response.is_redirect:
-            raise DeepSeekTransportError(
-                DeepSeekTransportErrorCode.RESPONSE_INVALID,
-                status_code=response.status_code,
+        approved_names = (
+            "content-type",
+            "content-length",
+            "transfer-encoding",
+            "content-encoding",
+            "x-request-id",
+        )
+        header_values = {
+            name: response.headers[name] for name in approved_names if name in response.headers
+        }
+        retry_after_value = response.headers.get("Retry-After")
+        scanned_header_values = [*header_values.values()]
+        if retry_after_value is not None:
+            scanned_header_values.append(retry_after_value)
+        if any(
+            representation in value.encode("utf-8")
+            for value in scanned_header_values
+            for representation in representations
+        ):
+            header_values.clear()
+            return DeepSeekOneOperationObservation(
+                http_status=response.status_code,
+                approved_headers={},
+                raw_body=None,
+                body_complete=False,
+                observed_body_bytes_lower_bound=0,
+                credential_echo=True,
+                transport_error=None,
+                started_at_utc=started_utc,
+                completed_at_utc=datetime.now(UTC),
             )
-        if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-            raise DeepSeekTransportError(DeepSeekTransportErrorCode.RESPONSE_INVALID)
-        if response.headers.get("Transfer-Encoding") is not None:
-            raise DeepSeekTransportError(DeepSeekTransportErrorCode.RESPONSE_INVALID)
-        if response.headers.get("Content-Type") not in {
-            "application/json",
-            "application/json; charset=utf-8",
-        }:
-            raise DeepSeekTransportError(DeepSeekTransportErrorCode.RESPONSE_INVALID)
-        declared = response.headers.get("Content-Length")
-        if declared is not None:
-            try:
-                length = int(declared)
-            except ValueError:
-                raise DeepSeekTransportError(DeepSeekTransportErrorCode.RESPONSE_INVALID) from None
-            if length < 0 or length > profile.max_response_bytes:
-                raise DeepSeekTransportError(DeepSeekTransportErrorCode.RESPONSE_TOO_LARGE)
         body = bytearray()
+        maximum_representation = max(len(item) for item in representations)
+        tail = b""
+        observed = 0
+        overflow = False
         chunks = (
             (response.content,)
             if response.is_stream_consumed
@@ -382,14 +449,59 @@ def _send_once(
         try:
             for chunk in chunks:
                 _deadline(started, profile)
-                if len(body) + len(chunk) > profile.max_response_bytes:
-                    raise DeepSeekTransportError(DeepSeekTransportErrorCode.RESPONSE_TOO_LARGE)
-                body.extend(chunk)
-        except DeepSeekTransportError:
-            raise
-        except httpx.TransportError:
-            raise DeepSeekTransportError(DeepSeekTransportErrorCode.RESPONSE_INVALID) from None
-        return response, bytes(body)
+                observed += len(chunk)
+                scanned = tail + chunk
+                if any(item in scanned for item in representations):
+                    body.clear()
+                    header_values.clear()
+                    return DeepSeekOneOperationObservation(
+                        http_status=response.status_code,
+                        approved_headers={},
+                        raw_body=None,
+                        body_complete=False,
+                        observed_body_bytes_lower_bound=observed,
+                        credential_echo=True,
+                        transport_error=None,
+                        started_at_utc=started_utc,
+                        completed_at_utc=datetime.now(UTC),
+                    )
+                tail = scanned[-(maximum_representation - 1) :]
+                if len(body) < profile.max_response_bytes:
+                    remaining = profile.max_response_bytes - len(body)
+                    body.extend(chunk[:remaining])
+                if observed > profile.max_response_bytes:
+                    overflow = True
+        except (httpx.TransportError, DeepSeekTransportError) as error:
+            body.clear()
+            return DeepSeekOneOperationObservation(
+                http_status=response.status_code,
+                approved_headers=header_values,
+                raw_body=None,
+                body_complete=False,
+                observed_body_bytes_lower_bound=observed,
+                credential_echo=False,
+                transport_error=(
+                    error.code
+                    if type(error) is DeepSeekTransportError
+                    else DeepSeekTransportErrorCode.RESPONSE_INVALID
+                ),
+                started_at_utc=started_utc,
+                completed_at_utc=datetime.now(UTC),
+            )
+        return DeepSeekOneOperationObservation(
+            http_status=response.status_code,
+            approved_headers=header_values,
+            raw_body=None if overflow else bytes(body),
+            body_complete=not overflow,
+            observed_body_bytes_lower_bound=(
+                profile.max_response_bytes + 1 if overflow else len(body)
+            ),
+            credential_echo=False,
+            transport_error=(DeepSeekTransportErrorCode.RESPONSE_TOO_LARGE if overflow else None),
+            started_at_utc=started_utc,
+            completed_at_utc=datetime.now(UTC),
+            retry_after=retry_after_value,
+        )
 
 
 @final
@@ -424,42 +536,6 @@ def _attempt_timeout(started: float, profile: DeepSeekTransportProfile) -> httpx
         write=min(profile.write_timeout_seconds, remaining),
         pool=min(profile.pool_timeout_seconds, remaining),
     )
-
-
-def _sleep(
-    request_hash: str,
-    attempt: int,
-    started: float,
-    profile: DeepSeekTransportProfile,
-    retry_after: str | None,
-) -> None:
-    delay = min(
-        profile.retry_after_cap_seconds,
-        _retry_after(retry_after)
-        if retry_after is not None
-        else profile.backoff_base_seconds * (2 ** (attempt - 1)),
-    )
-    jitter = int(hashlib.sha256(f"{request_hash}:{attempt}".encode()).hexdigest()[:4], 16)
-    delay = min(profile.retry_after_cap_seconds, delay + (jitter / 65535) * 0.01)
-    if time.monotonic() - started + delay >= profile.total_deadline_seconds:
-        raise DeepSeekTransportError(DeepSeekTransportErrorCode.DEADLINE_EXCEEDED)
-    time.sleep(delay)
-
-
-def _retry_after(value: str) -> float:
-    try:
-        number = float(value)
-        if math.isfinite(number) and number >= 0:
-            return number
-    except ValueError:
-        pass
-    try:
-        parsed = parsedate_to_datetime(value)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return max(0.0, (parsed - datetime.now(UTC)).total_seconds())
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
 
 
 def _validate_json(raw: bytes) -> None:

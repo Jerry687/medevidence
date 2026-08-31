@@ -79,6 +79,13 @@ EXPECTED_CHECK_NAMES = (
     "ck_m3_validation_receipts_hashes",
     "ck_m3_validation_receipts_versions",
     "ck_m3_validation_receipts_payload",
+    "ck_m3_provider_attempt_events_schema",
+    "ck_m3_provider_attempt_events_identity",
+    "ck_m3_provider_attempt_events_ordinals",
+    "ck_m3_provider_attempt_events_bindings",
+    "ck_m3_provider_attempt_events_shape",
+    "ck_m3_provider_attempt_events_headers",
+    "ck_m3_provider_attempt_events_closure_binding",
 )
 
 OUTCOME = """(execution_status, coverage_status, result_status) IN (
@@ -203,6 +210,13 @@ CHECK_SQL = {
     "ck_m3_validation_receipts_hashes": "receipt_content_hash ~ '^sha256:[0-9a-f]{64}$' AND report_content_hash ~ '^sha256:[0-9a-f]{64}$' AND validation_input_hash ~ '^sha256:[0-9a-f]{64}$' AND task_binding_hash ~ '^sha256:[0-9a-f]{64}$'",
     "ck_m3_validation_receipts_versions": "char_length(btrim(evaluator_method)) BETWEEN 1 AND 512 AND char_length(btrim(evaluator_version)) BETWEEN 1 AND 512 AND char_length(btrim(policy_version)) BETWEEN 1 AND 512 AND char_length(btrim(configuration_version)) BETWEEN 1 AND 512",
     "ck_m3_validation_receipts_payload": "jsonb_typeof(receipt_payload)='object'",
+    "ck_m3_provider_attempt_events_schema": "schema_version='M3_PROVIDER_ATTEMPT_EVENT_V1'",
+    "ck_m3_provider_attempt_events_identity": "event_id ~ '^provider-attempt-event:sha256:[0-9a-f]{64}$' AND provider_run_id ~ '^provider-attempt-run:sha256:[0-9a-f]{64}$' AND case_id ~ '^M3-008B-CAL-[0-9]{3}$'",
+    "ck_m3_provider_attempt_events_ordinals": "case_ordinal BETWEEN 1 AND 36 AND attempt_ordinal BETWEEN 1 AND 3 AND event_slot BETWEEN 0 AND 1 AND (event_kind,event_slot) IN (('START',0),('TERMINAL',1),('RECOVERY',1))",
+    "ck_m3_provider_attempt_events_bindings": "provider='DeepSeek API' AND endpoint='https://api.deepseek.com/responses' AND model='deepseek-v4-pro' AND configuration_hash ~ '^sha256:[0-9a-f]{64}$' AND request_hash ~ '^sha256:[0-9a-f]{64}$' AND case_id='M3-008B-CAL-' || lpad(case_ordinal::text,3,'0')",
+    "ck_m3_provider_attempt_events_shape": "(event_kind='START' AND start_event_id IS NULL AND start_event_kind IS NULL AND disposition='started' AND completed_at_utc IS NULL AND http_status IS NULL AND error_code IS NULL AND credential_echo=false AND body_complete IS NULL AND body_byte_count IS NULL AND body_hash IS NULL AND body_relative_path IS NULL AND observed_body_bytes_lower_bound IS NULL) OR (event_kind='RECOVERY' AND start_event_id IS NOT NULL AND start_event_kind='START' AND disposition='interrupted_unknown_after_start' AND completed_at_utc IS NOT NULL AND http_status IS NULL AND error_code='interrupted_unknown_after_start' AND credential_echo=false AND body_complete IS NULL AND body_byte_count IS NULL AND body_hash IS NULL AND body_relative_path IS NULL AND observed_body_bytes_lower_bound IS NULL) OR (event_kind='TERMINAL' AND start_event_id IS NOT NULL AND start_event_kind='START' AND completed_at_utc IS NOT NULL AND disposition IN ('success','retryable_status','transport_unavailable','deadline_exceeded','response_invalid','response_too_large','credential_echo','authentication_failed','provider_rejected','candidate_invalid','evidence_persistence_failure') AND ((disposition='success' AND error_code IS NULL) OR (disposition<>'success' AND error_code=disposition)) AND ((credential_echo=true AND disposition='credential_echo' AND body_hash IS NULL AND body_relative_path IS NULL) OR (credential_echo=false AND ((body_hash IS NOT NULL AND body_relative_path IS NOT NULL AND body_complete=true AND body_byte_count IS NOT NULL AND observed_body_bytes_lower_bound=body_byte_count) OR (body_hash IS NULL AND body_relative_path IS NULL)))))",
+    "ck_m3_provider_attempt_events_headers": "cardinality(approved_header_names)<=5 AND array_position(approved_header_names,NULL) IS NULL AND approved_header_names <@ ARRAY['content-type','content-length','transfer-encoding','content-encoding','x-request-id']::varchar[] AND (completed_at_utc IS NULL OR completed_at_utc>=started_at_utc) AND (http_status IS NULL OR http_status BETWEEN 100 AND 599) AND (body_byte_count IS NULL OR body_byte_count BETWEEN 0 AND 131072) AND (observed_body_bytes_lower_bound IS NULL OR observed_body_bytes_lower_bound>=0) AND (body_hash IS NULL OR body_hash ~ '^sha256:[0-9a-f]{64}$') AND (body_relative_path IS NULL OR (char_length(body_relative_path) BETWEEN 1 AND 1024 AND left(body_relative_path,1)<>'/' AND position(chr(92) IN body_relative_path)=0 AND body_relative_path !~ '(^|/)\\.{1,2}(/|$)'))",
+    "ck_m3_provider_attempt_events_closure_binding": "((event_kind='START' AND start_event_id IS NULL AND start_event_kind IS NULL) OR (event_kind IN ('TERMINAL','RECOVERY') AND start_event_id IS NOT NULL AND start_event_kind='START')) AND (event_kind<>'TERMINAL' OR (((disposition='success' AND error_code IS NULL) OR (disposition<>'success' AND error_code=disposition)) AND (disposition<>'success' OR (body_complete=true AND body_hash IS NOT NULL AND body_relative_path IS NOT NULL AND body_byte_count IS NOT NULL))))",
 }
 
 CHECK_SQL["ck_publication_version_payload"] = f"""
@@ -257,7 +271,7 @@ AND ((version_payload#>'{{publication_status,relationship}}')='null'::jsonb OR
 AND schema_version='1.0'
 """
 
-assert len(CHECK_SQL) == 67
+assert len(CHECK_SQL) == 74
 
 
 def ck(name: str) -> sa.CheckConstraint:
@@ -851,6 +865,92 @@ m3_validation_receipts = sa.Table(
         name="uq_m3_validation_receipts_content_hash",
     ),
     *(ck(name) for name in EXPECTED_CHECK_NAMES[62:67]),
+    schema=SCHEMA,
+)
+
+m3_provider_attempt_events = sa.Table(
+    "m3_provider_attempt_events",
+    metadata,
+    sa.Column("event_id", sa.String(96), nullable=False),
+    sa.Column("schema_version", sa.String(40), nullable=False),
+    sa.Column("provider_run_id", sa.String(96), nullable=False),
+    sa.Column("case_id", sa.String(32), nullable=False),
+    sa.Column("case_ordinal", sa.SmallInteger(), nullable=False),
+    sa.Column("attempt_ordinal", sa.SmallInteger(), nullable=False),
+    sa.Column("event_kind", sa.String(16), nullable=False),
+    sa.Column("event_slot", sa.SmallInteger(), nullable=False),
+    sa.Column("start_event_id", sa.String(96), nullable=True),
+    sa.Column("start_event_kind", sa.String(16), nullable=True),
+    sa.Column("provider", sa.String(32), nullable=False),
+    sa.Column("endpoint", sa.String(256), nullable=False),
+    sa.Column("model", sa.String(128), nullable=False),
+    sa.Column("configuration_hash", sa.CHAR(71), nullable=False),
+    sa.Column("request_hash", sa.CHAR(71), nullable=False),
+    sa.Column("started_at_utc", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at_utc", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("http_status", sa.SmallInteger(), nullable=True),
+    sa.Column("disposition", sa.String(64), nullable=False),
+    sa.Column("error_code", sa.String(64), nullable=True),
+    sa.Column("credential_echo", sa.Boolean(), nullable=False),
+    sa.Column("body_complete", sa.Boolean(), nullable=True),
+    sa.Column("body_byte_count", sa.BigInteger(), nullable=True),
+    sa.Column("body_hash", sa.CHAR(71), nullable=True),
+    sa.Column("body_relative_path", sa.String(1024), nullable=True),
+    sa.Column("observed_body_bytes_lower_bound", sa.BigInteger(), nullable=True),
+    sa.Column(
+        "approved_header_names",
+        postgresql.ARRAY(sa.String(64), dimensions=1),
+        nullable=False,
+    ),
+    sa.Column(
+        "persisted_at_utc",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.PrimaryKeyConstraint("event_id", name="pk_m3_provider_attempt_events"),
+    sa.UniqueConstraint(
+        "provider_run_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "event_slot",
+        name="uq_m3_provider_attempt_event_slot",
+    ),
+    sa.UniqueConstraint(
+        "event_id",
+        "event_kind",
+        "provider_run_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "configuration_hash",
+        "request_hash",
+        name="uq_m3_provider_attempt_event_start_binding",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "start_event_id",
+            "start_event_kind",
+            "provider_run_id",
+            "case_ordinal",
+            "attempt_ordinal",
+            "configuration_hash",
+            "request_hash",
+        ],
+        [
+            "medevidence.m3_provider_attempt_events.event_id",
+            "medevidence.m3_provider_attempt_events.event_kind",
+            "medevidence.m3_provider_attempt_events.provider_run_id",
+            "medevidence.m3_provider_attempt_events.case_ordinal",
+            "medevidence.m3_provider_attempt_events.attempt_ordinal",
+            "medevidence.m3_provider_attempt_events.configuration_hash",
+            "medevidence.m3_provider_attempt_events.request_hash",
+        ],
+        name="fk_m3_provider_attempt_event_start",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+        match="SIMPLE",
+    ),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[67:74]),
     schema=SCHEMA,
 )
 
@@ -2284,4 +2384,5 @@ TABLE_ORDER = (
     artifact_integrity_event,
     registration_observation,
     m3_validation_receipts,
+    m3_provider_attempt_events,
 )

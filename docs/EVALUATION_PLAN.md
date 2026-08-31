@@ -1,5 +1,12 @@
 # Evaluation Plan
 
+## Secure M3-008B attempt execution
+
+Attempt counts come only from authoritative ledger START events. External
+results must exactly reproject ordered events and bound raw files. Orphan START,
+credential echo, overflow, terminal-insert failure, or projection drift fails
+closed without resend or Holdout access.
+
 ## M3-008B Stage-2 Development calibration
 
 Live attempt 001 is immutable FAILED evidence in the approved external M3-008B

@@ -16,6 +16,11 @@ from .repositories import (
     PersistenceConflict,
     PersistenceIntegrityError,
     PersistenceRepository,
+    ProviderAttemptEvent,
+    ProviderAttemptLedgerConflict,
+    ProviderAttemptLedgerError,
+    ProviderAttemptLedgerRepository,
+    ProviderAttemptRunLease,
     PublicationVersionRow,
     RegistrationObservationInput,
     RegistrationObservationRow,
@@ -37,6 +42,7 @@ from .repositories import (
     ValidatedManifest,
     ValidatedManifestFile,
     ValidatedReplay,
+    make_provider_attempt_event,
 )
 
 __all__ = [
@@ -52,6 +58,11 @@ __all__ = [
     "PersistenceIntegrityError",
     "PersistenceRepository",
     "PersistenceSettings",
+    "ProviderAttemptEvent",
+    "ProviderAttemptLedgerConflict",
+    "ProviderAttemptLedgerError",
+    "ProviderAttemptLedgerRepository",
+    "ProviderAttemptRunLease",
     "PublicationVersionRow",
     "RegistrationObservationInput",
     "RegistrationObservationRow",
@@ -73,5 +84,6 @@ __all__ = [
     "ValidatedManifest",
     "ValidatedManifestFile",
     "ValidatedReplay",
+    "make_provider_attempt_event",
     "redact_database_url",
 ]

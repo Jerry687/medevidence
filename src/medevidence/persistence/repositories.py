@@ -2620,3 +2620,425 @@ class PersistenceRepository:
                     "verified publication payload differs from stored identity"
                 ) from error
         return ReplaySnapshot(metadata=metadata, replay=replay)
+
+
+class ProviderAttemptLedgerError(RuntimeError):
+    """Stable failure for the authoritative insert-only provider-attempt ledger."""
+
+
+class ProviderAttemptLedgerConflict(ProviderAttemptLedgerError):
+    """A unique attempt/event slot already exists and must never be resent."""
+
+
+@dataclass(slots=True)
+class ProviderAttemptRunLease:
+    connection: Connection
+    provider_run_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAttemptEvent:
+    event_id: str
+    schema_version: str
+    provider_run_id: str
+    case_id: str
+    case_ordinal: int
+    attempt_ordinal: int
+    event_kind: str
+    event_slot: int
+    start_event_id: str | None
+    start_event_kind: str | None
+    provider: str
+    endpoint: str
+    model: str
+    configuration_hash: str
+    request_hash: str
+    started_at_utc: datetime
+    completed_at_utc: datetime | None
+    http_status: int | None
+    disposition: str
+    error_code: str | None
+    credential_echo: bool
+    body_complete: bool | None
+    body_byte_count: int | None
+    body_hash: str | None
+    body_relative_path: str | None
+    observed_body_bytes_lower_bound: int | None
+    approved_header_names: tuple[str, ...]
+
+
+_PROVIDER_EVENT_FIELDS = tuple(ProviderAttemptEvent.__dataclass_fields__)
+_PROVIDER_RUN_ID = re.compile(r"provider-attempt-run:sha256:[0-9a-f]{64}")
+_PROVIDER_CASE_ID = re.compile(r"M3-008B-CAL-[0-9]{3}")
+_PROVIDER_EVENT_ID = re.compile(r"provider-attempt-event:sha256:[0-9a-f]{64}")
+_PROVIDER_DISPOSITIONS = frozenset(
+    {
+        "started",
+        "success",
+        "retryable_status",
+        "transport_unavailable",
+        "deadline_exceeded",
+        "response_invalid",
+        "response_too_large",
+        "credential_echo",
+        "authentication_failed",
+        "provider_rejected",
+        "candidate_invalid",
+        "evidence_persistence_failure",
+        "interrupted_unknown_after_start",
+    }
+)
+_PROVIDER_HEADERS = frozenset(
+    {
+        "content-type",
+        "content-length",
+        "transfer-encoding",
+        "content-encoding",
+        "x-request-id",
+    }
+)
+
+
+def _provider_event_payload(event: ProviderAttemptEvent) -> dict[str, object]:
+    return {name: getattr(event, name) for name in _PROVIDER_EVENT_FIELDS if name != "event_id"}
+
+
+def canonical_provider_attempt_event_id(payload: Mapping[str, object]) -> str:
+    """Return the deterministic identity of one exact event projection."""
+
+    return (
+        "provider-attempt-event:sha256:"
+        + sha256(canonical_json(dict(payload)).encode("utf-8")).hexdigest()
+    )
+
+
+def validate_provider_attempt_event(event: ProviderAttemptEvent) -> ProviderAttemptEvent:
+    if type(event) is not ProviderAttemptEvent:
+        raise ValueError("provider attempt event type is invalid")
+    payload = _provider_event_payload(event)
+    start_shape = (
+        event.event_kind == "START"
+        and event.start_event_id is None
+        and event.start_event_kind is None
+        and event.disposition == "started"
+        and event.completed_at_utc is None
+        and event.http_status is None
+        and event.error_code is None
+        and not event.credential_echo
+        and event.body_complete is None
+        and event.body_hash is None
+        and event.body_relative_path is None
+    )
+    recovery_shape = (
+        event.event_kind == "RECOVERY"
+        and event.start_event_id is not None
+        and event.start_event_kind == "START"
+        and event.disposition == "interrupted_unknown_after_start"
+        and event.error_code == "interrupted_unknown_after_start"
+        and event.completed_at_utc is not None
+        and event.http_status is None
+        and event.body_hash is None
+        and event.body_relative_path is None
+    )
+    terminal_shape = (
+        event.event_kind == "TERMINAL"
+        and event.start_event_id is not None
+        and event.start_event_kind == "START"
+        and event.completed_at_utc is not None
+        and (
+            (event.disposition == "success" and event.error_code is None)
+            or (event.disposition != "success" and event.error_code == event.disposition)
+        )
+        and (
+            event.disposition != "success"
+            or (
+                event.body_complete is True
+                and event.body_hash is not None
+                and event.body_relative_path is not None
+                and event.body_byte_count is not None
+            )
+        )
+        and (
+            (
+                event.credential_echo
+                and event.disposition == "credential_echo"
+                and event.body_hash is None
+                and event.body_relative_path is None
+            )
+            or (
+                not event.credential_echo
+                and (
+                    (
+                        event.body_hash is not None
+                        and event.body_relative_path is not None
+                        and event.body_complete is True
+                        and event.body_byte_count is not None
+                        and event.observed_body_bytes_lower_bound == event.body_byte_count
+                    )
+                    or (event.body_hash is None and event.body_relative_path is None)
+                )
+            )
+        )
+    )
+    if (
+        _PROVIDER_EVENT_ID.fullmatch(event.event_id) is None
+        or event.event_id != canonical_provider_attempt_event_id(payload)
+        or event.schema_version != "M3_PROVIDER_ATTEMPT_EVENT_V1"
+        or _PROVIDER_RUN_ID.fullmatch(event.provider_run_id) is None
+        or _PROVIDER_CASE_ID.fullmatch(event.case_id) is None
+        or event.case_id != f"M3-008B-CAL-{event.case_ordinal:03d}"
+        or not 1 <= event.case_ordinal <= 36
+        or not 1 <= event.attempt_ordinal <= 3
+        or (event.event_kind, event.event_slot)
+        not in {("START", 0), ("TERMINAL", 1), ("RECOVERY", 1)}
+        or event.provider != "DeepSeek API"
+        or event.endpoint != "https://api.deepseek.com/responses"
+        or event.model != "deepseek-v4-pro"
+        or _SHA256_DIGEST.fullmatch(event.configuration_hash) is None
+        or _SHA256_DIGEST.fullmatch(event.request_hash) is None
+        or event.disposition not in _PROVIDER_DISPOSITIONS
+        or not (start_shape or recovery_shape or terminal_shape)
+        or tuple(sorted(set(event.approved_header_names))) != event.approved_header_names
+        or any(name not in _PROVIDER_HEADERS for name in event.approved_header_names)
+        or event.started_at_utc.tzinfo is None
+        or (
+            event.completed_at_utc is not None
+            and (
+                event.completed_at_utc.tzinfo is None
+                or event.completed_at_utc < event.started_at_utc
+            )
+        )
+    ):
+        raise ValueError("provider attempt event violates the closed contract")
+    return event
+
+
+class ProviderAttemptLedgerRepository:
+    """Dedicated insert/list/recovery API; deliberately exposes no update or delete."""
+
+    def __init__(self, settings: PersistenceSettings) -> None:
+        self._engine = _create_engine(settings)
+
+    @classmethod
+    def _from_engine_for_testing(cls, engine: Engine) -> ProviderAttemptLedgerRepository:
+        value = cls.__new__(cls)
+        value._engine = engine
+        return value
+
+    def close(self) -> None:
+        self._engine.dispose()
+
+    def acquire_run_lease(self, provider_run_id: str) -> ProviderAttemptRunLease:
+        if _PROVIDER_RUN_ID.fullmatch(provider_run_id) is None:
+            raise ValueError("provider_run_id is invalid")
+        connection = self._engine.connect()
+        acquired = connection.scalar(
+            sa.text("SELECT pg_try_advisory_lock(hashtextextended(:run_id, 0))"),
+            {"run_id": provider_run_id},
+        )
+        if acquired is not True:
+            connection.close()
+            raise ProviderAttemptLedgerConflict("provider run lease is already held")
+        return ProviderAttemptRunLease(connection, provider_run_id)
+
+    def release_run_lease(self, lease: ProviderAttemptRunLease) -> None:
+        if type(lease) is not ProviderAttemptRunLease:
+            raise ValueError("provider run lease type is invalid")
+        try:
+            lease.connection.scalar(
+                sa.text("SELECT pg_advisory_unlock(hashtextextended(:run_id, 0))"),
+                {"run_id": lease.provider_run_id},
+            )
+        finally:
+            lease.connection.close()
+
+    def append(self, event: ProviderAttemptEvent) -> ProviderAttemptEvent:
+        value = validate_provider_attempt_event(event)
+        values = _provider_event_payload(value)
+        values["event_id"] = value.event_id
+        try:
+            with self._engine.begin() as connection:
+                if value.event_kind != "START":
+                    start = (
+                        connection.execute(
+                            sa.select(models.m3_provider_attempt_events).where(
+                                models.m3_provider_attempt_events.c.event_id == value.start_event_id
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if start is None or start["event_kind"] != "START":
+                        raise ProviderAttemptLedgerConflict(
+                            "closure requires the exact persisted START"
+                        )
+                connection.execute(models.m3_provider_attempt_events.insert().values(**values))
+        except ProviderAttemptLedgerConflict:
+            raise
+        except IntegrityError as error:
+            if _is_unique_violation(error):
+                raise ProviderAttemptLedgerConflict(
+                    "provider attempt event slot already exists"
+                ) from None
+            raise ProviderAttemptLedgerError("provider attempt event insert failed") from error
+        return value
+
+    def list_events(self, provider_run_id: str) -> tuple[ProviderAttemptEvent, ...]:
+        if _PROVIDER_RUN_ID.fullmatch(provider_run_id) is None:
+            raise ValueError("provider_run_id is invalid")
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    sa.select(models.m3_provider_attempt_events)
+                    .where(models.m3_provider_attempt_events.c.provider_run_id == provider_run_id)
+                    .order_by(
+                        models.m3_provider_attempt_events.c.case_ordinal,
+                        models.m3_provider_attempt_events.c.attempt_ordinal,
+                        models.m3_provider_attempt_events.c.event_slot,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(_provider_event_from_row(dict(row)) for row in rows)
+
+    def reconcile_orphan_starts(
+        self, provider_run_id: str, *, recovered_at_utc: datetime
+    ) -> tuple[ProviderAttemptEvent, ...]:
+        if _PROVIDER_RUN_ID.fullmatch(provider_run_id) is None:
+            raise ValueError("provider_run_id is invalid")
+        if recovered_at_utc.tzinfo is None:
+            raise ValueError("recovery timestamp must be timezone-aware")
+        inserted: list[ProviderAttemptEvent] = []
+        with self._engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    'LOCK TABLE "medevidence"."m3_provider_attempt_events" '
+                    "IN SHARE ROW EXCLUSIVE MODE"
+                )
+            )
+            rows = (
+                connection.execute(
+                    sa.select(models.m3_provider_attempt_events)
+                    .where(models.m3_provider_attempt_events.c.provider_run_id == provider_run_id)
+                    .order_by(
+                        models.m3_provider_attempt_events.c.case_ordinal,
+                        models.m3_provider_attempt_events.c.attempt_ordinal,
+                        models.m3_provider_attempt_events.c.event_slot,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            grouped: dict[tuple[int, int], list[dict[str, object]]] = {}
+            for row in rows:
+                item = dict(row)
+                grouped.setdefault(
+                    (cast(int, item["case_ordinal"]), cast(int, item["attempt_ordinal"])), []
+                ).append(item)
+            for events in grouped.values():
+                kinds = {cast(str, item["event_kind"]) for item in events}
+                if "START" not in kinds or kinds & {"TERMINAL", "RECOVERY"}:
+                    continue
+                start = _provider_event_from_row(events[0])
+                recovery = make_provider_attempt_event(
+                    provider_run_id=start.provider_run_id,
+                    case_id=start.case_id,
+                    case_ordinal=start.case_ordinal,
+                    attempt_ordinal=start.attempt_ordinal,
+                    event_kind="RECOVERY",
+                    start_event=start,
+                    configuration_hash=start.configuration_hash,
+                    request_hash=start.request_hash,
+                    started_at_utc=start.started_at_utc,
+                    completed_at_utc=recovered_at_utc,
+                    disposition="interrupted_unknown_after_start",
+                    error_code="interrupted_unknown_after_start",
+                )
+                values = _provider_event_payload(recovery)
+                values["event_id"] = recovery.event_id
+                connection.execute(models.m3_provider_attempt_events.insert().values(**values))
+                inserted.append(recovery)
+        return tuple(inserted)
+
+
+def make_provider_attempt_event(
+    *,
+    provider_run_id: str,
+    case_id: str,
+    case_ordinal: int,
+    attempt_ordinal: int,
+    event_kind: str,
+    start_event: ProviderAttemptEvent | None = None,
+    configuration_hash: str,
+    request_hash: str,
+    started_at_utc: datetime,
+    completed_at_utc: datetime | None = None,
+    http_status: int | None = None,
+    disposition: str = "started",
+    error_code: str | None = None,
+    credential_echo: bool = False,
+    body_complete: bool | None = None,
+    body_byte_count: int | None = None,
+    body_hash: str | None = None,
+    body_relative_path: str | None = None,
+    observed_body_bytes_lower_bound: int | None = None,
+    approved_header_names: tuple[str, ...] = (),
+) -> ProviderAttemptEvent:
+    slot = {"START": 0, "TERMINAL": 1, "RECOVERY": 1}.get(event_kind)
+    if slot is None:
+        raise ValueError("provider attempt event kind is invalid")
+    if (event_kind == "START") != (start_event is None):
+        raise ValueError("closure must bind one exact START event")
+    if start_event is not None and (
+        start_event.event_kind != "START"
+        or start_event.provider_run_id != provider_run_id
+        or start_event.case_id != case_id
+        or start_event.case_ordinal != case_ordinal
+        or start_event.attempt_ordinal != attempt_ordinal
+        or start_event.configuration_hash != configuration_hash
+        or start_event.request_hash != request_hash
+    ):
+        raise ValueError("closure differs from exact START binding")
+    payload: dict[str, object] = {
+        "schema_version": "M3_PROVIDER_ATTEMPT_EVENT_V1",
+        "provider_run_id": provider_run_id,
+        "case_id": case_id,
+        "case_ordinal": case_ordinal,
+        "attempt_ordinal": attempt_ordinal,
+        "event_kind": event_kind,
+        "event_slot": slot,
+        "start_event_id": start_event.event_id if start_event is not None else None,
+        "start_event_kind": "START" if start_event is not None else None,
+        "provider": "DeepSeek API",
+        "endpoint": "https://api.deepseek.com/responses",
+        "model": "deepseek-v4-pro",
+        "configuration_hash": configuration_hash,
+        "request_hash": request_hash,
+        "started_at_utc": started_at_utc,
+        "completed_at_utc": completed_at_utc,
+        "http_status": http_status,
+        "disposition": disposition,
+        "error_code": error_code,
+        "credential_echo": credential_echo,
+        "body_complete": body_complete,
+        "body_byte_count": body_byte_count,
+        "body_hash": body_hash,
+        "body_relative_path": body_relative_path,
+        "observed_body_bytes_lower_bound": observed_body_bytes_lower_bound,
+        "approved_header_names": approved_header_names,
+    }
+    event = ProviderAttemptEvent(
+        event_id=canonical_provider_attempt_event_id(payload),
+        **payload,  # type: ignore[arg-type]
+    )
+    return validate_provider_attempt_event(event)
+
+
+def _provider_event_from_row(row: Mapping[str, object]) -> ProviderAttemptEvent:
+    values = {name: row[name] for name in _PROVIDER_EVENT_FIELDS}
+    values["approved_header_names"] = tuple(cast(Sequence[str], values["approved_header_names"]))
+    try:
+        return validate_provider_attempt_event(ProviderAttemptEvent(**values))  # type: ignore[arg-type]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProviderAttemptLedgerError("stored provider attempt event is invalid") from error

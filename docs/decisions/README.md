@@ -1,5 +1,7 @@
 # Architecture Decision Records
 
+- [ADR-022: Secure provider-attempt evidence ledger](ADR-022-m3-008b-secure-provider-attempt-evidence.md)
+
 ## Owner-accepted M3-008B DeepSeek calibration-provider record
 
 - [ADR-021: DeepSeek Responses Stage-2 evaluator](ADR-021-deepseek-responses-stage2-evaluator.md)

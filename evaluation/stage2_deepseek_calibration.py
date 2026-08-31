@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, cast, final
@@ -15,6 +16,9 @@ from typing import Any, Final, cast, final
 from pydantic import BaseModel
 
 from medevidence.domain import canonical_json
+from medevidence.infrastructure.deepseek_responses_transport import (
+    DeepSeekOneOperationObservation,
+)
 from medevidence.infrastructure.deepseek_semantic_evaluator import (
     DeepSeekRawSemanticObservation,
     DeepSeekSemanticAssessment,
@@ -22,6 +26,7 @@ from medevidence.infrastructure.deepseek_semantic_evaluator import (
     deepseek_provider_request_bytes,
     parse_deepseek_completed_response,
 )
+from medevidence.persistence import ProviderAttemptEvent, ProviderAttemptLedgerRepository
 from medevidence.tools.report_validation import SemanticSupport
 from medevidence.tools.semantic_evaluation import (
     DEEPSEEK_SEMANTIC_EVALUATION_CONFIG_VERSION,
@@ -97,6 +102,13 @@ class CalibrationObservation:
     assessment: DeepSeekSemanticAssessment
 
 
+@dataclass(frozen=True, slots=True)
+class RawProviderBodyBinding:
+    relative_path: str
+    content_hash: str
+    byte_count: int
+
+
 @final
 class PendingCalibrationRun:
     """One absent append-only pending run created only after every preflight gate."""
@@ -106,12 +118,16 @@ class PendingCalibrationRun:
         "configuration",
         "output_root",
         "pending_root",
+        "provider_attempt_authority",
+        "raw_body_paths",
         "successful_case_ids",
     )
     attempted_case_ids: list[str]
     configuration: dict[str, object]
     output_root: Path
     pending_root: Path
+    raw_body_paths: list[str]
+    provider_attempt_authority: dict[str, object] | None
     successful_case_ids: list[str]
 
     def __init__(
@@ -126,6 +142,8 @@ class PendingCalibrationRun:
         object.__setattr__(self, "pending_root", pending_root)
         object.__setattr__(self, "successful_case_ids", [])
         object.__setattr__(self, "attempted_case_ids", [])
+        object.__setattr__(self, "raw_body_paths", [])
+        object.__setattr__(self, "provider_attempt_authority", None)
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -343,6 +361,449 @@ def calibration_configuration(
     }
 
 
+def provider_attempt_run_id(configuration: Mapping[str, object]) -> str:
+    """Bind one durable provider run to the exact frozen calibration configuration."""
+
+    return (
+        "provider-attempt-run:sha256:"
+        + hashlib.sha256(_canonical_bytes(dict(configuration))).hexdigest()
+    )
+
+
+def persist_safe_raw_body(
+    run: PendingCalibrationRun,
+    case: FrozenCalibrationCase,
+    attempt_ordinal: int,
+    observation: DeepSeekOneOperationObservation,
+    *,
+    provider_run_id: str,
+) -> RawProviderBodyBinding | None:
+    """Persist only credential-clean, complete, within-cap raw bytes before validation."""
+
+    _validate_pending_run(run)
+    if observation.credential_echo or observation.raw_body is None:
+        return None
+    raw = observation.raw_body
+    if not observation.body_complete or len(raw) > 131_072:
+        return None
+    name = f"case-{case.ordinal:03d}-attempt-{attempt_ordinal:03d}-raw.bin"
+    run_digest = provider_run_id.removeprefix("provider-attempt-run:sha256:")
+    relative = f"provider-attempt-raw/{run_digest}/{name}"
+    store = run.output_root.parent / "provider-attempt-raw" / run_digest
+    _validate_external_ancestry(run.output_root.parent, store)
+    store.mkdir(parents=True, exist_ok=True)
+    _validate_external_ancestry(run.output_root.parent, store)
+    path = store / name
+    _write_new_bytes(path, raw)
+    digest = _sha256(raw)
+    return RawProviderBodyBinding(relative, digest, len(raw))
+
+
+def validate_authoritative_provider_events(
+    events: Sequence[ProviderAttemptEvent],
+    *,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
+) -> tuple[ProviderAttemptEvent, ...]:
+    """Bind every event to the frozen run, provider config, case, and request."""
+
+    ordered = tuple(events)
+    cases = {case.ordinal: case for case in frozen_cases}
+    if len(cases) != len(tuple(frozen_cases)):
+        raise DeepSeekCalibrationError("frozen case inventory contains duplicate ordinals")
+    starts_by_id = {item.event_id: item for item in ordered if item.event_kind == "START"}
+    for event in ordered:
+        case = cases.get(event.case_ordinal)
+        if (
+            event.provider_run_id != expected_provider_run_id
+            or event.configuration_hash != DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH
+            or case is None
+            or event.case_id != case.case_id
+        ):
+            raise DeepSeekCalibrationError("provider event differs from frozen authority")
+        expected_request_hash = _sha256(deepseek_provider_request_bytes(case.request))
+        if event.request_hash != expected_request_hash:
+            raise DeepSeekCalibrationError("provider event request differs from frozen case")
+        if event.event_kind != "START":
+            start = starts_by_id.get(cast(str, event.start_event_id))
+            if (
+                start is None
+                or start.case_ordinal != event.case_ordinal
+                or start.attempt_ordinal != event.attempt_ordinal
+            ):
+                raise DeepSeekCalibrationError("provider closure lacks frozen START authority")
+    return ordered
+
+
+def provider_event_projection(
+    events: Sequence[ProviderAttemptEvent],
+    *,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
+    raw_root: Path | None = None,
+) -> dict[str, object]:
+    ordered = validate_authoritative_provider_events(
+        events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+    )
+    return _project_validated_events(ordered, raw_root=raw_root)
+
+
+def _project_validated_events(
+    events: Sequence[ProviderAttemptEvent], *, raw_root: Path | None = None
+) -> dict[str, object]:
+    """Build the external projection strictly from authoritative ordered ledger events."""
+
+    ordered = tuple(events)
+    if (
+        tuple(
+            sorted(
+                ordered, key=lambda item: (item.case_ordinal, item.attempt_ordinal, item.event_slot)
+            )
+        )
+        != ordered
+    ):
+        raise DeepSeekCalibrationError("provider ledger event order drift")
+    for event in ordered:
+        if event.body_relative_path is None:
+            continue
+        if raw_root is None:
+            raise DeepSeekCalibrationError("raw root is required for bound provider body")
+        path = raw_root / event.body_relative_path
+        if not path.is_file() or path.is_symlink():
+            raise DeepSeekCalibrationError("ledger-bound raw provider body is missing")
+        with path.open("rb") as handle:
+            raw = handle.read(131_073)
+        if (
+            len(raw) > 131_072
+            or event.body_byte_count != len(raw)
+            or event.body_hash != _sha256(raw)
+        ):
+            raise DeepSeekCalibrationError("ledger-bound raw provider body differs")
+    rows = [
+        {
+            name: (
+                value.isoformat()
+                if isinstance(value, datetime)
+                else list(value)
+                if isinstance(value, tuple)
+                else value
+            )
+            for field in fields(event)
+            for name, value in ((field.name, getattr(event, field.name)),)
+        }
+        for event in ordered
+    ]
+    starts = [item for item in ordered if item.event_kind == "START"]
+    terminal = [item for item in ordered if item.event_kind in {"TERMINAL", "RECOVERY"}]
+    start_by_key = {(item.case_ordinal, item.attempt_ordinal): item for item in starts}
+    closure_keys: set[tuple[int, int]] = set()
+    for closure in terminal:
+        key = (closure.case_ordinal, closure.attempt_ordinal)
+        start = start_by_key.get(key)
+        if (
+            start is None
+            or key in closure_keys
+            or closure.start_event_id != start.event_id
+            or closure.configuration_hash != start.configuration_hash
+            or closure.request_hash != start.request_hash
+        ):
+            raise DeepSeekCalibrationError("provider ledger closure topology drift")
+        closure_keys.add(key)
+    terminal_keys = {(item.case_ordinal, item.attempt_ordinal) for item in terminal}
+    orphan = any((item.case_ordinal, item.attempt_ordinal) not in terminal_keys for item in starts)
+    case_ordinals = sorted({item.case_ordinal for item in starts})
+    final_successes: set[int] = set()
+    for case_ordinal in case_ordinals:
+        case_starts = [item for item in starts if item.case_ordinal == case_ordinal]
+        ordinals = [item.attempt_ordinal for item in case_starts]
+        if ordinals != list(range(1, len(ordinals) + 1)) or len(ordinals) > 3:
+            raise DeepSeekCalibrationError("provider ledger attempt ordinals are discontinuous")
+        case_closures = {
+            item.attempt_ordinal: item for item in terminal if item.case_ordinal == case_ordinal
+        }
+        for attempt in ordinals[:-1]:
+            closure = case_closures.get(attempt)
+            if closure is None or closure.disposition not in {
+                "retryable_status",
+                "transport_unavailable",
+            }:
+                raise DeepSeekCalibrationError("provider ledger retry transition is illegal")
+        if ordinals and ordinals[-1] in case_closures:
+            final = case_closures[ordinals[-1]]
+            if final.disposition == "success":
+                if (
+                    final.body_complete is not True
+                    or final.body_hash is None
+                    or final.body_relative_path is None
+                    or final.body_byte_count is None
+                ):
+                    raise DeepSeekCalibrationError(
+                        "successful provider closure lacks exact raw binding"
+                    )
+                final_successes.add(case_ordinal)
+        if any(attempt not in ordinals for attempt in case_closures):
+            raise DeepSeekCalibrationError("provider ledger closure has no START ordinal")
+    all_cases_complete = (
+        case_ordinals == list(range(1, CASE_COUNT + 1))
+        and final_successes == set(range(1, CASE_COUNT + 1))
+        and not orphan
+    )
+    semantic = {
+        "schema_version": "m3.provider-attempt-projection.v1",
+        "event_count": len(ordered),
+        "attempt_count": len(starts),
+        "status": (
+            "EMPTY"
+            if not ordered
+            else "NONFINAL"
+            if starts and not terminal
+            else "INTERRUPTED"
+            if orphan or any(item.event_kind == "RECOVERY" for item in ordered)
+            else "FAILED"
+            if not all_cases_complete
+            else "COMPLETE"
+        ),
+        "events": rows,
+    }
+    return {**semantic, "projection_hash": _sha256(_canonical_bytes(semantic))}
+
+
+def validate_provider_event_projection(
+    projection: Mapping[str, object],
+    events: Sequence[ProviderAttemptEvent],
+    *,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
+    raw_root: Path | None = None,
+) -> None:
+    """Reject caller-recomputed projections that differ from authoritative ledger truth."""
+
+    if dict(projection) != provider_event_projection(
+        events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=raw_root,
+    ):
+        raise DeepSeekCalibrationError("external provider-attempt projection differs from ledger")
+
+
+def expected_run_status(
+    *,
+    configuration: Mapping[str, object],
+    events: Sequence[ProviderAttemptEvent],
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
+    raw_root: Path,
+    artifact: Mapping[str, object] | None,
+    artifact_bytes: bytes | None,
+) -> dict[str, object]:
+    """Build the sole closed run-status object from configuration, ledger, and artifact."""
+
+    projection = provider_event_projection(
+        events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=raw_root,
+    )
+    starts = [item for item in events if item.event_kind == "START"]
+    closures = [item for item in events if item.event_kind in {"TERMINAL", "RECOVERY"}]
+    attempted_ids = tuple(
+        f"M3-008B-CAL-{ordinal:03d}" for ordinal in sorted({item.case_ordinal for item in starts})
+    )
+    successful_ids = tuple(
+        f"M3-008B-CAL-{ordinal:03d}"
+        for ordinal in sorted(
+            {
+                item.case_ordinal
+                for item in closures
+                if item.event_kind == "TERMINAL" and item.disposition == "success"
+            }
+        )
+    )
+    artifact_present = artifact is not None and artifact_bytes is not None
+    metrics = artifact.get("metrics") if artifact is not None else None
+    metrics_accepted = type(metrics) is dict and metrics.get("accepted") is True
+    accepted = projection["status"] == "COMPLETE" and artifact_present and metrics_accepted
+    status = (
+        "PASS"
+        if accepted
+        else "INTERRUPTED"
+        if projection["status"] in {"INTERRUPTED", "NONFINAL"}
+        else "FAILED"
+    )
+    authority = {
+        "projection_hash": projection["projection_hash"],
+        "event_count": projection["event_count"],
+        "attempt_count": projection["attempt_count"],
+        "status": projection["status"],
+    }
+    semantic = {
+        "schema_version": "m3.stage2.deepseek-run-status.v2",
+        "status": status,
+        "accepted": accepted,
+        "calibration_artifact_present": artifact_present,
+        "artifact_sha256": _sha256(artifact_bytes) if artifact_bytes is not None else None,
+        "artifact_sidecar_present": artifact_present,
+        "provider_attempt_authority": authority,
+        "configuration_binding_hash": _sha256(_canonical_bytes(dict(configuration))),
+        "total_http_attempts": len(starts),
+        "attempted_case_count": len(attempted_ids),
+        "attempted_case_ids": list(attempted_ids),
+        "successful_case_count": len(successful_ids),
+        "successful_case_ids": list(successful_ids),
+    }
+    return {**semantic, "status_binding_hash": _sha256(_canonical_bytes(semantic))}
+
+
+def verify_external_run(
+    repository: ProviderAttemptLedgerRepository,
+    output_root: Path,
+    *,
+    expected_provider_run_id: str,
+    expected_code_revision: str,
+    expected_implementation_manifest_hash: str,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+) -> dict[str, object]:
+    """Verify the whole external run only from independent expected inputs and ledger."""
+
+    expected_configuration = calibration_configuration(
+        code_revision=expected_code_revision,
+        implementation_manifest_hash=expected_implementation_manifest_hash,
+    )
+    if provider_attempt_run_id(expected_configuration) != expected_provider_run_id:
+        raise DeepSeekCalibrationError("expected provider run identity drift")
+    events = repository.list_events(expected_provider_run_id)
+    expected = provider_event_projection(
+        events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=output_root.parent,
+    )
+    projection = _load_external_json(output_root / "provider-attempt-projection.json")
+    validate_provider_event_projection(
+        projection,
+        events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=output_root.parent,
+    )
+    run_configuration = _load_external_json(output_root / "run-configuration.json")
+    if run_configuration != {
+        "schema_version": "m3.stage2.deepseek-run-configuration.v1",
+        "status": "PENDING",
+        "configuration": expected_configuration,
+        "configuration_binding_hash": _sha256(_canonical_bytes(expected_configuration)),
+    }:
+        raise DeepSeekCalibrationError("external run configuration differs")
+    artifact_path = output_root / "m3-008b-deepseek-calibration.json"
+    artifact: dict[str, object] | None = None
+    artifact_raw: bytes | None = None
+    if artifact_path.exists():
+        artifact = _load_external_json(artifact_path)
+        validate_calibration_artifact(
+            artifact,
+            code_revision=expected_code_revision,
+            implementation_manifest_hash=expected_implementation_manifest_hash,
+            provider_attempt_events=events,
+            provider_raw_root=output_root.parent,
+            frozen_cases=frozen_cases,
+            expected_provider_run_id=expected_provider_run_id,
+        )
+        artifact_raw = artifact_path.read_bytes()
+        sidecar = output_root / "m3-008b-deepseek-calibration.json.sha256"
+        expected_sidecar = (
+            f"{hashlib.sha256(artifact_raw).hexdigest()}  m3-008b-deepseek-calibration.json\n"
+        ).encode("ascii")
+        if not sidecar.is_file() or sidecar.read_bytes() != expected_sidecar:
+            raise DeepSeekCalibrationError("external artifact/status binding drift")
+    status = _load_external_json(output_root / "run-status.json")
+    expected_status = expected_run_status(
+        configuration=expected_configuration,
+        events=events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=output_root.parent,
+        artifact=artifact,
+        artifact_bytes=artifact_raw,
+    )
+    if status != expected_status:
+        raise DeepSeekCalibrationError("external run status differs from ledger")
+    cases_by_id = {case.case_id: case for case in frozen_cases}
+    for case_id in cast(list[str], status["successful_case_ids"]):
+        case = cases_by_id.get(case_id)
+        if case is None:
+            raise DeepSeekCalibrationError("external successful case is not frozen")
+        observed_case = _load_external_json(output_root / f"case-{case.ordinal:03d}-evidence.json")
+        expected_case = canonical_case_evidence_document(
+            case,
+            events,
+            output_root.parent,
+            frozen_cases=frozen_cases,
+            expected_provider_run_id=expected_provider_run_id,
+        )
+        if observed_case != expected_case:
+            raise DeepSeekCalibrationError("external case evidence differs from ledger")
+    expected_names = {
+        "run-configuration.json",
+        "run-status.json",
+        "provider-attempt-projection.json",
+    } | {
+        f"case-{ordinal:03d}-evidence.json"
+        for ordinal in range(1, cast(int, status["successful_case_count"]) + 1)
+    }
+    if artifact is not None:
+        expected_names |= {
+            "m3-008b-deepseek-calibration.json",
+            "m3-008b-deepseek-calibration.json.sha256",
+        }
+    if {path.name for path in output_root.iterdir()} != expected_names:
+        raise DeepSeekCalibrationError("external run file inventory differs")
+    return expected
+
+
+def _load_external_json(path: Path) -> dict[str, object]:
+    if not path.is_file() or path.is_symlink():
+        raise DeepSeekCalibrationError("external run evidence file is missing")
+    with path.open("rb") as handle:
+        raw = handle.read(40_000_001)
+    if len(raw) > 40_000_000:
+        raise DeepSeekCalibrationError("external run evidence exceeds bound")
+    try:
+        value = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=_unique)
+    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateKeyError):
+        raise DeepSeekCalibrationError("external run evidence JSON is invalid") from None
+    if type(value) is not dict:
+        raise DeepSeekCalibrationError("external run evidence root is invalid")
+    return cast(dict[str, object], value)
+
+
+def persist_provider_event_projection(
+    run: PendingCalibrationRun,
+    events: Sequence[ProviderAttemptEvent],
+    *,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
+) -> dict[str, object]:
+    projection = provider_event_projection(
+        events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=run.output_root.parent,
+    )
+    name = "provider-attempt-projection.json"
+    _write_new_json(run.pending_root / name, projection)
+    run.raw_body_paths.append(name)
+    run.provider_attempt_authority = {
+        "projection_hash": projection["projection_hash"],
+        "event_count": projection["event_count"],
+        "attempt_count": projection["attempt_count"],
+        "status": projection["status"],
+    }
+    return projection
+
+
 def acceptance_metrics(observations: Sequence[CalibrationObservation]) -> dict[str, object]:
     """Recompute the frozen zero-tolerance and agreement acceptance criteria."""
 
@@ -456,12 +917,89 @@ def _case_evidence_payload(item: CalibrationObservation) -> dict[str, object]:
     }
 
 
+def canonical_case_evidence_document(
+    case: FrozenCalibrationCase,
+    events: Sequence[ProviderAttemptEvent],
+    raw_root: Path,
+    *,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
+) -> dict[str, object]:
+    """Reconstruct one successful case projection solely from frozen input and ledger/raw."""
+
+    validate_authoritative_provider_events(
+        events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+    )
+    starts = sorted(
+        (
+            item
+            for item in events
+            if item.case_ordinal == case.ordinal and item.event_kind == "START"
+        ),
+        key=lambda item: item.attempt_ordinal,
+    )
+    successes = [
+        item
+        for item in events
+        if item.case_ordinal == case.ordinal
+        and item.event_kind == "TERMINAL"
+        and item.disposition == "success"
+    ]
+    if not starts or len(successes) != 1:
+        raise DeepSeekCalibrationError("case lacks one final successful ledger closure")
+    terminal = successes[0]
+    if terminal.attempt_ordinal != starts[-1].attempt_ordinal:
+        raise DeepSeekCalibrationError("case success is not the final attempt")
+    if terminal.body_relative_path is None or terminal.completed_at_utc is None:
+        raise DeepSeekCalibrationError("case success lacks raw/timestamp binding")
+    path = raw_root / terminal.body_relative_path
+    with path.open("rb") as handle:
+        raw = handle.read(131_073)
+    if (
+        len(raw) > 131_072
+        or terminal.body_hash != _sha256(raw)
+        or terminal.body_byte_count != len(raw)
+    ):
+        raise DeepSeekCalibrationError("case raw response differs from ledger")
+    candidate, response_id, usage, structured = parse_deepseek_completed_response(raw)
+    result = build_deepseek_semantic_evaluation_result(case.request, candidate)
+    request_bytes = deepseek_provider_request_bytes(case.request)
+    assessment = DeepSeekSemanticAssessment(
+        result=result,
+        evaluator_input_hash=_sha256(semantic_evaluation_input_bytes(case.request)),
+        provider_request_hash=_sha256(request_bytes),
+        raw_provider_request_bytes=request_bytes,
+        provider_response_id=response_id,
+        provider_response_hash=_sha256(raw),
+        raw_response_envelope_bytes=raw,
+        structured_output_bytes=structured,
+        structured_output_hash=_sha256(structured),
+        attempts=len(starts),
+        usage=usage,
+        started_at_utc=starts[0].started_at_utc,
+        completed_at_utc=terminal.completed_at_utc,
+    )
+    payload = _case_evidence_payload(CalibrationObservation(case, assessment))
+    return {
+        "schema_version": "m3.stage2.deepseek-case-evidence.v1",
+        "ordinal": case.ordinal,
+        "evidence": payload,
+        "evidence_binding_hash": _sha256(_canonical_bytes(payload)),
+    }
+
+
 def build_calibration_artifact(
     observations: Sequence[CalibrationObservation],
     *,
     completed_at_utc: datetime,
     code_revision: str,
     implementation_manifest_hash: str,
+    provider_attempt_events: Sequence[ProviderAttemptEvent],
+    provider_raw_root: Path,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
 ) -> dict[str, object]:
     """Build one exact append-only raw-evidence artifact after all calls finish."""
 
@@ -469,8 +1007,46 @@ def build_calibration_artifact(
         completed_at_utc
     ):
         raise DeepSeekCalibrationError("completion timestamp must be UTC")
-    metrics = acceptance_metrics(observations)
-    cases = [_case_evidence_payload(item) for item in observations]
+    projection = provider_event_projection(
+        provider_attempt_events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=provider_raw_root,
+    )
+    starts = [item for item in provider_attempt_events if item.event_kind == "START"]
+    closed_cases = {
+        item.case_ordinal
+        for item in provider_attempt_events
+        if item.event_kind == "TERMINAL" and item.disposition == "success"
+    }
+    if (
+        projection["status"] != "COMPLETE"
+        or not provider_attempt_events
+        or closed_cases != set(range(1, CASE_COUNT + 1))
+    ):
+        raise DeepSeekCalibrationError("provider attempt authority is not complete")
+    attempts_by_case = Counter(item.case_ordinal for item in starts)
+    normalized = tuple(
+        CalibrationObservation(
+            item.case,
+            replace(item.assessment, attempts=attempts_by_case[item.case.ordinal]),
+        )
+        for item in observations
+    )
+    metrics = acceptance_metrics(normalized)
+    cases = [
+        cast(
+            dict[str, object],
+            canonical_case_evidence_document(
+                item.case,
+                provider_attempt_events,
+                provider_raw_root,
+                frozen_cases=frozen_cases,
+                expected_provider_run_id=expected_provider_run_id,
+            )["evidence"],
+        )
+        for item in normalized
+    ]
     semantic = {
         "schema_version": "m3.stage2.deepseek-calibration.v1",
         "work_item": "M3-008B-STAGE2-DEVELOPMENT-CALIBRATION",
@@ -480,9 +1056,15 @@ def build_calibration_artifact(
             code_revision=code_revision,
             implementation_manifest_hash=implementation_manifest_hash,
         ),
-        "ordered_case_ids": [item.case.case_id for item in observations],
+        "ordered_case_ids": [item.case.case_id for item in normalized],
         "cases": cases,
         "metrics": metrics,
+        "provider_attempt_authority": {
+            "projection_hash": projection["projection_hash"],
+            "event_count": projection["event_count"],
+            "attempt_count": projection["attempt_count"],
+            "status": projection["status"],
+        },
     }
     artifact = {
         **semantic,
@@ -493,6 +1075,10 @@ def build_calibration_artifact(
         artifact,
         code_revision=code_revision,
         implementation_manifest_hash=implementation_manifest_hash,
+        provider_attempt_events=provider_attempt_events,
+        provider_raw_root=provider_raw_root,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
     )
     return artifact
 
@@ -502,6 +1088,10 @@ def validate_calibration_artifact(
     *,
     code_revision: str,
     implementation_manifest_hash: str,
+    provider_attempt_events: Sequence[ProviderAttemptEvent],
+    provider_raw_root: Path,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
 ) -> None:
     """Reparse every byte surface and recompute the saved acceptance evidence."""
 
@@ -516,17 +1106,31 @@ def validate_calibration_artifact(
         "metrics",
         "completed_at_utc",
         "artifact_semantic_identity",
+        "provider_attempt_authority",
     }
     if type(artifact) is not dict or set(artifact) != top:
         raise DeepSeekCalibrationError("calibration artifact shape is invalid")
     configuration = artifact["configuration"]
     if type(configuration) is not dict:
         raise DeepSeekCalibrationError("calibration configuration is invalid")
+    projection = provider_event_projection(
+        provider_attempt_events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=provider_raw_root,
+    )
+    expected_authority = {
+        "projection_hash": projection["projection_hash"],
+        "event_count": projection["event_count"],
+        "attempt_count": projection["attempt_count"],
+        "status": projection["status"],
+    }
     if (
         artifact["schema_version"] != "m3.stage2.deepseek-calibration.v1"
         or artifact["work_item"] != "M3-008B-STAGE2-DEVELOPMENT-CALIBRATION"
         or artifact["holdout_accessed"] is not False
         or artifact["public_data_only"] is not True
+        or artifact["provider_attempt_authority"] != expected_authority
         or configuration
         != calibration_configuration(
             code_revision=code_revision,
@@ -548,6 +1152,22 @@ def validate_calibration_artifact(
     if ordered != expected_ids:
         raise DeepSeekCalibrationError("calibration artifact order drift")
     minimal: list[tuple[str, str, str]] = []
+    attempts_by_case = Counter(
+        item.case_ordinal for item in provider_attempt_events if item.event_kind == "START"
+    )
+    starts_by_case = {
+        ordinal: [
+            item
+            for item in provider_attempt_events
+            if item.event_kind == "START" and item.case_ordinal == ordinal
+        ]
+        for ordinal in range(1, CASE_COUNT + 1)
+    }
+    success_by_case = {
+        item.case_ordinal: item
+        for item in provider_attempt_events
+        if item.event_kind == "TERMINAL" and item.disposition == "success"
+    }
     inventory: list[dict[str, object]] = []
     response_ids: set[str] = set()
     semantic_request_hashes: set[str] = set()
@@ -585,6 +1205,12 @@ def validate_calibration_artifact(
         case_id = expected_ids[index - 1]
         if value["case_id"] != case_id:
             raise DeepSeekCalibrationError("calibration case identity drift")
+        if value["attempts"] != attempts_by_case[index]:
+            raise DeepSeekCalibrationError("calibration case attempts differ from ledger")
+        if any(
+            item.request_hash != value["provider_request_hash"] for item in starts_by_case[index]
+        ):
+            raise DeepSeekCalibrationError("calibration provider request differs from ledger")
         if value["semantic_request_hash"] in semantic_request_hashes:
             raise DeepSeekCalibrationError("duplicate calibration semantic request")
         semantic_request_hashes.add(cast(str, value["semantic_request_hash"]))
@@ -606,6 +1232,14 @@ def validate_calibration_artifact(
         ):
             raise DeepSeekCalibrationError("calibration provider request drift")
         response_raw = _hex_bytes(value["raw_provider_response_hex"], 131_072)
+        success = success_by_case.get(index)
+        if (
+            success is None
+            or success.body_hash != value["provider_response_hash"]
+            or success.body_relative_path is None
+            or (provider_raw_root / success.body_relative_path).read_bytes() != response_raw
+        ):
+            raise DeepSeekCalibrationError("calibration provider response differs from ledger")
         candidate, response_id, usage, structured = parse_deepseek_completed_response(response_raw)
         stored_structured = _hex_bytes(value["structured_output_hex"], 16_384)
         expected_result = build_deepseek_semantic_evaluation_result(request, candidate)
@@ -722,29 +1356,73 @@ def begin_pending_calibration_run(
 
 
 def persist_successful_calibration_case(
-    run: PendingCalibrationRun, observation: CalibrationObservation
+    run: PendingCalibrationRun,
+    observation: CalibrationObservation,
+    *,
+    provider_attempt_events: Sequence[ProviderAttemptEvent],
+    provider_raw_root: Path,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
 ) -> None:
     """Fsync one successful exact case before the next provider call begins."""
 
     _validate_pending_run(run)
     expected_ordinal = len(run.successful_case_ids) + 1
-    if (
-        observation.case.ordinal != expected_ordinal
-        or len(run.attempted_case_ids) < expected_ordinal
-        or run.attempted_case_ids[expected_ordinal - 1] != observation.case.case_id
-    ):
+    if observation.case.ordinal != expected_ordinal:
         raise DeepSeekCalibrationError("pending case order drift")
-    payload = _case_evidence_payload(observation)
-    _write_new_json(
-        run.pending_root / f"case-{expected_ordinal:03d}-evidence.json",
-        {
-            "schema_version": "m3.stage2.deepseek-case-evidence.v1",
-            "ordinal": expected_ordinal,
-            "evidence": payload,
-            "evidence_binding_hash": _sha256(_canonical_bytes(payload)),
-        },
+    run.attempted_case_ids.append(observation.case.case_id)
+    document = canonical_case_evidence_document(
+        observation.case,
+        provider_attempt_events,
+        provider_raw_root,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
     )
+    try:
+        _write_new_json(
+            run.pending_root / f"case-{expected_ordinal:03d}-evidence.json",
+            document,
+        )
+    except Exception:
+        run.attempted_case_ids.pop()
+        raise
     run.successful_case_ids.append(observation.case.case_id)
+
+
+def reconcile_case_evidence(
+    run: PendingCalibrationRun,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    provider_attempt_events: Sequence[ProviderAttemptEvent],
+    provider_raw_root: Path,
+    *,
+    expected_provider_run_id: str,
+) -> None:
+    """Rebuild only deterministic case projections from ledger/raw, never resend."""
+
+    successful_ordinals = sorted(
+        {
+            item.case_ordinal
+            for item in provider_attempt_events
+            if item.event_kind == "TERMINAL" and item.disposition == "success"
+        }
+    )
+    if successful_ordinals != list(range(1, len(successful_ordinals) + 1)):
+        raise DeepSeekCalibrationError("successful case projections are not a prefix")
+    by_ordinal = {case.ordinal: case for case in frozen_cases}
+    for ordinal in successful_ordinals:
+        case = by_ordinal.get(ordinal)
+        if case is None:
+            raise DeepSeekCalibrationError("ledger success has no frozen case")
+        document = canonical_case_evidence_document(
+            case,
+            provider_attempt_events,
+            provider_raw_root,
+            frozen_cases=frozen_cases,
+            expected_provider_run_id=expected_provider_run_id,
+        )
+        _write_new_json(run.pending_root / f"case-{ordinal:03d}-evidence.json", document)
+        run.attempted_case_ids.append(case.case_id)
+        run.successful_case_ids.append(case.case_id)
 
 
 def persist_raw_calibration_attempt(
@@ -830,33 +1508,48 @@ def publish_failed_calibration_run(
     *,
     failed_case: FrozenCalibrationCase | None,
     error: Exception,
+    provider_attempt_events: Sequence[ProviderAttemptEvent],
+    provider_raw_root: Path,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
 ) -> None:
     """Publish retained prior successes and redacted failure metadata, never a PASS."""
 
     _validate_pending_run(run)
-    failure = _redacted_failure(error)
-    status = {
-        "schema_version": "m3.stage2.deepseek-run-status.v1",
-        "status": "FAILED",
-        "accepted": False,
-        "calibration_artifact_present": False,
-        "attempted_case_count": len(run.attempted_case_ids),
-        "attempted_case_ids": list(run.attempted_case_ids),
-        "raw_observation_count": len(run.attempted_case_ids),
-        "successful_case_count": len(run.successful_case_ids),
-        "successful_case_ids": list(run.successful_case_ids),
-        "failed_case_id": failed_case.case_id if failed_case is not None else None,
-        "failed_case_ordinal": failed_case.ordinal if failed_case is not None else None,
-        "failure": failure,
-        "configuration_binding_hash": _sha256(_canonical_bytes(run.configuration)),
+    projection = provider_event_projection(
+        provider_attempt_events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=provider_raw_root,
+    )
+    run.provider_attempt_authority = {
+        "projection_hash": projection["projection_hash"],
+        "event_count": projection["event_count"],
+        "attempt_count": projection["attempt_count"],
+        "status": projection["status"],
     }
-    status["status_binding_hash"] = _sha256(_canonical_bytes(status))
+    del failed_case, error
+    status = expected_run_status(
+        configuration=run.configuration,
+        events=provider_attempt_events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=provider_raw_root,
+        artifact=None,
+        artifact_bytes=None,
+    )
     _write_new_json(run.pending_root / "run-status.json", status)
     run.pending_root.rename(run.output_root)
 
 
 def publish_successful_calibration_run(
-    run: PendingCalibrationRun, artifact: Mapping[str, object]
+    run: PendingCalibrationRun,
+    artifact: Mapping[str, object],
+    *,
+    provider_attempt_events: Sequence[ProviderAttemptEvent],
+    provider_raw_root: Path,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
 ) -> None:
     """Publish a fully reparsed 36-case artifact and its prior per-case evidence."""
 
@@ -869,6 +1562,10 @@ def publish_successful_calibration_run(
         artifact,
         code_revision=code_revision,
         implementation_manifest_hash=implementation_manifest_hash,
+        provider_attempt_events=provider_attempt_events,
+        provider_raw_root=provider_raw_root,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
     )
     ordered = artifact["ordered_case_ids"]
     if (
@@ -880,26 +1577,20 @@ def publish_successful_calibration_run(
     metrics = artifact["metrics"]
     if type(metrics) is not dict or type(metrics.get("accepted")) is not bool:
         raise DeepSeekCalibrationError("final acceptance evidence is invalid")
-    accepted = cast(bool, metrics["accepted"])
     raw = _canonical_bytes(dict(artifact))
     artifact_path = run.pending_root / "m3-008b-deepseek-calibration.json"
     sidecar = f"{hashlib.sha256(raw).hexdigest()}  {artifact_path.name}\n".encode("ascii")
     sidecar_path = run.pending_root / f"{artifact_path.name}.sha256"
     status_path = run.pending_root / "run-status.json"
-    status = {
-        "schema_version": "m3.stage2.deepseek-run-status.v1",
-        "status": "PASS" if accepted else "FAIL",
-        "accepted": accepted,
-        "calibration_artifact_present": True,
-        "attempted_case_count": CASE_COUNT,
-        "attempted_case_ids": list(run.attempted_case_ids),
-        "raw_observation_count": CASE_COUNT,
-        "successful_case_count": CASE_COUNT,
-        "successful_case_ids": list(run.successful_case_ids),
-        "artifact_sha256": _sha256(raw),
-        "configuration_binding_hash": _sha256(_canonical_bytes(run.configuration)),
-    }
-    status["status_binding_hash"] = _sha256(_canonical_bytes(status))
+    status = expected_run_status(
+        configuration=run.configuration,
+        events=provider_attempt_events,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
+        raw_root=provider_raw_root,
+        artifact=artifact,
+        artifact_bytes=raw,
+    )
     created: list[Path] = []
     try:
         _write_new_bytes(artifact_path, raw)
@@ -923,6 +1614,10 @@ def write_calibration_artifact(
     *,
     code_revision: str,
     implementation_manifest_hash: str,
+    provider_attempt_events: Sequence[ProviderAttemptEvent],
+    provider_raw_root: Path,
+    frozen_cases: Sequence[FrozenCalibrationCase],
+    expected_provider_run_id: str,
 ) -> None:
     """Atomically publish one absent external directory; overwrite is impossible."""
 
@@ -930,6 +1625,10 @@ def write_calibration_artifact(
         artifact,
         code_revision=code_revision,
         implementation_manifest_hash=implementation_manifest_hash,
+        provider_attempt_events=provider_attempt_events,
+        provider_raw_root=provider_raw_root,
+        frozen_cases=frozen_cases,
+        expected_provider_run_id=expected_provider_run_id,
     )
     validate_output_target(output_root)
     parent = output_root.parent
@@ -967,6 +1666,7 @@ def validate_output_target(output_root: Path) -> None:
     if output_root.exists() or output_root.is_symlink():
         raise DeepSeekCalibrationError("calibration output already exists")
     parent = output_root.parent
+    _validate_external_ancestry(parent, output_root)
     ancestor = parent
     while True:
         if ancestor.exists() and ancestor.is_symlink():
@@ -979,6 +1679,26 @@ def validate_output_target(output_root: Path) -> None:
     pending = parent / f".{output_root.name}.pending"
     if pending.exists() or pending.is_symlink():
         raise DeepSeekCalibrationError("calibration pending output already exists")
+
+
+def _validate_external_ancestry(root: Path, target: Path) -> None:
+    if not root.is_absolute() or not target.is_absolute():
+        raise DeepSeekCalibrationError("external path must be absolute")
+    resolved_root = root.resolve(strict=True)
+    resolved_target = target.resolve(strict=False)
+    if not resolved_target.is_relative_to(resolved_root):
+        raise DeepSeekCalibrationError("external path escapes intended root")
+    current = target
+    while True:
+        if current.exists() or current.is_symlink():
+            info = os.lstat(current)
+            attributes = getattr(info, "st_file_attributes", 0)
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            if current.is_symlink() or attributes & reparse_flag:
+                raise DeepSeekCalibrationError("external path ancestry is reparse-backed")
+        if current == root or current == current.parent:
+            break
+        current = current.parent
 
 
 def _validate_pending_run(run: PendingCalibrationRun) -> None:
@@ -1001,13 +1721,10 @@ def _validate_pending_run(run: PendingCalibrationRun) -> None:
     expected_files = (
         {"run-configuration.json"}
         | {
-            f"case-{index:03d}-raw-observation.json"
-            for index in range(1, len(run.attempted_case_ids) + 1)
-        }
-        | {
             f"case-{index:03d}-evidence.json"
             for index in range(1, len(run.successful_case_ids) + 1)
         }
+        | set(run.raw_body_paths)
     )
     children = tuple(run.pending_root.iterdir())
     if {child.name for child in children} != expected_files or any(
@@ -1036,7 +1753,7 @@ def _write_new_json(path: Path, payload: Mapping[str, object]) -> None:
 
 
 def _write_new_bytes(path: Path, raw: bytes) -> None:
-    if type(raw) is not bytes or not raw or len(raw) > 40_000_000:
+    if type(raw) is not bytes or len(raw) > 40_000_000:
         raise DeepSeekCalibrationError("run evidence bytes are invalid")
     try:
         with path.open("xb") as handle:

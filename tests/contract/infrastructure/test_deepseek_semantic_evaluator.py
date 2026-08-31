@@ -18,6 +18,7 @@ from medevidence.infrastructure.deepseek_semantic_evaluator import (
     DeepSeekSemanticEvaluatorErrorCode,
     deepseek_provider_request_bytes,
     deepseek_response_format,
+    finalize_deepseek_one_operation,
     parse_deepseek_completed_response,
 )
 from medevidence.tools.semantic_evaluation import (
@@ -133,7 +134,7 @@ def test_evaluator_binds_deepseek_profile_and_keeps_reasoning_raw_only() -> None
     evaluator = DeepSeekResponsesSemanticEvaluator(
         api_key=API_KEY, transport=_transport(_response())
     )
-    assessment = evaluator.evaluate(request)
+    assessment = finalize_deepseek_one_operation(request, evaluator.observe(request))
     assert assessment.result.method == DEEPSEEK_SEMANTIC_EVALUATION_METHOD
     assert assessment.result.configuration_hash == DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH
     assert b"provider-private reasoning" in assessment.raw_response_envelope_bytes
@@ -233,6 +234,7 @@ def test_transport_errors_are_redacted() -> None:
         ),
     )
     with pytest.raises(DeepSeekSemanticEvaluatorError) as captured:
-        evaluator.evaluate(_request())
-    assert captured.value.code is DeepSeekSemanticEvaluatorErrorCode.AUTHENTICATION
+        request = _request()
+        finalize_deepseek_one_operation(request, evaluator.observe(request))
+    assert captured.value.code is DeepSeekSemanticEvaluatorErrorCode.CREDENTIAL_ECHO
     assert secret not in str(captured.value)
