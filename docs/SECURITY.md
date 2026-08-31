@@ -2,6 +2,11 @@
 
 ## M3-008B DeepSeek calibration-provider boundary
 
+The immutable first live attempt failed closed at case 1 with
+`response_invalid`; its historical external evidence retained configuration and
+status only because raw bytes had not yet been journaled. That evidence remains
+incomplete and unchanged and supports no provider-output or calibration claim.
+
 ADR-021 replaces only the not-yet-executed formal M3-008B provider decision.
 The active calibration adapter permits only
 `POST https://api.deepseek.com/responses`, `deepseek-v4-pro`, high reasoning,
@@ -18,6 +23,12 @@ only: PHI, identifiable patient information, private clinical records,
 credentials, and Holdout content are prohibited. Exact packet validation,
 explicit live authorization, absent external output, and key presence all fail
 closed before provider effects.
+
+For each later HTTP-success response, credential-free request bytes and exact
+raw response bytes plus hashes, attempts, and timestamps are fsynced before any
+strict envelope parsing. A parser failure publishes this raw observation with a
+redacted stable error and no validated usage/result claim. Authorization header
+or credential material is never part of the journaled request bytes.
 
 ## FAERS-001 closed trust metadata
 

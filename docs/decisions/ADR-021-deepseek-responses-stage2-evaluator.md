@@ -63,6 +63,12 @@ special provider accuracy, safety, privacy, or product endorsement.
 
 ## Calibration gate
 
+The first authorized live attempt is immutable FAILED evidence at
+`D:\Projects\medevidence-external-evidence\M3-008B-STAGE2-DEVELOPMENT-CALIBRATION\deepseek-calibration-v1`.
+It records run configuration/status and a case-1 `response_invalid` failure,
+but the pre-remediation path lost the raw response before journaling. No raw
+content is reconstructed and the historical directory is not modified.
+
 No call is allowed before independent review and terminal pre-network audit
 return `PASS — P0 0 / P1 0 / P2 0`. The live runner must first bind the exact
 36-case machine packet and frozen Owner resolution packet, canonical Stage-1
@@ -81,6 +87,11 @@ labels are never sent to the provider and never changed by calibration.
 After preflight, each successful call is fsynced to an absent pending run before
 the next call. A later provider or artifact failure publishes those immutable
 prior successes plus only redacted stable failure metadata and no PASS artifact.
+The remediated authority now journals the credential-free evaluator-input hash,
+exact request/response bytes and hashes, attempts, and transport timestamps
+immediately after a successful HTTP response and before strict parsing. Usage,
+response identity, structured output, and semantic result are recorded only
+after their respective strict validation succeeds.
 
 ## Consequences and exclusions
 

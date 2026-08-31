@@ -17,6 +17,7 @@ from evaluation.stage2_deepseek_calibration import (
     build_calibration_artifact,
     calibration_configuration,
     load_frozen_calibration_cases,
+    persist_raw_calibration_attempt,
     persist_successful_calibration_case,
     publish_failed_calibration_run,
     publish_successful_calibration_run,
@@ -24,6 +25,7 @@ from evaluation.stage2_deepseek_calibration import (
 )
 from medevidence.infrastructure.deepseek_semantic_evaluator import (
     DeepSeekResponsesSemanticEvaluator,
+    finalize_deepseek_semantic_observation,
 )
 
 _KEY_NAME: Final = "DEEPSEEK_API_KEY"
@@ -68,7 +70,10 @@ def run_live_calibration(
     try:
         for case in cases:
             current_case = case
-            observation = CalibrationObservation(case, evaluator.evaluate(case.request))
+            raw_observation = DeepSeekResponsesSemanticEvaluator.observe(evaluator, case.request)
+            persist_raw_calibration_attempt(pending, case, raw_observation)
+            assessment = finalize_deepseek_semantic_observation(case.request, raw_observation)
+            observation = CalibrationObservation(case, assessment)
             persist_successful_calibration_case(pending, observation)
             observations.append(observation)
         current_case = None

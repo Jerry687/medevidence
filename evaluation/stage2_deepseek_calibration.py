@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from medevidence.domain import canonical_json
 from medevidence.infrastructure.deepseek_semantic_evaluator import (
+    DeepSeekRawSemanticObservation,
     DeepSeekSemanticAssessment,
     DeepSeekSemanticEvaluatorError,
     deepseek_provider_request_bytes,
@@ -100,7 +101,14 @@ class CalibrationObservation:
 class PendingCalibrationRun:
     """One absent append-only pending run created only after every preflight gate."""
 
-    __slots__ = ("configuration", "output_root", "pending_root", "successful_case_ids")
+    __slots__ = (
+        "attempted_case_ids",
+        "configuration",
+        "output_root",
+        "pending_root",
+        "successful_case_ids",
+    )
+    attempted_case_ids: list[str]
     configuration: dict[str, object]
     output_root: Path
     pending_root: Path
@@ -117,6 +125,7 @@ class PendingCalibrationRun:
         object.__setattr__(self, "output_root", output_root)
         object.__setattr__(self, "pending_root", pending_root)
         object.__setattr__(self, "successful_case_ids", [])
+        object.__setattr__(self, "attempted_case_ids", [])
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -719,7 +728,11 @@ def persist_successful_calibration_case(
 
     _validate_pending_run(run)
     expected_ordinal = len(run.successful_case_ids) + 1
-    if observation.case.ordinal != expected_ordinal:
+    if (
+        observation.case.ordinal != expected_ordinal
+        or len(run.attempted_case_ids) < expected_ordinal
+        or run.attempted_case_ids[expected_ordinal - 1] != observation.case.case_id
+    ):
         raise DeepSeekCalibrationError("pending case order drift")
     payload = _case_evidence_payload(observation)
     _write_new_json(
@@ -732,6 +745,84 @@ def persist_successful_calibration_case(
         },
     )
     run.successful_case_ids.append(observation.case.case_id)
+
+
+def persist_raw_calibration_attempt(
+    run: PendingCalibrationRun,
+    case: FrozenCalibrationCase,
+    observation: DeepSeekRawSemanticObservation,
+) -> None:
+    """Fsync exact raw request/response evidence before strict provider parsing."""
+
+    _validate_pending_run(run)
+    expected_ordinal = len(run.attempted_case_ids) + 1
+    if case.ordinal != expected_ordinal:
+        raise DeepSeekCalibrationError("pending raw attempt order drift")
+    payload = _raw_attempt_payload(case, observation)
+    _write_new_json(
+        run.pending_root / f"case-{expected_ordinal:03d}-raw-observation.json",
+        {
+            "schema_version": "m3.stage2.deepseek-raw-observation.v1",
+            "ordinal": expected_ordinal,
+            "observation": payload,
+            "observation_binding_hash": _sha256(_canonical_bytes(payload)),
+        },
+    )
+    run.attempted_case_ids.append(case.case_id)
+
+
+def _raw_attempt_payload(
+    case: FrozenCalibrationCase,
+    observation: DeepSeekRawSemanticObservation,
+) -> dict[str, object]:
+    if type(case) is not FrozenCalibrationCase or type(observation) is not (
+        DeepSeekRawSemanticObservation
+    ):
+        raise DeepSeekCalibrationError("raw observation type is invalid")
+    semantic_request = semantic_evaluation_request_bytes(case.request)
+    evaluator_input = semantic_evaluation_input_bytes(case.request)
+    provider_request = deepseek_provider_request_bytes(case.request)
+    if (
+        case.semantic_request_hash != _sha256(semantic_request)
+        or case.stage1_admission_identity != case.request.stage1_admission.admission_hash
+        or case.source != case.request.source.value
+        or case.citation_relationship != case.request.citation.relationship.value
+        or observation.evaluator_input_hash != _sha256(evaluator_input)
+        or observation.provider_request_hash != _sha256(provider_request)
+        or observation.raw_provider_request_bytes != provider_request
+        or type(observation.raw_response_envelope_bytes) is not bytes
+        or not observation.raw_response_envelope_bytes
+        or len(observation.raw_response_envelope_bytes) > 131_072
+        or observation.provider_response_hash != _sha256(observation.raw_response_envelope_bytes)
+        or type(observation.status_code) is not int
+        or observation.status_code != 200
+        or type(observation.attempts) is not int
+        or not 1 <= observation.attempts <= 3
+        or not isinstance(observation.started_at_utc, datetime)
+        or observation.started_at_utc.tzinfo is None
+        or observation.started_at_utc.utcoffset() != UTC.utcoffset(observation.started_at_utc)
+        or not isinstance(observation.completed_at_utc, datetime)
+        or observation.completed_at_utc.tzinfo is None
+        or observation.completed_at_utc.utcoffset() != UTC.utcoffset(observation.completed_at_utc)
+        or observation.completed_at_utc < observation.started_at_utc
+    ):
+        raise DeepSeekCalibrationError("raw observation binding drift")
+    return {
+        "case_id": case.case_id,
+        "semantic_request_hash": case.semantic_request_hash,
+        "stage1_admission_identity": case.stage1_admission_identity,
+        "evaluator_input_hash": observation.evaluator_input_hash,
+        "provider_request_hash": observation.provider_request_hash,
+        "raw_provider_request_hex": observation.raw_provider_request_bytes.hex(),
+        "provider_response_hash": observation.provider_response_hash,
+        "raw_provider_response_hex": observation.raw_response_envelope_bytes.hex(),
+        "http_status_code": observation.status_code,
+        "attempts": observation.attempts,
+        "started_at_utc": observation.started_at_utc.isoformat(),
+        "completed_at_utc": observation.completed_at_utc.isoformat(),
+        "provider_usage_validated": False,
+        "provider_result_validated": False,
+    }
 
 
 def publish_failed_calibration_run(
@@ -749,6 +840,9 @@ def publish_failed_calibration_run(
         "status": "FAILED",
         "accepted": False,
         "calibration_artifact_present": False,
+        "attempted_case_count": len(run.attempted_case_ids),
+        "attempted_case_ids": list(run.attempted_case_ids),
+        "raw_observation_count": len(run.attempted_case_ids),
         "successful_case_count": len(run.successful_case_ids),
         "successful_case_ids": list(run.successful_case_ids),
         "failed_case_id": failed_case.case_id if failed_case is not None else None,
@@ -777,7 +871,11 @@ def publish_successful_calibration_run(
         implementation_manifest_hash=implementation_manifest_hash,
     )
     ordered = artifact["ordered_case_ids"]
-    if ordered != run.successful_case_ids or len(run.successful_case_ids) != CASE_COUNT:
+    if (
+        ordered != run.successful_case_ids
+        or run.attempted_case_ids != run.successful_case_ids
+        or len(run.successful_case_ids) != CASE_COUNT
+    ):
         raise DeepSeekCalibrationError("pending successes differ from final artifact")
     metrics = artifact["metrics"]
     if type(metrics) is not dict or type(metrics.get("accepted")) is not bool:
@@ -793,6 +891,9 @@ def publish_successful_calibration_run(
         "status": "PASS" if accepted else "FAIL",
         "accepted": accepted,
         "calibration_artifact_present": True,
+        "attempted_case_count": CASE_COUNT,
+        "attempted_case_ids": list(run.attempted_case_ids),
+        "raw_observation_count": CASE_COUNT,
         "successful_case_count": CASE_COUNT,
         "successful_case_ids": list(run.successful_case_ids),
         "artifact_sha256": _sha256(raw),
@@ -889,14 +990,25 @@ def _validate_pending_run(run: PendingCalibrationRun) -> None:
         raise DeepSeekCalibrationError("pending run directory is invalid")
     if run.pending_root != run.output_root.parent / f".{run.output_root.name}.pending":
         raise DeepSeekCalibrationError("pending run path drift")
-    expected_ids = [
-        f"M3-008B-CAL-{index:03d}" for index in range(1, len(run.successful_case_ids) + 1)
+    expected_attempted = [
+        f"M3-008B-CAL-{index:03d}" for index in range(1, len(run.attempted_case_ids) + 1)
     ]
-    if run.successful_case_ids != expected_ids:
+    expected_successful = expected_attempted[: len(run.successful_case_ids)]
+    if run.attempted_case_ids != expected_attempted:
+        raise DeepSeekCalibrationError("pending attempted case identity drift")
+    if run.successful_case_ids != expected_successful:
         raise DeepSeekCalibrationError("pending successful case identity drift")
-    expected_files = {"run-configuration.json"} | {
-        f"case-{index:03d}-evidence.json" for index in range(1, len(run.successful_case_ids) + 1)
-    }
+    expected_files = (
+        {"run-configuration.json"}
+        | {
+            f"case-{index:03d}-raw-observation.json"
+            for index in range(1, len(run.attempted_case_ids) + 1)
+        }
+        | {
+            f"case-{index:03d}-evidence.json"
+            for index in range(1, len(run.successful_case_ids) + 1)
+        }
+    )
     children = tuple(run.pending_root.iterdir())
     if {child.name for child in children} != expected_files or any(
         not child.is_file() or child.is_symlink() for child in children

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -8,6 +9,11 @@ import pytest
 from evaluation.run_stage2_deepseek_calibration import run_live_calibration
 from evaluation.stage2_deepseek_calibration import DeepSeekCalibrationError
 from tests.unit.evaluation.test_stage2_deepseek_calibration import _cases
+
+from medevidence.infrastructure.deepseek_semantic_evaluator import (
+    DeepSeekSemanticEvaluatorError,
+    parse_deepseek_completed_response,
+)
 
 CODE_REVISION = "a" * 40
 MANIFEST_HASH = "sha256:" + "b" * 64
@@ -171,6 +177,73 @@ def test_case_one_evidence_survives_case_two_provider_failure(
     assert bytes.fromhex(case_one["evidence"]["raw_provider_response_hex"]) == first_response
     assert not (output / "m3-008b-deepseek-calibration.json").exists()
     assert secret.encode() not in b"".join(path.read_bytes() for path in output.iterdir())
+
+
+def test_case_one_parser_failure_preserves_exact_preparse_raw_observation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    observation = _cases()[0]
+    cases = (observation.case,)
+    invalid_document = json.loads(observation.assessment.raw_response_envelope_bytes)
+    invalid_document["parallel_tool_calls"] = False
+    invalid_response = json.dumps(
+        invalid_document,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    monkeypatch.setattr(
+        "evaluation.run_stage2_deepseek_calibration.load_frozen_calibration_cases",
+        lambda *_args: cases,
+    )
+    key_marker = "key-marker-must-never-enter-evidence"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", key_marker)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            content=invalid_response,
+        )
+
+    output = tmp_path / "parse-failed-run"
+    with pytest.raises(DeepSeekSemanticEvaluatorError, match="response_invalid"):
+        run_live_calibration(
+            machine_packet_path=tmp_path / "machine.json",
+            resolution_packet_path=tmp_path / "resolution.json",
+            output_root=output,
+            live=True,
+            code_revision=CODE_REVISION,
+            implementation_manifest_hash=MANIFEST_HASH,
+            transport=httpx.MockTransport(handler),
+        )
+    status = json.loads((output / "run-status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "FAILED"
+    assert status["attempted_case_ids"] == ["M3-008B-CAL-001"]
+    assert status["successful_case_ids"] == []
+    assert status["failure"] == {"code": "response_invalid", "status_code": None}
+    raw_file = output / "case-001-raw-observation.json"
+    raw = json.loads(raw_file.read_text(encoding="utf-8"))["observation"]
+    assert bytes.fromhex(raw["raw_provider_response_hex"]) == invalid_response
+    assert (
+        bytes.fromhex(raw["raw_provider_request_hex"])
+        == observation.assessment.raw_provider_request_bytes
+    )
+    assert "sha256:" + hashlib.sha256(invalid_response).hexdigest() == raw["provider_response_hash"]
+    assert (
+        "sha256:" + hashlib.sha256(bytes.fromhex(raw["raw_provider_request_hex"])).hexdigest()
+        == raw["provider_request_hash"]
+    )
+    assert raw["provider_usage_validated"] is False
+    assert raw["provider_result_validated"] is False
+    assert raw["http_status_code"] == 200
+    assert raw["attempts"] == 1
+    assert raw["started_at_utc"] and raw["completed_at_utc"]
+    assert not (output / "case-001-evidence.json").exists()
+    assert not (output / "m3-008b-deepseek-calibration.json").exists()
+    with pytest.raises(DeepSeekSemanticEvaluatorError, match="response_invalid"):
+        parse_deepseek_completed_response(invalid_response)
+    assert key_marker.encode() not in b"".join(path.read_bytes() for path in output.iterdir())
 
 
 def test_runner_has_no_openai_selector_or_conversation_chaining() -> None:

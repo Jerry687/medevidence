@@ -2,6 +2,11 @@
 
 ## M3-008B Stage-2 Development calibration
 
+Live attempt 001 is immutable FAILED evidence in the approved external M3-008B
+root. It contains run configuration/status and a case-1 `response_invalid`
+record, but no raw response survived the former parse-before-journal sequence.
+It is not a calibration result and must not be regenerated or overwritten.
+
 The frozen Development-grounded 36-case packet and Project-Owner resolution
 identity are immutable calibration truth. The only active formal provider is
 the ADR-021 DeepSeek Responses profile. Before any call, offline regression,
@@ -13,6 +18,9 @@ It also binds the exact frozen category inventory, audited code revision, and
 implementation-manifest hash. Each completed case is fsynced before the next
 provider call; a later failure publishes prior raw evidence with redacted
 failure metadata and cannot publish an accepted calibration artifact.
+Raw transport observation is now fsynced before response parsing. Unvalidated
+usage, structured output, provider identity, or semantic result is never
+fabricated in a parse-failure artifact.
 
 Version 1 is accepted without further tuning when all categories are exercised,
 unsupported-to-supported and uncertain-to-supported are both zero, overall
