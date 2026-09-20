@@ -316,6 +316,19 @@ def test_no_approval_uses_genuine_finalization_topology_and_durable_guard() -> N
     assert result["capability_trace"][-1] == "approval"
 
 
+def test_valid_approval_positive_control_still_exports_once() -> None:
+    counters = module.EffectCounters()
+    workflow = module._workflow(counters)
+    approved = module._run_until_node(
+        workflow, module._initial(), module.WorkflowNode.FINALIZE_AND_EXPORT
+    )
+    assert approved.active_approval is not None
+    assert counters.export == 0
+    exported = workflow.finalize_and_export(approved)
+    assert exported.disposition.value == "exported"
+    assert counters.export == 1
+
+
 def test_unrelated_finalize_transition_error_is_execution_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

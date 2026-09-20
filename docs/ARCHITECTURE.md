@@ -1,5 +1,138 @@
 # Architecture
 
+## Local runtime composition (2026-09-18)
+
+`medevidence.local_runtime.open_local_application` is the explicit outer composition
+root. It creates PostgreSQL-backed jobs/receipts, shared checkpoint infrastructure,
+run-scoped durable source adapters, verified materials, Generation V2, independent
+Qwen V4 semantic evaluation, and review/export. `medevidence.local_api` and
+`medevidence.local_mcp` expose the application ports; imports/startup do not execute
+source/model queries. Source acquisition membership and child snapshots remain
+independently replayed. Git HEAD plus immutable implementation-byte manifests bind
+each run. See ADR039-042 and LOCAL_RUNBOOK.md. Historical architecture records below
+remain provenance, not instructions to impersonate a DeepSeek identity for Qwen.
+
+## M3-008B DeepSeek calibration closure
+
+The DeepSeek execution path is closed as
+`M3-008B-DEEPSEEK-CALIBRATION_CLOSED_EXTERNAL_EXECUTION_NOT_ACCEPTED`.
+Attempt009 and Attempt010 are immutable: each completed cases1-4, then case5 received
+HTTP 200 responses that remained incomplete until the unchanged shared deadline
+closed attempt1 as `transport_unavailable` and attempt2 as
+`deadline_exceeded`. Both runs retained 12 events across six HTTP attempts.
+Implementation review remained `P0 0 / P1 0 / P2 0`; no accepted 36-case
+metrics or artifact exists, and this is not an implementation failure.
+
+No Attempt011, timeout/retry weakening, M3-009 start, or Holdout-20 access is
+authorized. The provider-neutral V2 contract and application-owned routing
+remain stable. Retained DeepSeek adapters and evidence are historical only and
+do not authorize execution; another provider requires a separately authorized
+provider-specific binding.
+
+## M3-008B Successor-005 semantic and workflow authorities
+
+`M3-008B-SUCCESSOR-005-APPLICATION-DERIVED-HUMAN-REVIEW` separates the
+provider-neutral semantic result from application workflow policy:
+
+```text
+canonical Stage-1 admission
+-> DeepSeek semantic-only candidate
+-> canonical M3_STAGE2_SEMANTIC_RESULT_V2 reconstruction
+-> deterministic application review-routing policy
+-> validation receipt carrying both independently versioned authorities
+```
+
+The semantic candidate contains exactly schema version, three-state semantic
+result, bounded rationale codes, and bounded explanation. It contains no
+provider-authored workflow-review field. The application routing authority
+uses the semantic state, citation relationship, existing governed
+comparability/conflict outcome, and policy-sensitive inference classification.
+Rationale codes never drive routing. `unsupported` is rejected; `uncertain`, a
+supported contradiction, a non-consistent applicable conflict/comparability
+state, or a policy-sensitive inference requires review; ordinary supported
+support requires none. Stage-1 failure terminates before the evaluator.
+
+The routing policy, executor, and exhaustive matrix are projections of one
+ordered declarative six-rule table; no handwritten parallel branch list is an
+authority. The semantic contract owns the per-state allowed, required-any, and
+forbidden rationale-code mapping independently from routing.
+
+At the report boundary, every semantic result binds either the exact empty
+comparability registry or one exact participating comparison/conflict pair,
+including identities, artifact hashes, and conflict outcome. Routing sees only
+that participant. Foreign, stale, missing, or swapped bindings reject, and an
+unrelated registry conflict cannot escalate another result.
+
+Semantic agreement and routing policy correctness remain independent evidence
+planes. The calibration result compares only semantic state with the frozen
+human semantic labels. A separate exhaustive deterministic matrix proves
+routing for every governed state/relationship/conflict combination. Both the
+semantic-contract identity and routing-policy identity are retained in result,
+receipt, and calibration provenance.
+
+The semantic family is separately bound as
+`m3.stage2-semantic-result.contract.v2`,
+`sha256:9b97996233f6dc80091f196209b18c27b23e0eeb5c82c6e7e8c0f954df69a3bb`.
+V2 result reconstruction, validation receipts, and calibration all require the
+exact method `deepseek.responses.independent_semantic_evaluation`, active
+provider version `m3.semantic-evaluation.v2.deepseek-responses.v2`, and profile
+`sha256:64890c63e275c5bbce00f18e31899b4326d16220e6e7865356a3618ef4e557e9`;
+an arbitrary evaluator cannot satisfy this path.
+
+Attempt007 remains immutable under the preceding provider v1 profile
+`sha256:2798cf926eb197b746fd3c321d50047c28dea5061d2f4613adb5c81b30c80b35`.
+Its fifth operation observed a pre-deadline stream transport error after valid
+HTTP/1.1 chunked headers and an incomplete zero-lower-bound body. The prior
+mapping closed immediately as `response_invalid`. For Attempt008, one exact
+transport authority maps a pre-deadline stream failure to retryable
+`transport_unavailable`, retaining the coordinator absolute deadline, maximum
+three attempts, fresh response closure, and no partial raw artifact. A failure
+at or after the exact deadline remains `deadline`; credential failures and
+complete invalid responses remain nonretryable.
+
+Attempts008, 009, and 010 are immutable provider-availability/deadline evidence
+under that same v2 profile. In each run, cases1-4 persisted exact raw success evidence.
+Case5 attempt1 persisted `transport_unavailable` for the incomplete HTTP 200
+stream with no raw artifact; attempt2 exhausted the same coordinator absolute
+deadline with no raw artifact, and no third attempt occurred. Each run's six
+HTTP attempts produced exactly 12 events. Attempt009 and Attempt010 are external-
+execution non-acceptance, not completed quality calibrations or code/semantic
+failures. Their implementation reviews remained `P0 0 / P1 0 / P2 0`. The
+DeepSeek path is closed and no Attempt011 is authorized.
+
+Successor-005 starts from baseline
+`26c67108bf5b8de8b05bddf7e7ec5bac61261425` and mechanically reconstructs the
+exact Successor-004 25-path manifest
+`sha256:3764ce9a44294a0d2df1c7d9864747c1869fc4f6a88aded89d0567f387b19faa`
+as implementation input. Successor-004 infrastructure is accepted for reuse,
+but its calibration is not accepted and it was not integrated.
+
+## M3-008B accepted single-source framing authority
+
+Attempts001-006 and the exhausted V1 prompt/rubric versions 1 through 3 remain
+immutable. Attempt006 has five successful cases; case006 had valid V1 provider
+output but failed application policy binding, governed as
+`V1_PROVIDER_OUTPUT_VALID_BUT_APPLICATION_POLICY_BINDING_FAILED`, not a model
+semantic failure. No historical raw bytes or ledger row is rewritten.
+
+One ordered, standard-library-only declarative contract owns response-framing
+rules, rejection precedence, accepted classes, body/raw requirements, approved
+headers, and media admission. Python classification, finalizer recomputation,
+ordered PostgreSQL `CASE` constraints, generated Python/PostgreSQL matrices,
+and external projection are derived from that same table. The finalizer accepts
+canonical raw observation facts, reconstructs and classifies them, validates
+JSON media before envelope parsing, and rejects any caller/stored projection
+that differs from the recomputed decision. Accepted responses require a
+complete credential-safe raw body with exact count, hash, and relative-artifact
+binding.
+
+The sole persistence dependency exception is exact and deny-by-default:
+`persistence/models.py` and `persistence/repositories.py` may import exactly
+`medevidence.tools.provider_attempt_framing`. That contract must remain
+standard-library-only. No prefix, submodule, sibling tools module, or other
+persistence consumer is authorized by this exception; AST boundary tests
+enforce both halves.
+
 ## M1B FAERS domain boundary
 
 FAERS-001 implements source-neutral domain contracts plus their mechanically
@@ -84,6 +217,12 @@ Interfaces are defined by the consuming application layer. Concrete adapters
 implement those interfaces. A single composition root creates concrete HTTP,
 PostgreSQL, Qdrant, model, tool, and workflow objects and injects them into
 delivery adapters.
+
+The M3-008B exception above is deliberately narrower than a new layer edge. It
+permits only two named persistence modules to consume one exact final framing
+contract so PostgreSQL acceptance constraints and repository finalization are
+generated from the same authority as transport classification. It does not
+authorize general `persistence -> tools` imports.
 
 ## 5. Data plane
 

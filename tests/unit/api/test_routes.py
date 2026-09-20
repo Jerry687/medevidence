@@ -35,6 +35,13 @@ pytestmark = pytest.mark.enable_socket
 REQUEST_ID = "request:00000000-0000-4000-8000-000000000001"
 RUN_ID = "run:00000000-0000-4000-8000-000000000002"
 NOW = datetime(2026, 8, 8, 12, tzinfo=UTC)
+RESEARCH_V1_PATHS = {
+    "/v1/research/runs",
+    "/v1/research/runs/{run_id}",
+    "/v1/research/runs/{run_id}/report",
+    "/v1/research/runs/{run_id}/review",
+    "/v1/research/runs/{run_id}/export",
+}
 
 
 def _client(
@@ -66,7 +73,7 @@ def _report(_: ResearchPubMedRequest) -> ResearchReport:
 def test_route_inventory_has_one_application_operation_and_openapi() -> None:
     client = _client(_report)
     paths = client.app.openapi()["paths"]
-    assert set(paths) == {"/v1/research/pubmed"}
+    assert set(paths) == {"/v1/research/pubmed"} | RESEARCH_V1_PATHS
     assert set(paths["/v1/research/pubmed"]) == {"post"}
     assert client.get("/openapi.json").status_code == 200
     assert client.get("/").status_code == 404
@@ -107,10 +114,14 @@ def test_additive_dailymed_route_returns_closed_nonexportable_report() -> None:
             "reason": None,
         }
     ]
-    assert set(client.app.openapi()["paths"]) == {
-        "/v1/research/pubmed",
-        "/v1/research/dailymed",
-    }
+    assert (
+        set(client.app.openapi()["paths"])
+        == {
+            "/v1/research/pubmed",
+            "/v1/research/dailymed",
+        }
+        | RESEARCH_V1_PATHS
+    )
 
 
 def test_additive_faers_route_is_conditional_and_returns_closed_report() -> None:
@@ -151,10 +162,14 @@ def test_additive_faers_route_is_conditional_and_returns_closed_report() -> None
             "reason": None,
         }
     ]
-    assert set(client.app.openapi()["paths"]) == {
-        "/v1/research/pubmed",
-        "/v1/research/faers",
-    }
+    assert (
+        set(client.app.openapi()["paths"])
+        == {
+            "/v1/research/pubmed",
+            "/v1/research/faers",
+        }
+        | RESEARCH_V1_PATHS
+    )
 
 
 @pytest.mark.parametrize(

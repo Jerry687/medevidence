@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from datetime import UTC, date, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -17,6 +18,7 @@ from medevidence.connectors.faers import (
     FaersConnectorResult,
     FaersFailureKind,
 )
+from medevidence.connectors.faers.client import recognized_empty_count_response
 from medevidence.domain import (
     CoverageStatus,
     ExecutionBounds,
@@ -1296,6 +1298,164 @@ def test_faers_snapshot_capture_replay_and_exact_raw_bytes(tmp_path: Path) -> No
         expected_members=captured.manifest.members,
     )
     assert replayed == captured.manifest
+
+
+def test_faers_exact_recognized_404_empty_capture_and_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    body = b'{"error":{"code":"NOT_FOUND","message":"No matches found!"}}'
+    no_match = SourceOutcome(
+        **{
+            **faers_outcome().model_dump(mode="python"),
+            "result_status": ResultStatus.NO_MATCH,
+            "valid_result_count": 0,
+        }
+    )
+    kwargs = {
+        "run_id": "run:00000000-0000-4000-8000-000000000002",
+        "acquisition_id": "acquisition:faers-404-empty",
+        "acquisition_intent_id": f"acquisition-intent:sha256:{'7' * 64}",
+        "acquisition_ordinal": 0,
+        "query": faers_query(),
+        "snapshot_id": "snapshot:faers-404-empty",
+        "started_at_utc": datetime(2026, 8, 12, tzinfo=UTC),
+        "completed_at_utc": datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+        "source_outcome": no_match,
+        "retrieved_at_utc": datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+        "provider_as_of_utc": None,
+        "attempts_used": 1,
+        "buckets": (),
+        "observations": (faers_observation(body, second=0, status=404),),
+        "code_revision": "a" * 40,
+    }
+    with snapshots.writer():
+        with pytest.raises(SnapshotIntegrityError, match="empty-result proof"):
+            capture_faers_snapshot(snapshots, **kwargs)
+        captured = capture_faers_snapshot(
+            snapshots,
+            **kwargs,
+            recognized_empty_response=recognized_empty_count_response,
+        )
+    assert captured.manifest.source_outcome.result_status is ResultStatus.NO_MATCH
+    with pytest.raises(SnapshotIntegrityError, match="empty-result proof"):
+        replay_faers_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_query=faers_query(),
+            expected_members=captured.manifest.members,
+        )
+    assert (
+        replay_faers_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_query=faers_query(),
+            expected_members=captured.manifest.members,
+            recognized_empty_response=recognized_empty_count_response,
+        )
+        == captured.manifest
+    )
+    raw_path = captured.member_paths[0]
+    original_open = Path.open
+    reads: list[int] = []
+
+    class GrowingFile(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            reads.append(size)
+            return super().read(size)
+
+    def changed_open(path: Path, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        if path == raw_path and args == ("rb",):
+            return GrowingFile(b"x" * (RAW_RESPONSE_BYTE_CAPACITY + 100))
+        return original_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", changed_open)
+    with pytest.raises(SnapshotIntegrityError):
+        replay_faers_snapshot(
+            captured.manifest_path.read_bytes(),
+            snapshots,
+            expected_manifest_id=captured.manifest.manifest_id,
+            expected_query=faers_query(),
+            expected_members=captured.manifest.members,
+            recognized_empty_response=recognized_empty_count_response,
+        )
+    assert reads == [RAW_RESPONSE_BYTE_CAPACITY + 1]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "complete", "termination_reason"),
+    (
+        (404, b'{"error":{"code":"NOT_FOUND","message":"different"}}', True, "complete_response"),
+        (
+            404,
+            b'{"error":{"code":"NOT_FOUND","message":"No matches found!"}',
+            True,
+            "complete_response",
+        ),
+        (
+            400,
+            b'{"error":{"code":"NOT_FOUND","message":"No matches found!"}}',
+            True,
+            "complete_response",
+        ),
+        (
+            404,
+            b'{"error":{"code":"NOT_FOUND","message":"No matches found!"}}',
+            False,
+            "stream_error",
+        ),
+        (
+            404,
+            b'{"error":{"code":"NOT_FOUND","message":"No matches found!"}}',
+            False,
+            "payload_limit",
+        ),
+    ),
+)
+def test_faers_non_exact_404_never_becomes_complete_no_match(
+    tmp_path: Path,
+    status: int,
+    body: bytes,
+    complete: bool,
+    termination_reason: artifacts_module.TerminationReason,
+) -> None:
+    snapshots = SnapshotStore(tmp_path, free_bytes=lambda _: INITIAL_FREE_SPACE_FLOOR_BYTES)
+    no_match = SourceOutcome(
+        **{
+            **faers_outcome().model_dump(mode="python"),
+            "result_status": ResultStatus.NO_MATCH,
+            "valid_result_count": 0,
+        }
+    )
+    observation = faers_observation(
+        body,
+        second=0,
+        status=status,
+        complete=complete,
+        termination_reason=termination_reason,
+    )
+    with snapshots.writer(), pytest.raises((SnapshotIntegrityError, ValidationError)):
+        capture_faers_snapshot(
+            snapshots,
+            run_id="run:00000000-0000-4000-8000-000000000002",
+            acquisition_id="acquisition:faers-rejected-empty",
+            acquisition_intent_id=f"acquisition-intent:sha256:{'8' * 64}",
+            acquisition_ordinal=0,
+            query=faers_query(),
+            snapshot_id="snapshot:faers-rejected-empty",
+            started_at_utc=datetime(2026, 8, 12, tzinfo=UTC),
+            completed_at_utc=datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+            source_outcome=no_match,
+            retrieved_at_utc=datetime(2026, 8, 12, 0, 0, 1, tzinfo=UTC),
+            provider_as_of_utc=None,
+            attempts_used=1,
+            buckets=(),
+            observations=(observation,),
+            code_revision="a" * 40,
+            recognized_empty_response=recognized_empty_count_response,
+        )
 
 
 def test_faers_replay_rejects_query_or_raw_byte_drift(tmp_path: Path) -> None:

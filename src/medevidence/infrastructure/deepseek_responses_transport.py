@@ -7,6 +7,7 @@ import json
 import math
 import re
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import cast, final
@@ -15,6 +16,11 @@ from urllib.parse import quote_from_bytes
 import httpx
 
 from medevidence.domain import Sha256Digest, sha256_digest
+from medevidence.tools.provider_attempt_framing import (
+    APPROVED_HEADER_NAMES,
+    normalize_approved_headers,
+    raw_body_persistence_permitted,
+)
 
 DEEPSEEK_RESPONSES_ENDPOINT = "https://api.deepseek.com/responses"
 _CHUNK_BYTES = 16_384
@@ -250,6 +256,9 @@ class DeepSeekOneOperationObservation:
         "http_status",
         "observed_body_bytes_lower_bound",
         "raw_body",
+        "response_header_field_count",
+        "response_header_items",
+        "response_http_version",
         "retry_after",
         "started_at_utc",
         "transport_error",
@@ -258,6 +267,9 @@ class DeepSeekOneOperationObservation:
     approved_headers: dict[str, str]
     raw_body: bytes | None
     retry_after: str | None
+    response_http_version: str | None
+    response_header_items: tuple[tuple[str, str], ...]
+    response_header_field_count: int
     body_complete: bool
     observed_body_bytes_lower_bound: int
     credential_echo: bool
@@ -278,7 +290,25 @@ class DeepSeekOneOperationObservation:
         started_at_utc: datetime,
         completed_at_utc: datetime,
         retry_after: str | None = None,
+        response_http_version: str | None = None,
+        response_header_items: tuple[tuple[str, str], ...] = (),
+        response_header_field_count: int = 0,
     ) -> None:
+        _validate_deepseek_observation_values(
+            http_status=http_status,
+            approved_headers=approved_headers,
+            raw_body=raw_body,
+            body_complete=body_complete,
+            observed_body_bytes_lower_bound=observed_body_bytes_lower_bound,
+            credential_echo=credential_echo,
+            transport_error=transport_error,
+            started_at_utc=started_at_utc,
+            completed_at_utc=completed_at_utc,
+            retry_after=retry_after,
+            response_http_version=response_http_version,
+            response_header_items=response_header_items,
+            response_header_field_count=response_header_field_count,
+        )
         object.__setattr__(self, "http_status", http_status)
         object.__setattr__(self, "approved_headers", approved_headers)
         object.__setattr__(self, "raw_body", raw_body)
@@ -289,10 +319,82 @@ class DeepSeekOneOperationObservation:
         object.__setattr__(self, "started_at_utc", started_at_utc)
         object.__setattr__(self, "completed_at_utc", completed_at_utc)
         object.__setattr__(self, "retry_after", retry_after)
+        object.__setattr__(self, "response_http_version", response_http_version)
+        object.__setattr__(self, "response_header_items", response_header_items)
+        object.__setattr__(self, "response_header_field_count", response_header_field_count)
 
     def __setattr__(self, name: str, value: object) -> None:
         del name, value
         raise AttributeError("DeepSeek one-operation observation is frozen")
+
+
+def _validate_deepseek_observation_values(
+    *,
+    http_status: object,
+    approved_headers: object,
+    raw_body: object,
+    body_complete: object,
+    observed_body_bytes_lower_bound: object,
+    credential_echo: object,
+    transport_error: object,
+    started_at_utc: object,
+    completed_at_utc: object,
+    retry_after: object,
+    response_http_version: object,
+    response_header_items: object,
+    response_header_field_count: object,
+) -> None:
+    if (
+        (http_status is not None and type(http_status) is not int)
+        or type(approved_headers) is not dict
+        or any(
+            type(name) is not str or type(value) is not str
+            for name, value in approved_headers.items()
+        )
+        or (raw_body is not None and type(raw_body) is not bytes)
+        or type(body_complete) is not bool
+        or type(observed_body_bytes_lower_bound) is not int
+        or type(credential_echo) is not bool
+        or (transport_error is not None and type(transport_error) is not DeepSeekTransportErrorCode)
+        or type(started_at_utc) is not datetime
+        or type(completed_at_utc) is not datetime
+        or (retry_after is not None and type(retry_after) is not str)
+        or (response_http_version is not None and type(response_http_version) is not str)
+        or type(response_header_items) is not tuple
+        or any(
+            type(item) is not tuple
+            or len(item) != 2
+            or type(item[0]) is not str
+            or type(item[1]) is not str
+            for item in response_header_items
+        )
+        or type(response_header_field_count) is not int
+    ):
+        raise TypeError("DeepSeek one-operation observation primitives must be exact")
+
+
+def validate_deepseek_one_operation_observation(
+    observation: DeepSeekOneOperationObservation,
+) -> None:
+    """Reject non-exact transport primitives before any downstream derivation."""
+
+    if type(observation) is not DeepSeekOneOperationObservation:
+        raise TypeError("DeepSeek one-operation observation type must be exact")
+    _validate_deepseek_observation_values(
+        http_status=observation.http_status,
+        approved_headers=observation.approved_headers,
+        raw_body=observation.raw_body,
+        body_complete=observation.body_complete,
+        observed_body_bytes_lower_bound=observation.observed_body_bytes_lower_bound,
+        credential_echo=observation.credential_echo,
+        transport_error=observation.transport_error,
+        started_at_utc=observation.started_at_utc,
+        completed_at_utc=observation.completed_at_utc,
+        retry_after=observation.retry_after,
+        response_http_version=observation.response_http_version,
+        response_header_items=observation.response_header_items,
+        response_header_field_count=observation.response_header_field_count,
+    )
 
 
 def credential_representations(api_key: str) -> tuple[bytes, ...]:
@@ -341,28 +443,44 @@ class DeepSeekRawTransport:
         del name, value
         raise AttributeError("DeepSeek transport composition is frozen")
 
-    def execute_one(self, request: DeepSeekRawRequest) -> DeepSeekOneOperationObservation:
+    def execute_one(
+        self,
+        request: DeepSeekRawRequest,
+        *,
+        absolute_deadline_monotonic: float | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
+    ) -> DeepSeekOneOperationObservation:
         """Perform exactly one bounded operation and detect credential echo before hashing."""
 
         if type(request) is not DeepSeekRawRequest:
             raise DeepSeekTransportError(DeepSeekTransportErrorCode.REQUEST_INTEGRITY)
+        clock = monotonic_clock if monotonic_clock is not None else time.monotonic
+        started = _monotonic_now(clock)
+        if absolute_deadline_monotonic is None:
+            deadline_at = started + request.profile.total_deadline_seconds
+        elif type(absolute_deadline_monotonic) not in (int, float) or not math.isfinite(
+            absolute_deadline_monotonic
+        ):
+            raise DeepSeekTransportError(DeepSeekTransportErrorCode.REQUEST_INTEGRITY)
+        else:
+            deadline_at = float(absolute_deadline_monotonic)
         started_utc = datetime.now(UTC)
-        started = time.monotonic()
         key = object.__getattribute__(request, "_api_key")
         representations = credential_representations(key)
         try:
             with httpx.Client(
                 transport=_BorrowedTransport(object.__getattribute__(self, "_transport")),
-                timeout=_attempt_timeout(started, request.profile),
+                timeout=_attempt_timeout(deadline_at, request.profile, clock),
                 follow_redirects=False,
                 trust_env=False,
             ) as client:
                 return _capture_one(
                     client,
                     request,
-                    started,
+                    deadline_at,
                     started_utc,
                     representations,
+                    clock,
                 )
         except (httpx.TransportError, DeepSeekTransportError) as error:
             return DeepSeekOneOperationObservation(
@@ -372,10 +490,11 @@ class DeepSeekRawTransport:
                 body_complete=False,
                 observed_body_bytes_lower_bound=0,
                 credential_echo=False,
-                transport_error=(
-                    error.code
-                    if type(error) is DeepSeekTransportError
-                    else DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE
+                transport_error=_error_code_after_exception(
+                    error,
+                    deadline_at=deadline_at,
+                    fallback=DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE,
+                    monotonic_clock=clock,
                 ),
                 started_at_utc=started_utc,
                 completed_at_utc=datetime.now(UTC),
@@ -385,9 +504,10 @@ class DeepSeekRawTransport:
 def _capture_one(
     client: httpx.Client,
     request: DeepSeekRawRequest,
-    started: float,
+    deadline_at: float,
     started_utc: datetime,
     representations: tuple[bytes, ...],
+    monotonic_clock: Callable[[], float],
 ) -> DeepSeekOneOperationObservation:
     profile = request.profile
     with client.stream(
@@ -400,31 +520,19 @@ def _capture_one(
             "Authorization": f"Bearer {object.__getattribute__(request, '_api_key')}",
             "Content-Type": "application/json",
         },
-        timeout=_attempt_timeout(started, profile),
+        timeout=_attempt_timeout(deadline_at, profile, monotonic_clock),
     ) as response:
+        response_http_version = _response_http_version(response)
         sent = response.request
         if sent.method != "POST" or sent.content != request.request_bytes:
             raise DeepSeekTransportError(DeepSeekTransportErrorCode.REQUEST_INTEGRITY)
-        approved_names = (
-            "content-type",
-            "content-length",
-            "transfer-encoding",
-            "content-encoding",
-            "x-request-id",
-        )
-        header_values = {
-            name: response.headers[name] for name in approved_names if name in response.headers
-        }
-        retry_after_value = response.headers.get("Retry-After")
-        scanned_header_values = [*header_values.values()]
-        if retry_after_value is not None:
-            scanned_header_values.append(retry_after_value)
+        raw_header_items = tuple(response.headers.raw)
+        response_header_field_count = len(raw_header_items)
         if any(
-            representation in value.encode("utf-8")
-            for value in scanned_header_values
+            representation in raw_value or representation in raw_name
+            for raw_name, raw_value in raw_header_items
             for representation in representations
         ):
-            header_values.clear()
             return DeepSeekOneOperationObservation(
                 http_status=response.status_code,
                 approved_headers={},
@@ -436,19 +544,33 @@ def _capture_one(
                 started_at_utc=started_utc,
                 completed_at_utc=datetime.now(UTC),
             )
+        response_header_items = _approved_header_items(raw_header_items)
+        header_values = _legacy_header_projection(response_header_items)
+        retry_after_value = _single_header_value(raw_header_items, "retry-after")
+        try:
+            normalized_headers = normalize_approved_headers(
+                response_header_items,
+                raw_header_field_count=response_header_field_count,
+            )
+            persist_raw_body = raw_body_persistence_permitted(normalized_headers)
+        except (TypeError, ValueError):
+            persist_raw_body = False
         body = bytearray()
         maximum_representation = max(len(item) for item in representations)
         tail = b""
         observed = 0
         overflow = False
-        chunks = (
-            (response.content,)
-            if response.is_stream_consumed
-            else response.iter_raw(chunk_size=_CHUNK_BYTES)
-        )
+        chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
         try:
-            for chunk in chunks:
-                _deadline(started, profile)
+            iterator = iter(chunks)
+            while True:
+                _deadline(deadline_at, monotonic_clock)
+                try:
+                    chunk = next(iterator)
+                except StopIteration:
+                    _deadline(deadline_at, monotonic_clock)
+                    break
+                _deadline(deadline_at, monotonic_clock)
                 observed += len(chunk)
                 scanned = tail + chunk
                 if any(item in scanned for item in representations):
@@ -466,7 +588,7 @@ def _capture_one(
                         completed_at_utc=datetime.now(UTC),
                     )
                 tail = scanned[-(maximum_representation - 1) :]
-                if len(body) < profile.max_response_bytes:
+                if persist_raw_body and len(body) < profile.max_response_bytes:
                     remaining = profile.max_response_bytes - len(body)
                     body.extend(chunk[:remaining])
                 if observed > profile.max_response_bytes:
@@ -480,28 +602,82 @@ def _capture_one(
                 body_complete=False,
                 observed_body_bytes_lower_bound=observed,
                 credential_echo=False,
-                transport_error=(
-                    error.code
-                    if type(error) is DeepSeekTransportError
-                    else DeepSeekTransportErrorCode.RESPONSE_INVALID
+                transport_error=_error_code_after_exception(
+                    error,
+                    deadline_at=deadline_at,
+                    fallback=DeepSeekTransportErrorCode.PROVIDER_UNAVAILABLE,
+                    monotonic_clock=monotonic_clock,
                 ),
                 started_at_utc=started_utc,
                 completed_at_utc=datetime.now(UTC),
+                response_http_version=response_http_version,
+                response_header_items=response_header_items,
+                response_header_field_count=response_header_field_count,
             )
         return DeepSeekOneOperationObservation(
             http_status=response.status_code,
             approved_headers=header_values,
-            raw_body=None if overflow else bytes(body),
-            body_complete=not overflow,
+            raw_body=(bytes(body) if persist_raw_body and not overflow else None),
+            body_complete=persist_raw_body and not overflow,
             observed_body_bytes_lower_bound=(
-                profile.max_response_bytes + 1 if overflow else len(body)
+                profile.max_response_bytes + 1 if overflow else observed
             ),
             credential_echo=False,
             transport_error=(DeepSeekTransportErrorCode.RESPONSE_TOO_LARGE if overflow else None),
             started_at_utc=started_utc,
             completed_at_utc=datetime.now(UTC),
             retry_after=retry_after_value,
+            response_http_version=response_http_version,
+            response_header_items=response_header_items,
+            response_header_field_count=response_header_field_count,
         )
+
+
+def _response_http_version(response: httpx.Response) -> str | None:
+    raw = response.extensions.get("http_version")
+    if type(raw) is not bytes:
+        return None
+    try:
+        value = raw.decode("ascii", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    if not 1 <= len(value) <= 16 or any(not 33 <= ord(character) <= 126 for character in value):
+        return None
+    return value
+
+
+def _approved_header_items(
+    raw_header_items: tuple[tuple[bytes, bytes], ...],
+) -> tuple[tuple[str, str], ...]:
+    approved: list[tuple[str, str]] = []
+    for raw_name, raw_value in raw_header_items:
+        try:
+            name = raw_name.decode("ascii", errors="strict").lower()
+        except UnicodeDecodeError:
+            continue
+        if name in APPROVED_HEADER_NAMES:
+            approved.append((name, raw_value.decode("latin-1")))
+    return tuple(approved)
+
+
+def _legacy_header_projection(
+    items: tuple[tuple[str, str], ...],
+) -> dict[str, str]:
+    projected: dict[str, list[str]] = {}
+    for name, value in items:
+        projected.setdefault(name, []).append(value)
+    return {name: ", ".join(values) for name, values in projected.items()}
+
+
+def _single_header_value(
+    raw_header_items: tuple[tuple[bytes, bytes], ...], name: str
+) -> str | None:
+    values = [
+        value.decode("latin-1")
+        for raw_name, value in raw_header_items
+        if raw_name.lower() == name.encode("ascii")
+    ]
+    return values[0] if len(values) == 1 else None
 
 
 @final
@@ -521,13 +697,29 @@ class _BorrowedTransport(httpx.BaseTransport):
         return None
 
 
-def _deadline(started: float, profile: DeepSeekTransportProfile) -> None:
-    if time.monotonic() - started >= profile.total_deadline_seconds:
+def _monotonic_now(monotonic_clock: Callable[[], float]) -> float:
+    value = monotonic_clock()
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise DeepSeekTransportError(DeepSeekTransportErrorCode.REQUEST_INTEGRITY)
+    return float(value)
+
+
+def _deadline(
+    deadline_at: float,
+    monotonic_clock: Callable[[], float] | None = None,
+) -> None:
+    clock = monotonic_clock if monotonic_clock is not None else time.monotonic
+    if _monotonic_now(clock) >= deadline_at:
         raise DeepSeekTransportError(DeepSeekTransportErrorCode.DEADLINE_EXCEEDED)
 
 
-def _attempt_timeout(started: float, profile: DeepSeekTransportProfile) -> httpx.Timeout:
-    remaining = profile.total_deadline_seconds - (time.monotonic() - started)
+def _attempt_timeout(
+    deadline_at: float,
+    profile: DeepSeekTransportProfile,
+    monotonic_clock: Callable[[], float] | None = None,
+) -> httpx.Timeout:
+    clock = monotonic_clock if monotonic_clock is not None else time.monotonic
+    remaining = deadline_at - _monotonic_now(clock)
     if remaining <= 0:
         raise DeepSeekTransportError(DeepSeekTransportErrorCode.DEADLINE_EXCEEDED)
     return httpx.Timeout(
@@ -536,6 +728,21 @@ def _attempt_timeout(started: float, profile: DeepSeekTransportProfile) -> httpx
         write=min(profile.write_timeout_seconds, remaining),
         pool=min(profile.pool_timeout_seconds, remaining),
     )
+
+
+def _error_code_after_exception(
+    error: httpx.TransportError | DeepSeekTransportError,
+    *,
+    deadline_at: float,
+    fallback: DeepSeekTransportErrorCode,
+    monotonic_clock: Callable[[], float] | None = None,
+) -> DeepSeekTransportErrorCode:
+    clock = monotonic_clock if monotonic_clock is not None else time.monotonic
+    if _monotonic_now(clock) >= deadline_at:
+        return DeepSeekTransportErrorCode.DEADLINE_EXCEEDED
+    if type(error) is DeepSeekTransportError:
+        return error.code
+    return fallback
 
 
 def _validate_json(raw: bytes) -> None:

@@ -11,13 +11,19 @@ from medevidence.domain import (
     SourceType,
     derive_identity,
 )
-from medevidence.tools.contracts import ResearchPubMedRequest, SearchPubMedResponse
+from medevidence.tools.contracts import (
+    ResearchPubMedRequest,
+    ResolvedConceptCatalog,
+    SearchPubMedResponse,
+)
 from medevidence.tools.ports import (
     PubMedSearchProgressRecord,
     PubMedTerminalEvidenceRecord,
     PubMedTerminalOperationRecord,
     PubMedTerminalProgressRecord,
 )
+from medevidence.tools.pubmed_local import reconstruct_pubmed_request
+from medevidence.tools.pubmed_material_ports import VerifiedPubMedMaterialPort
 from medevidence.tools.research import (
     PubMedCollectionPreparation,
     PubMedResearchService,
@@ -122,7 +128,7 @@ def plan_pubmed_operations(
     task = SourceTaskState.model_validate(_reconstruct(task))
     scope = ResearchScope.model_validate(_reconstruct(scope))
     attempt = SourceTaskAttemptRef.model_validate(_reconstruct(attempt))
-    request = ResearchPubMedRequest.model_validate(_reconstruct(request))
+    request = reconstruct_pubmed_request(request)
     _validate_task_identity(task=task, scope=scope, attempt=attempt, request=request)
     if task.status is SourceTaskStatus.PENDING:
         if task.required_operations or attempt.attempt_number != 1:
@@ -314,6 +320,8 @@ def collect_pubmed(
     attempt: SourceTaskAttemptRef,
     request: ResearchPubMedRequest,
     service: PubMedResearchService,
+    material: VerifiedPubMedMaterialPort | None = None,
+    catalog: ResolvedConceptCatalog | None = None,
 ) -> SourceTaskProgressResult | CollectedEvidenceResult:
     """Checkpoint search before executing any exact persisted PMID fetch suffix."""
 
@@ -321,7 +329,9 @@ def collect_pubmed(
     task = SourceTaskState.model_validate(_reconstruct(task))
     scope = ResearchScope.model_validate(_reconstruct(scope))
     attempt = SourceTaskAttemptRef.model_validate(_reconstruct(attempt))
-    request = ResearchPubMedRequest.model_validate(_reconstruct(request))
+    request = reconstruct_pubmed_request(request)
+    if (material is None) != (catalog is None):
+        raise TypeError("verified PubMed material requires the exact catalog and reader")
     if task.status is not SourceTaskStatus.RUNNING:
         raise ValueError("PubMed collection requires a running source task")
     planned_operations = plan_pubmed_operations(
@@ -433,13 +443,38 @@ def collect_pubmed(
                 or fetched.publication.content_hash != binding.publication_artifact_id
             ):
                 raise ValueError("PubMed evidence must bind the exact persisted publication")
-            evidence = (
-                (
-                    fetched.publication.publication_version_id,
-                    binding.publication_artifact_id,
-                    fetched.publication.provenance.source_lookup_key,
-                ),
-            )
+            if material is not None and catalog is not None:
+                selected = material.materialize(
+                    run_id=request.run_id,
+                    scope=scope,
+                    catalog=catalog,
+                    publication=fetched.publication,
+                    binding=binding,
+                )
+                reference = selected.source_reference
+                if (
+                    reference.authorized_run_id != request.run_id
+                    or reference.source is not SourceType.PUBMED
+                    or reference.snapshot_id != binding.snapshot_id
+                    or reference.content_hash != binding.publication_artifact_id
+                    or len(reference.locators) != 1
+                ):
+                    raise ValueError("verified PubMed material differs from fetched publication")
+                evidence = (
+                    (
+                        reference.evidence_id,
+                        reference.content_hash,
+                        derive_identity("pubmed-material-locator", reference.locators[0]),
+                    ),
+                )
+            else:
+                evidence = (
+                    (
+                        fetched.publication.publication_version_id,
+                        binding.publication_artifact_id,
+                        fetched.publication.provenance.source_lookup_key,
+                    ),
+                )
         results.append(
             _operation_result(
                 operation=operation,
@@ -474,7 +509,7 @@ def validate_pubmed_terminal_task(
     _require_exact_service(service)
     task = SourceTaskState.model_validate(_reconstruct(task))
     scope = ResearchScope.model_validate(_reconstruct(scope))
-    request = ResearchPubMedRequest.model_validate(_reconstruct(request))
+    request = reconstruct_pubmed_request(request)
     if request.scope != scope:
         raise ValueError("PubMed terminal validation requires the exact current scope")
     if task.status is not SourceTaskStatus.TERMINAL or task.terminal_outcome_ref is None:

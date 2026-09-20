@@ -47,6 +47,22 @@ from medevidence.persistence.repositories import (
     ValidatedManifest,
     ValidatedManifestFile,
 )
+from medevidence.persistence.semantic_cache import semantic_evaluation_events
+from medevidence.tools.provider_attempt_framing import (
+    PERSISTED_AUTHORITY_FIELDS,
+    MutationKind,
+    apply_persisted_mutations,
+    build_framing_observation,
+    build_unavailable_observation,
+    canonical_observation_projection,
+    generated_consumer_mutation_witness,
+    generated_contract_cases,
+    generated_mutation_witness,
+    normalize_approved_headers,
+    render_postgres_contract,
+    render_v1_immutability_predicate,
+    validate_generated_mutation_case,
+)
 from medevidence.tools.report_validation import (
     ValidationReceipt,
     canonical_validation_receipt_payload,
@@ -71,7 +87,44 @@ M1A_EXPECTED_TABLES = (
 EXPECTED_TABLES = (
     *M1A_EXPECTED_TABLES,
     "m3_validation_receipts",
+    "m3_stage1_receipts",
     "m3_provider_attempt_events",
+    "m3_report_documents",
+    "m3_pending_drafts",
+    "m3_review_records",
+    "m3_exports",
+    "m3_evidence_provenance",
+    "m3_dailymed_v2_records",
+    "m3_dailymed_v2_members",
+)
+_WINDOWS_RESERVED_PROVIDER_PATH_NAMES = (
+    "AUX",
+    "CLOCK$",
+    *(f"COM{index}" for index in range(1, 10)),
+    "CON",
+    *(f"LPT{index}" for index in range(1, 10)),
+    "NUL",
+    "PRN",
+)
+_NONCANONICAL_PROVIDER_PATHS = (
+    "",
+    ".",
+    "..",
+    "raw//case.bin",
+    "C:/outside.bin",
+    "C:outside.bin",
+    "raw/case.bin:stream",
+    "//server/share/case.bin",
+    "\\\\server\\share\\case.bin",
+    "/absolute/case.bin",
+    "../outside.bin",
+    "raw/../outside.bin",
+    "raw/case.bin.",
+    "raw/case.bin ",
+    "raw./case.bin",
+    "raw /case.bin",
+    *(f"raw/{name}" for name in _WINDOWS_RESERVED_PROVIDER_PATH_NAMES),
+    *(f"raw/{name.lower()}.json" for name in _WINDOWS_RESERVED_PROVIDER_PATH_NAMES),
 )
 
 EXPECTED_IDENTITY_CONSTRAINTS = {
@@ -89,7 +142,13 @@ EXPECTED_IDENTITY_CONSTRAINTS = {
     "artifact_integrity_event": "uq_integrity_event_natural",
     "registration_observation": "uq_registration_observation_natural",
     "m3_validation_receipts": "pk_m3_validation_receipts",
+    "m3_stage1_receipts": "pk_m3_stage1_receipts",
     "m3_provider_attempt_events": "pk_m3_provider_attempt_events",
+    "m3_report_documents": "pk_m3_report_documents",
+    "m3_pending_drafts": "pk_m3_pending_drafts",
+    "m3_review_records": "pk_m3_review_records",
+    "m3_exports": "pk_m3_exports",
+    "m3_evidence_provenance": "pk_m3_evidence_provenance",
 }
 
 
@@ -147,15 +206,35 @@ def _provider_attempt_migration_module() -> ModuleType:
     return module
 
 
+def _provider_framing_migration_module() -> ModuleType:
+    path = Path("alembic/versions/20260901_02_m3_provider_attempt_framing_v2.py")
+    spec = importlib.util.spec_from_file_location("m3providerframing_revision", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_exact_object_counts_and_names() -> None:
     assert tuple(table.name for table in models.TABLE_ORDER) == EXPECTED_TABLES
-    assert len(models.metadata.tables) == 32
-    assert len(_constraints(sa.CheckConstraint)) == 74
-    assert len(_constraints(sa.ForeignKeyConstraint)) == 18
-    assert len(_constraints(sa.PrimaryKeyConstraint)) == 15
-    assert len(_constraints(sa.UniqueConstraint)) == 25
+    assert (
+        models.metadata.tables["medevidence.m3_semantic_evaluation_events"]
+        is semantic_evaluation_events
+    )
+    assert len(models.metadata.tables) == 41
+    assert len(_constraints(sa.CheckConstraint)) == 102
+    assert len(_constraints(sa.ForeignKeyConstraint)) == 28
+    assert len(_constraints(sa.PrimaryKeyConstraint)) == 23
+    assert len(_constraints(sa.UniqueConstraint)) == 34
     assert sum(len(table.indexes) for table in models.TABLE_ORDER) == 12
-    assert _constraints(sa.CheckConstraint) == set(models.EXPECTED_CHECK_NAMES)
+    assert _constraints(sa.CheckConstraint) == set(models.EXPECTED_CHECK_NAMES) | {
+        "ck_m3_dailymed_v2_record_schema",
+        "ck_m3_dailymed_v2_record_kind",
+        "ck_m3_dailymed_v2_record_identity",
+        "ck_m3_dailymed_v2_record_bounds",
+        "ck_m3_dailymed_v2_member_bounds",
+        "ck_m3_dailymed_v2_member_identity",
+    }
 
 
 def _passing_validation_receipt() -> ValidationReceipt:
@@ -264,6 +343,33 @@ def test_provider_attempt_ledger_is_single_insert_only_event_table() -> None:
         "observed_body_bytes_lower_bound",
         "approved_header_names",
         "persisted_at_utc",
+        "approved_header_names_identity",
+        "normalized_header_names",
+        "normalized_content_encoding_values",
+        "normalized_content_length_values",
+        "normalized_content_type_values",
+        "normalized_transfer_encoding_values",
+        "normalized_x_request_id_values",
+        "normalized_header_facts_identity",
+        "raw_header_field_count",
+        "framing_contract_identity",
+        "framing_input_identity",
+        "http_version_state",
+        "observed_http_version",
+        "header_surface_state",
+        "content_length_state",
+        "content_length_value",
+        "transfer_encoding_state",
+        "content_encoding_state",
+        "content_type_state",
+        "actual_body_byte_count",
+        "raw_evidence_state",
+        "raw_body_hash",
+        "raw_relative_path",
+        "raw_artifact_identity",
+        "framing_status",
+        "accepted_framing_class",
+        "framing_rejection_code",
     )
     checks = {
         constraint.name
@@ -279,6 +385,16 @@ def test_provider_attempt_ledger_is_single_insert_only_event_table() -> None:
     assert "approved_header_names <@ ARRAY" in headers_check
     assert "::varchar[]" in headers_check
     assert "::text[]" not in headers_check
+    assert all(
+        table.c[name].type.length == 128
+        for name in (
+            "approved_header_names_identity",
+            "normalized_header_facts_identity",
+            "framing_contract_identity",
+            "framing_input_identity",
+            "raw_artifact_identity",
+        )
+    )
     unique = next(
         item
         for item in table.constraints
@@ -291,6 +407,48 @@ def test_provider_attempt_ledger_is_single_insert_only_event_table() -> None:
         "case_ordinal",
         "attempt_ordinal",
         "event_slot",
+    )
+    start_binding = next(
+        item
+        for item in table.constraints
+        if isinstance(item, sa.UniqueConstraint)
+        and item.name == "uq_m3_provider_attempt_event_start_binding"
+    )
+    assert tuple(column.name for column in start_binding.columns) == (
+        "event_id",
+        "event_kind",
+        "schema_version",
+        "provider_run_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "configuration_hash",
+        "request_hash",
+    )
+    start_reference = next(
+        item
+        for item in table.constraints
+        if isinstance(item, sa.ForeignKeyConstraint)
+        and item.name == "fk_m3_provider_attempt_event_start"
+    )
+    assert tuple(element.parent.name for element in start_reference.elements) == (
+        "start_event_id",
+        "start_event_kind",
+        "schema_version",
+        "provider_run_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "configuration_hash",
+        "request_hash",
+    )
+    assert tuple(element.column.name for element in start_reference.elements) == (
+        "event_id",
+        "event_kind",
+        "schema_version",
+        "provider_run_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "configuration_hash",
+        "request_hash",
     )
     assert not hasattr(repository_module.ProviderAttemptLedgerRepository, "update")
     assert not hasattr(repository_module.ProviderAttemptLedgerRepository, "delete")
@@ -306,6 +464,12 @@ def test_provider_attempt_migration_is_single_table_after_receipts() -> None:
     assert "approved_header_names <@ ARRAY" in statement
     assert "::varchar[]" in statement
     assert "::text[]" not in statement
+    assert "'provider_rejected','candidate_invalid','evidence_persistence_failure')" in statement
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert source.count("_DDL = _DDL.replace(") == 1
+    assert (
+        source.count("'provider_rejected','candidate_invalid','evidence_persistence_failure')") == 1
+    )
     balance = 0
     for character in statement:
         balance += (character == "(") - (character == ")")
@@ -314,14 +478,1178 @@ def test_provider_attempt_migration_is_single_table_after_receipts() -> None:
     assert "medevidence.persistence" not in Path(module.__file__).read_text(encoding="utf-8")
 
 
-def test_validation_receipt_migration_embeds_exact_application_metadata() -> None:
+def test_provider_framing_migration_is_one_exact_contract_snapshot() -> None:
+    module = _provider_framing_migration_module()
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert module.revision == "m3providerframing002"
+    assert module.down_revision == "m3providerattempt001"
+    assert module.TABLE_ORDER == ("m3_provider_attempt_events",)
+    assert module._CONTRACT_SNAPSHOT_SHA256 == (
+        "656724de18a35eb3000a4fc966ac4578e496661c0b2d71101c20facf29f04687"
+    )
+    assert module._contract_snapshot() == {
+        "canonical_decision_check": render_postgres_contract().canonical_decision_check,
+        "fact_free_v2_event_predicate": (render_postgres_contract().fact_free_v2_event_predicate),
+        "v1_immutability_predicate": render_v1_immutability_predicate(),
+        "v2_facts_absent_predicate": render_postgres_contract().v2_facts_absent_predicate,
+    }
+    assert module._V1_SHAPE_PREDICATE == models.PROVIDER_V1_SHAPE_SQL
+    assert module._VERSIONED_SHAPE_PREDICATE == models.PROVIDER_VERSIONED_SHAPE_SQL
+    statements = module._upgrade_statements()
+    drop_fk = (
+        "ALTER TABLE medevidence.m3_provider_attempt_events DROP CONSTRAINT "
+        "fk_m3_provider_attempt_event_start"
+    )
+    drop_unique = (
+        "ALTER TABLE medevidence.m3_provider_attempt_events DROP CONSTRAINT "
+        "uq_m3_provider_attempt_event_start_binding"
+    )
+    add_unique = next(
+        statement
+        for statement in statements
+        if "ADD CONSTRAINT uq_m3_provider_attempt_event_start_binding" in statement
+    )
+    add_fk = next(
+        statement
+        for statement in statements
+        if "ADD CONSTRAINT fk_m3_provider_attempt_event_start" in statement
+    )
+    assert statements.index(drop_fk) < statements.index(drop_unique)
+    assert statements.index(drop_unique) < statements.index(add_unique)
+    assert statements.index(add_unique) < statements.index(add_fk)
+    assert "event_id, event_kind, schema_version, provider_run_id" in add_unique
+    assert "start_event_id, start_event_kind, schema_version, provider_run_id" in add_fk
+    assert any(
+        statement.endswith(f"CHECK ({models.CHECK_SQL['ck_m3_provider_attempt_events_shape']})")
+        for statement in module._upgrade_statements()
+    )
+    assert module._upgrade_statements()[-2].endswith(
+        f"CHECK ({models.CHECK_SQL['ck_m3_provider_attempt_events_v1_immutable']})"
+    )
+    assert module._upgrade_statements()[-1].endswith(
+        f"CHECK ({models.CHECK_SQL['ck_m3_provider_attempt_events_framing_v2']})"
+    )
+    assert source.count("_CONTRACT_SNAPSHOT_B85: Final[str] =") == 1
+    assert source.count("base64.b85decode(_CONTRACT_SNAPSHOT_B85)") == 1
+    assert not any(
+        statement.lstrip().upper().startswith(("UPDATE ", "DELETE ", "INSERT "))
+        for statement in statements
+    )
+    assert "medevidence.tools" not in source
+
+
+def test_v1_terminal_dispositions_are_the_exact_original_frozen_tuple() -> None:
+    expected = (
+        "success",
+        "retryable_status",
+        "transport_unavailable",
+        "deadline_exceeded",
+        "response_invalid",
+        "response_too_large",
+        "credential_echo",
+        "authentication_failed",
+        "provider_rejected",
+        "candidate_invalid",
+        "evidence_persistence_failure",
+    )
+    assert expected == models.PROVIDER_V1_TERMINAL_DISPOSITIONS
+    assert (
+        *expected,
+        "validation_internal_failure",
+    ) == models.PROVIDER_V2_TERMINAL_DISPOSITIONS
+
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    for ordinal, disposition in enumerate(expected, start=1):
+        start = repository_module.make_provider_attempt_event(
+            provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+            case_id=f"M3-008B-CAL-{ordinal:03d}",
+            case_ordinal=ordinal,
+            attempt_ordinal=1,
+            event_kind="START",
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+        )
+        credential_echo = disposition == "credential_echo"
+        success = disposition == "success"
+        terminal = repository_module.make_provider_attempt_event(
+            provider_run_id=start.provider_run_id,
+            case_id=start.case_id,
+            case_ordinal=ordinal,
+            attempt_ordinal=1,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=200,
+            disposition=disposition,
+            error_code=None if success else disposition,
+            credential_echo=credential_echo,
+            body_complete=True if success else None,
+            body_byte_count=2 if success else None,
+            body_hash=digest if success else None,
+            body_relative_path="raw/response.json" if success else None,
+            observed_body_bytes_lower_bound=2 if success else None,
+            approved_header_names=("content-type",) if success else (),
+        )
+        assert repository_module.validate_provider_attempt_event(terminal) is terminal
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    ("started", "interrupted_unknown_after_start", "validation_internal_failure"),
+)
+def test_v1_terminal_rejects_nonterminal_and_v2_only_dispositions_before_identity(
+    disposition: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    start = repository_module.make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+    )
+    valid = repository_module.make_provider_attempt_event(
+        provider_run_id=start.provider_run_id,
+        case_id=start.case_id,
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="TERMINAL",
+        start_event=start,
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        completed_at_utc=now,
+        http_status=200,
+        disposition="response_invalid",
+        error_code="response_invalid",
+    )
+
+    def identity_must_not_run(_payload: object) -> str:
+        raise AssertionError("identity must be unreachable")
+
+    monkeypatch.setattr(
+        repository_module,
+        "canonical_provider_attempt_event_id",
+        identity_must_not_run,
+    )
+    with pytest.raises(ValueError, match="invalid for schema version"):
+        repository_module.make_provider_attempt_event(
+            provider_run_id=start.provider_run_id,
+            case_id=start.case_id,
+            case_ordinal=1,
+            attempt_ordinal=1,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=200,
+            disposition=disposition,
+            error_code=disposition,
+        )
+    with pytest.raises(ValueError, match="invalid for schema version"):
+        repository_module.validate_provider_attempt_event(
+            replace(valid, disposition=disposition, error_code=disposition)
+        )
+
+
+def test_v2_evidence_persistence_failure_remains_canonical() -> None:
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    start = repository_module.make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+    )
+    observation = build_unavailable_observation(
+        disposition="evidence_persistence_failure",
+        http_status=200,
+    )
+    terminal = repository_module.make_provider_attempt_event(
+        provider_run_id=start.provider_run_id,
+        case_id=start.case_id,
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="TERMINAL",
+        start_event=start,
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        completed_at_utc=now,
+        http_status=200,
+        disposition="evidence_persistence_failure",
+        error_code="evidence_persistence_failure",
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        framing_observation=observation,
+    )
+    assert repository_module.validate_provider_attempt_event(terminal) is terminal
+
+
+def test_v2_validation_internal_failure_binds_safe_raw_framing_facts() -> None:
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    start = repository_module.make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+    )
+    observation = build_framing_observation(
+        disposition="validation_internal_failure",
+        http_status=200,
+        http_version="HTTP/2",
+        headers=normalize_approved_headers(
+            (("content-type", "application/json"),),
+            raw_header_field_count=1,
+        ),
+        raw_header_field_count=1,
+        body_complete=True,
+        actual_body_byte_count=2,
+        raw_body_hash=digest,
+        raw_relative_path="raw/validation-internal-failure.json",
+    )
+    terminal = repository_module.make_provider_attempt_event(
+        provider_run_id=start.provider_run_id,
+        case_id=start.case_id,
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="TERMINAL",
+        start_event=start,
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        completed_at_utc=now,
+        http_status=200,
+        disposition="validation_internal_failure",
+        error_code="validation_internal_failure",
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        framing_observation=observation,
+    )
+    assert repository_module.validate_provider_attempt_event(terminal) is terminal
+    assert terminal.body_complete is True
+    assert terminal.body_hash == digest
+    assert terminal.body_relative_path == "raw/validation-internal-failure.json"
+    assert terminal.framing_status == "accepted"
+    assert terminal.accepted_framing_class == "http_2_data"
+    assert terminal.framing_rejection_code is None
+
+
+def test_v2_provider_event_is_derived_from_and_reconstructs_one_contract_observation() -> None:
+    run_id = "provider-attempt-run:sha256:" + "a" * 64
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    start = repository_module.make_provider_attempt_event(
+        provider_run_id=run_id,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+    )
+    observation = build_framing_observation(
+        disposition="response_invalid",
+        http_status=200,
+        http_version="HTTP/2",
+        headers=normalize_approved_headers(
+            (("content-type", "application/json"), ("x-request-id", "request-1")),
+            raw_header_field_count=2,
+        ),
+        raw_header_field_count=2,
+        body_complete=True,
+        actual_body_byte_count=2,
+        raw_body_hash=digest,
+        raw_relative_path="raw/case-001.json",
+    )
+    event = repository_module.make_provider_attempt_event(
+        provider_run_id=run_id,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="TERMINAL",
+        start_event=start,
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        completed_at_utc=now,
+        http_status=200,
+        disposition="response_invalid",
+        error_code="response_invalid",
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        framing_observation=observation,
+    )
+    projection = canonical_observation_projection(observation)
+    assert event.framing_status == projection["framing_status"] == "accepted"
+    assert event.normalized_content_type_values == ("application/json",)
+    assert event.normalized_x_request_id_values == ("request-1",)
+    assert repository_module.validate_provider_attempt_event(event) is event
+
+    payload = repository_module._provider_event_payload(event)
+    tampered = replace(event, framing_status="rejected")
+    tampered_payload = {
+        **payload,
+        "framing_status": "rejected",
+    }
+    tampered = replace(
+        tampered,
+        event_id=repository_module.canonical_provider_attempt_event_id(tampered_payload),
+    )
+    with pytest.raises(ValueError, match="projection drift"):
+        repository_module.validate_provider_attempt_event(tampered)
+
+
+def test_every_generated_noncanonical_raw_projection_fails_python_reconstruction() -> None:
+    run_id = "provider-attempt-run:sha256:" + "a" * 64
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    cases = generated_contract_cases()
+    pairs = [
+        (case, variant)
+        for case in cases
+        for variant in case.noncanonical_variants
+        if "repository" in variant.consumers
+    ]
+    declared_repository_targets = sum(
+        target.consumer == "repository"
+        for case in cases
+        for variant in case.noncanonical_variants
+        for target in variant.consumer_targets
+    )
+    assert pairs
+    assert {
+        variant.target_authority_field
+        for _case, variant in pairs
+        if variant.case_id.startswith("primitive:")
+    } == set(PERSISTED_AUTHORITY_FIELDS)
+    assert set(PERSISTED_AUTHORITY_FIELDS) <= set(
+        repository_module.ProviderAttemptEvent.__dataclass_fields__
+    )
+    assert set(PERSISTED_AUTHORITY_FIELDS) <= set(models.m3_provider_attempt_events.c.keys())
+    assert len(pairs) == declared_repository_targets
+    assert len({variant.case_id for _case, variant in pairs}) == len(pairs)
+    declared_case_ids = tuple(variant.case_id for _case, variant in pairs)
+    executed_case_ids: list[str] = []
+    for index, (case, variant) in enumerate(pairs):
+        observation = case.observation
+        validate_generated_mutation_case(variant)
+        assert (
+            variant.expected_first_match_rule,
+            variant.expected_status,
+            variant.expected_class,
+            variant.expected_code,
+        ) == (
+            case.rule_key,
+            case.expected_status,
+            case.expected_class,
+            case.expected_code,
+        )
+        mutation_fields = tuple(mutation.field for mutation in variant.mutations)
+        repository_target = next(
+            target for target in variant.consumer_targets if target.consumer == "repository"
+        )
+        assert repository_target.authority_fields == mutation_fields
+        assert repository_target.direct_target_paths == tuple(
+            f"ProviderAttemptEvent.{field}" for field in mutation_fields
+        )
+        case_ordinal = index % 36 + 1
+        attempt_ordinal = (index // 36) % 3 + 1
+        case_id = f"M3-008B-CAL-{case_ordinal:03d}"
+        start = repository_module.make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id=case_id,
+            case_ordinal=case_ordinal,
+            attempt_ordinal=attempt_ordinal,
+            event_kind="START",
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        )
+        event = repository_module.make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id=case_id,
+            case_ordinal=case_ordinal,
+            attempt_ordinal=attempt_ordinal,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=observation.http_status,
+            disposition=observation.disposition,
+            error_code=None if observation.disposition == "success" else observation.disposition,
+            credential_echo=observation.disposition == "credential_echo",
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+            framing_observation=observation,
+        )
+        event_values = {
+            field: getattr(event, field) for field in repository_module._PROVIDER_EVENT_FIELDS
+        }
+        consumer_mutations = generated_consumer_mutation_witness(
+            variant,
+            "repository",
+            event_values,
+        )
+        assert tuple(item.field for item in consumer_mutations) == mutation_fields
+        assert tuple(item.direct_target_path for item in consumer_mutations) == (
+            repository_target.direct_target_paths
+        )
+        assert all(item.case_id == variant.case_id for item in consumer_mutations)
+        assert all(item.consumer == "repository" for item in consumer_mutations)
+        assert all(
+            item.target_authority_field == variant.target_authority_field
+            for item in consumer_mutations
+        )
+        changed_values = dict(event_values)
+        for mutation in consumer_mutations:
+            assert mutation.field in event_values
+            assert mutation.field in repository_module.ProviderAttemptEvent.__dataclass_fields__
+            assert type(event_values[mutation.field]) is type(mutation.canonical_value)
+            assert event_values[mutation.field] == mutation.canonical_value
+            if mutation.operation == "remove":
+                del changed_values[mutation.field]
+                assert mutation.field not in changed_values
+            else:
+                changed_values[mutation.field] = mutation.mutated_value
+                assert changed_values[mutation.field] is mutation.mutated_value
+                assert not (
+                    type(mutation.mutated_value) is type(mutation.canonical_value)
+                    and mutation.mutated_value == mutation.canonical_value
+                )
+        try:
+            changed = repository_module.ProviderAttemptEvent(**changed_values)  # type: ignore[arg-type]
+        except TypeError:
+            assert any(mutation.operation == "remove" for mutation in consumer_mutations)
+            continue
+        for mutation in consumer_mutations:
+            if mutation.operation == "set":
+                assert getattr(changed, mutation.field) is mutation.mutated_value
+        if repository_module._provider_attempt_event_primitives_are_exact(changed):
+            payload = repository_module._provider_event_payload(changed)
+            changed = replace(
+                changed,
+                event_id=repository_module.canonical_provider_attempt_event_id(payload),
+            )
+        with pytest.raises(ValueError):
+            repository_module.validate_provider_attempt_event(changed)
+        executed_case_ids.append(variant.case_id)
+    assert tuple(executed_case_ids) == declared_case_ids
+
+
+def test_generated_missing_mutations_remove_the_declared_named_authority() -> None:
+    missing = [
+        (case, variant)
+        for case in generated_contract_cases()
+        for variant in case.noncanonical_variants
+        if variant.mutation_kind is MutationKind.MISSING
+    ]
+    assert missing
+    for case, variant in missing:
+        validate_generated_mutation_case(variant)
+        assert (
+            variant.expected_first_match_rule,
+            variant.expected_status,
+            variant.expected_class,
+            variant.expected_code,
+        ) == (
+            case.rule_key,
+            case.expected_status,
+            case.expected_class,
+            case.expected_code,
+        )
+        assert {"repository", "postgres"}.isdisjoint(variant.consumers)
+        for consumer in variant.consumers:
+            consumer_mutations = generated_consumer_mutation_witness(variant, consumer)
+            values = {item.field: item.canonical_value for item in consumer_mutations}
+            assert values
+            for item in consumer_mutations:
+                assert item.case_id == variant.case_id
+                assert item.consumer == consumer
+                assert item.target_authority_field == variant.target_authority_field
+                assert item.operation == "remove"
+                assert item.field in values
+                del values[item.field]
+                assert item.field not in values
+
+
+def test_every_generated_primitive_variant_fails_before_payload_identity_or_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = "provider-attempt-run:sha256:" + "a" * 64
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    pairs = [
+        (case.observation, variant)
+        for case in generated_contract_cases()
+        for variant in case.noncanonical_variants
+        if "repository" in variant.consumers
+        and variant.case_id.startswith("primitive:")
+        and variant.mutation_kind is MutationKind.TYPE
+    ]
+    assert pairs
+    assert len(pairs) == sum(
+        variant.mutation_kind is MutationKind.TYPE
+        for case in generated_contract_cases()
+        for variant in case.noncanonical_variants
+        if "repository" in variant.consumers and variant.case_id.startswith("primitive:")
+    )
+    invalid_events = []
+    for index, (observation, variant) in enumerate(pairs):
+        case_ordinal = index % 36 + 1
+        attempt_ordinal = (index // 36) % 3 + 1
+        case_id = f"M3-008B-CAL-{case_ordinal:03d}"
+        start = repository_module.make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id=case_id,
+            case_ordinal=case_ordinal,
+            attempt_ordinal=attempt_ordinal,
+            event_kind="START",
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        )
+        terminal = repository_module.make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id=case_id,
+            case_ordinal=case_ordinal,
+            attempt_ordinal=attempt_ordinal,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=observation.http_status,
+            disposition=observation.disposition,
+            error_code=None if observation.disposition == "success" else observation.disposition,
+            credential_echo=observation.disposition == "credential_echo",
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+            framing_observation=observation,
+        )
+        projection = apply_persisted_mutations(
+            generated_mutation_witness(observation),
+            variant.mutations,
+        )
+        invalid_events.append(
+            replace(
+                terminal,
+                **{mutation.field: projection[mutation.field] for mutation in variant.mutations},
+            )
+        )
+
+    def forbidden_payload(_event: object) -> dict[str, object]:
+        raise AssertionError("event payload construction must be unreachable")
+
+    def forbidden_identity(_payload: object) -> str:
+        raise AssertionError("event identity construction must be unreachable")
+
+    monkeypatch.setattr(repository_module, "_provider_event_payload", forbidden_payload)
+    monkeypatch.setattr(
+        repository_module,
+        "canonical_provider_attempt_event_id",
+        forbidden_identity,
+    )
+    engine = sa.create_engine("sqlite://")
+    repository = repository_module.ProviderAttemptLedgerRepository._from_engine_for_testing(engine)
+    transaction_calls = 0
+    original_begin = engine.begin
+
+    def forbidden_transaction() -> object:
+        nonlocal transaction_calls
+        transaction_calls += 1
+        return original_begin()
+
+    monkeypatch.setattr(engine, "begin", forbidden_transaction)
+    try:
+        for event in invalid_events:
+            with pytest.raises(ValueError, match="primitive type is invalid"):
+                repository_module.validate_provider_attempt_event(event)
+            with pytest.raises(ValueError, match="primitive type is invalid"):
+                repository.append(event)
+    finally:
+        repository.close()
+    assert transaction_calls == 0
+
+
+def test_provider_event_primitive_gate_covers_every_field_with_exact_builtin_types() -> None:
+    class NoncanonicalString(str):
+        pass
+
+    class NoncanonicalTuple(tuple[object, ...]):
+        pass
+
+    class NoncanonicalDatetime(datetime):
+        pass
+
+    classified_fields = {
+        *repository_module._PROVIDER_REQUIRED_STR_FIELDS,
+        *repository_module._PROVIDER_OPTIONAL_STR_FIELDS,
+        *repository_module._PROVIDER_REQUIRED_INT_FIELDS,
+        *repository_module._PROVIDER_OPTIONAL_INT_FIELDS,
+        "credential_echo",
+        "body_complete",
+        "approved_header_names",
+        *repository_module._PROVIDER_OPTIONAL_STR_TUPLE_FIELDS,
+        "started_at_utc",
+        "completed_at_utc",
+    }
+    assert classified_fields == set(repository_module._PROVIDER_EVENT_FIELDS)
+
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    start = repository_module.make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+    )
+    observation = build_framing_observation(
+        disposition="success",
+        http_status=200,
+        http_version="HTTP/2",
+        headers=normalize_approved_headers(
+            (("content-type", "application/json"),),
+            raw_header_field_count=1,
+        ),
+        raw_header_field_count=1,
+        body_complete=True,
+        actual_body_byte_count=2,
+        raw_body_hash=digest,
+        raw_relative_path="raw/case-001.json",
+    )
+    event = repository_module.make_provider_attempt_event(
+        provider_run_id=start.provider_run_id,
+        case_id=start.case_id,
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="TERMINAL",
+        start_event=start,
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        completed_at_utc=now,
+        http_status=200,
+        disposition="success",
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        framing_observation=observation,
+    )
+    mutations: list[dict[str, object]] = []
+    mutations.extend(
+        {name: NoncanonicalString(cast(str, getattr(event, name)))}
+        for name in repository_module._PROVIDER_REQUIRED_STR_FIELDS
+    )
+    mutations.extend(
+        {name: NoncanonicalString(cast(str | None, getattr(event, name)) or "noncanonical")}
+        for name in repository_module._PROVIDER_OPTIONAL_STR_FIELDS
+    )
+    mutations.extend(
+        {name: True}
+        for name in (
+            *repository_module._PROVIDER_REQUIRED_INT_FIELDS,
+            *repository_module._PROVIDER_OPTIONAL_INT_FIELDS,
+        )
+    )
+    mutations.extend(({"credential_echo": 0}, {"body_complete": 1}))
+    for name in (
+        "approved_header_names",
+        *repository_module._PROVIDER_OPTIONAL_STR_TUPLE_FIELDS,
+    ):
+        values = cast(tuple[str, ...], getattr(event, name))
+        mutations.append({name: NoncanonicalTuple(values)})
+        mutations.append({name: (NoncanonicalString(values[0] if values else "noncanonical"),)})
+    mutations.extend(
+        (
+            {"started_at_utc": NoncanonicalDatetime(2026, 9, 1, tzinfo=UTC)},
+            {"completed_at_utc": NoncanonicalDatetime(2026, 9, 1, tzinfo=UTC)},
+        )
+    )
+    for changes in mutations:
+        with pytest.raises(ValueError, match="primitive type is invalid"):
+            repository_module.validate_provider_attempt_event(replace(event, **changes))
+
+
+def test_generated_integer_credential_metadata_fails_before_event_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variants = [
+        (case.observation, variant)
+        for case in generated_contract_cases()
+        for variant in case.noncanonical_variants
+        if variant.case_id
+        in {
+            "event_metadata:credential_echo_integer_zero",
+            "event_metadata:credential_echo_integer_one",
+        }
+    ]
+    assert [variant.case_id for _, variant in variants] == [
+        "event_metadata:credential_echo_integer_one",
+        "event_metadata:credential_echo_integer_zero",
+    ]
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    starts = [
+        repository_module.make_provider_attempt_event(
+            provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+            case_id=f"M3-008B-CAL-{index:03d}",
+            case_ordinal=index,
+            attempt_ordinal=1,
+            event_kind="START",
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        )
+        for index in range(1, len(variants) + 1)
+    ]
+    terminals = [
+        repository_module.make_provider_attempt_event(
+            provider_run_id=start.provider_run_id,
+            case_id=start.case_id,
+            case_ordinal=start.case_ordinal,
+            attempt_ordinal=start.attempt_ordinal,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=observation.http_status,
+            disposition=observation.disposition,
+            error_code=(None if observation.disposition == "success" else observation.disposition),
+            credential_echo=observation.disposition == "credential_echo",
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+            framing_observation=observation,
+        )
+        for (observation, _variant), start in zip(variants, starts, strict=True)
+    ]
+
+    def identity_must_not_be_reached(_payload: object) -> str:
+        raise AssertionError("event identity construction must be unreachable")
+
+    monkeypatch.setattr(
+        repository_module,
+        "canonical_provider_attempt_event_id",
+        identity_must_not_be_reached,
+    )
+    for index, ((observation, variant), start) in enumerate(
+        zip(variants, starts, strict=True), start=1
+    ):
+        mutation = variant.mutations[0]
+        assert mutation.field == "credential_echo" and type(mutation.value) is int
+        with pytest.raises(ValueError, match="primitive type is invalid"):
+            repository_module.make_provider_attempt_event(
+                provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+                case_id=f"M3-008B-CAL-{index:03d}",
+                case_ordinal=index,
+                attempt_ordinal=1,
+                event_kind="TERMINAL",
+                start_event=start,
+                configuration_hash=digest,
+                request_hash=digest,
+                started_at_utc=now,
+                completed_at_utc=now,
+                http_status=observation.http_status,
+                disposition=observation.disposition,
+                error_code=(
+                    None if observation.disposition == "success" else observation.disposition
+                ),
+                credential_echo=mutation.value,
+                schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+                framing_observation=observation,
+            )
+    repository = repository_module.ProviderAttemptLedgerRepository._from_engine_for_testing(
+        sa.create_engine("sqlite://")
+    )
+    try:
+        for terminal, (_observation, variant) in zip(terminals, variants, strict=True):
+            invalid = replace(terminal, credential_echo=variant.mutations[0].value)
+            with pytest.raises(ValueError, match="primitive type is invalid"):
+                repository.append(invalid)
+    finally:
+        repository.close()
+
+
+def test_make_provider_event_rejects_all_caller_primitive_classes_before_authorities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoncanonicalString(str):
+        pass
+
+    class ExplosiveString(str):
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("START binding equality must be unreachable")
+
+    class NoncanonicalTuple(tuple[object, ...]):
+        pass
+
+    class NoncanonicalDatetime(datetime):
+        pass
+
+    digest = "sha256:" + "b" * 64
+    run_id = "provider-attempt-run:sha256:" + "a" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    start = repository_module.make_provider_attempt_event(
+        provider_run_id=run_id,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+    )
+    observation = build_framing_observation(
+        disposition="success",
+        http_status=200,
+        http_version="HTTP/2",
+        headers=normalize_approved_headers(
+            (("content-type", "application/json"),),
+            raw_header_field_count=1,
+        ),
+        raw_header_field_count=1,
+        body_complete=True,
+        actual_body_byte_count=2,
+        raw_body_hash=digest,
+        raw_relative_path="raw/case-001.json",
+    )
+    base: dict[str, object] = {
+        "provider_run_id": run_id,
+        "case_id": "M3-008B-CAL-001",
+        "case_ordinal": 1,
+        "attempt_ordinal": 1,
+        "event_kind": "TERMINAL",
+        "start_event": start,
+        "configuration_hash": digest,
+        "request_hash": digest,
+        "started_at_utc": now,
+        "completed_at_utc": now,
+        "http_status": 200,
+        "disposition": "success",
+        "schema_version": "M3_PROVIDER_ATTEMPT_EVENT_V2",
+        "framing_observation": observation,
+    }
+    cases: tuple[tuple[str, dict[str, object]], ...] = (
+        ("provider_run_id", {"provider_run_id": NoncanonicalString(run_id)}),
+        ("case_id", {"case_id": NoncanonicalString("M3-008B-CAL-001")}),
+        ("case_ordinal", {"case_ordinal": True}),
+        ("attempt_ordinal", {"attempt_ordinal": True}),
+        ("event_kind", {"event_kind": NoncanonicalString("TERMINAL")}),
+        ("configuration_hash", {"configuration_hash": NoncanonicalString(digest)}),
+        ("request_hash", {"request_hash": NoncanonicalString(digest)}),
+        ("started_at_utc", {"started_at_utc": NoncanonicalDatetime(2026, 9, 1, tzinfo=UTC)}),
+        (
+            "completed_at_utc",
+            {"completed_at_utc": NoncanonicalDatetime(2026, 9, 1, tzinfo=UTC)},
+        ),
+        ("http_status", {"http_status": True}),
+        ("disposition", {"disposition": NoncanonicalString("success")}),
+        ("error_code", {"error_code": NoncanonicalString("success")}),
+        ("credential_echo", {"credential_echo": 0}),
+        ("body_complete", {"body_complete": 1}),
+        ("body_byte_count", {"body_byte_count": True}),
+        ("body_hash", {"body_hash": NoncanonicalString(digest)}),
+        (
+            "body_relative_path",
+            {"body_relative_path": NoncanonicalString("raw/case-001.json")},
+        ),
+        ("observed_body_bytes_lower_bound", {"observed_body_bytes_lower_bound": True}),
+        ("approved_header_names_tuple", {"approved_header_names": NoncanonicalTuple()}),
+        (
+            "approved_header_names_item",
+            {"approved_header_names": (NoncanonicalString("content-type"),)},
+        ),
+        ("schema_version", {"schema_version": NoncanonicalString("M3_PROVIDER_ATTEMPT_EVENT_V2")}),
+        ("start_event_type", {"start_event": object()}),
+        ("start_event_event_slot", {"start_event": replace(start, event_slot=True)}),
+        (
+            "start_event_string_equality",
+            {"start_event": replace(start, provider_run_id=ExplosiveString(run_id))},
+        ),
+        (
+            "observation_http_status",
+            {"framing_observation": replace(observation, http_status=True)},
+        ),
+        (
+            "observation_string",
+            {
+                "framing_observation": replace(
+                    observation,
+                    disposition=NoncanonicalString("success"),
+                )
+            },
+        ),
+        (
+            "observation_enum",
+            {"framing_observation": replace(observation, http_version_state="http_2")},
+        ),
+        (
+            "observation_header_tuple_item",
+            {
+                "framing_observation": replace(
+                    observation,
+                    headers=replace(
+                        observation.headers,
+                        observed_names=(NoncanonicalString("content-type"),),
+                    ),
+                )
+            },
+        ),
+    )
+
+    reached: list[str] = []
+
+    def forbidden(name: str) -> object:
+        def callback(*_args: object, **_kwargs: object) -> object:
+            reached.append(name)
+            raise AssertionError(f"{name} must be unreachable")
+
+        return callback
+
+    monkeypatch.setattr(
+        repository_module,
+        "canonical_observation_projection",
+        forbidden("projection"),
+    )
+    monkeypatch.setattr(repository_module, "_provider_event_payload", forbidden("payload"))
+    monkeypatch.setattr(
+        repository_module,
+        "canonical_provider_attempt_event_id",
+        forbidden("identity"),
+    )
+    monkeypatch.setattr(repository_module, "v2_event_metadata_matches", forbidden("metadata"))
+    monkeypatch.setattr(
+        repository_module,
+        "canonical_fact_free_v2_event_projection",
+        forbidden("fact_free_projection"),
+    )
+    monkeypatch.setattr(repository_module, "legacy_v2_raw_projection", forbidden("raw_projection"))
+
+    for name, changes in cases:
+        with pytest.raises(ValueError, match="primitive type is invalid"):
+            repository_module.make_provider_attempt_event(**{**base, **changes})  # type: ignore[arg-type]
+        assert reached == [], name
+
+    engine = sa.create_engine("sqlite://")
+    repository = repository_module.ProviderAttemptLedgerRepository._from_engine_for_testing(engine)
+    transaction_calls = 0
+
+    def forbidden_transaction() -> object:
+        nonlocal transaction_calls
+        transaction_calls += 1
+        raise AssertionError("transaction must be unreachable")
+
+    monkeypatch.setattr(engine, "begin", forbidden_transaction)
+    with pytest.raises(ValueError, match="primitive type is invalid"):
+        repository.append(replace(start, event_slot=True))
+    repository.close()
+    assert transaction_calls == 0
+    assert reached == []
+
+
+def test_v1_event_identity_and_projection_remain_free_of_every_v2_field() -> None:
+    digest = "sha256:" + "b" * 64
+    event = repository_module.make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    payload = repository_module._provider_event_payload(event)
+    assert not (set(payload) & repository_module._PROVIDER_V2_FIELDS)
+    assert event.event_id == repository_module.canonical_provider_attempt_event_id(payload)
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    _NONCANONICAL_PROVIDER_PATHS,
+)
+def test_v1_legacy_body_path_rejects_noncanonical_forms_before_ledger_admission(
+    relative_path: str,
+) -> None:
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    start = repository_module.make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+    )
+    with pytest.raises(ValueError, match="body relative path is noncanonical"):
+        repository_module.make_provider_attempt_event(
+            provider_run_id=start.provider_run_id,
+            case_id=start.case_id,
+            case_ordinal=1,
+            attempt_ordinal=1,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=200,
+            disposition="success",
+            body_complete=True,
+            body_byte_count=2,
+            body_hash=digest,
+            body_relative_path=relative_path,
+            observed_body_bytes_lower_bound=2,
+            approved_header_names=("content-type",),
+        )
+
+
+@pytest.mark.parametrize(
+    "claims",
+    (
+        {"approved_header_names": ("content-type",)},
+        {"credential_echo": True},
+        {"body_complete": False},
+        {"body_hash": "sha256:" + "f" * 64},
+        {"observed_body_bytes_lower_bound": 0},
+    ),
+)
+def test_v2_fact_free_start_rejects_every_fabricated_legacy_claim(
+    claims: dict[str, object],
+) -> None:
+    digest = "sha256:" + "b" * 64
+    with pytest.raises(ValueError, match=r"fact-free event|metadata differs"):
+        repository_module.make_provider_attempt_event(
+            provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+            case_id="M3-008B-CAL-001",
+            case_ordinal=1,
+            attempt_ordinal=1,
+            event_kind="START",
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=datetime(2026, 9, 1, tzinfo=UTC),
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+            **claims,  # type: ignore[arg-type]
+        )
+
+
+def test_v2_fact_free_terminal_rejects_non_governed_disposition() -> None:
+    digest = "sha256:" + "b" * 64
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    start = repository_module.make_provider_attempt_event(
+        provider_run_id="provider-attempt-run:sha256:" + "a" * 64,
+        case_id="M3-008B-CAL-001",
+        case_ordinal=1,
+        attempt_ordinal=1,
+        event_kind="START",
+        configuration_hash=digest,
+        request_hash=digest,
+        started_at_utc=now,
+        schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+    )
+    with pytest.raises(ValueError, match="topology"):
+        repository_module.make_provider_attempt_event(
+            provider_run_id=start.provider_run_id,
+            case_id=start.case_id,
+            case_ordinal=1,
+            attempt_ordinal=1,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            disposition="retryable_status",
+            error_code="retryable_status",
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        )
+
+
+def test_validation_receipt_migration_remains_frozen_v1() -> None:
     module = _m3_validation_receipt_migration_module()
-    expected = str(CreateTable(models.m3_validation_receipts).compile(dialect=postgresql.dialect()))
+    original = module._ddl_statements()[0]
     assert module.revision == "m3validationreceipt001"
     assert module.down_revision == "m1bfaers002001"
     assert module.TABLE_ORDER == ("m3_validation_receipts",)
-    assert module._ddl_statements() == (expected,)
+    assert "schema_version='M3_VALIDATION_RECEIPT_V1'" in original
+    assert "validation-receipt-v2" not in original
     assert "medevidence.persistence" not in Path(module.__file__).read_text(encoding="utf-8")
+
+
+def test_stage1_v2_migration_matches_new_table_and_widened_final_checks() -> None:
+    path = Path("alembic/versions/20260914_01_m3_stage1_receipt_v2.py")
+    spec = importlib.util.spec_from_file_location("m3stage1receiptv2_revision", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "m3stage1receiptv2001"
+    assert module.down_revision == "m3providerframing002"
+    assert module.TABLE_ORDER == ("m3_stage1_receipts",)
+    statements = module._statements(module._UPGRADE_B85, module._UPGRADE_SHA256)
+    assert statements[-1] == str(
+        CreateTable(models.m3_stage1_receipts).compile(dialect=postgresql.dialect())
+    )
+    assert models.CHECK_SQL["ck_m3_validation_receipts_schema"] in statements[2]
+    assert models.CHECK_SQL["ck_m3_validation_receipts_identities"] in statements[3]
+    assert "medevidence.persistence" not in path.read_text(encoding="utf-8")
+
+
+def test_review_export_migration_freezes_four_additive_tables() -> None:
+    path = Path("alembic/versions/20260914_02_m3_review_export.py")
+    spec = importlib.util.spec_from_file_location("m3reviewexport_revision", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    names = (
+        "m3_report_documents",
+        "m3_pending_drafts",
+        "m3_review_records",
+        "m3_exports",
+    )
+    assert module.revision == "m3reviewexport001"
+    assert module.down_revision == "m3stage1receiptv2001"
+    assert names == module.TABLE_ORDER
+    assert module._statements(module._UPGRADE_B85, module._UPGRADE_SHA256) == tuple(
+        str(CreateTable(getattr(models, name)).compile(dialect=postgresql.dialect()))
+        for name in names
+    )
+    assert module._statements(module._DOWNGRADE_B85, module._DOWNGRADE_SHA256) == tuple(
+        f'DROP TABLE medevidence."{name}"' for name in reversed(names)
+    )
+    assert "medevidence.persistence" not in path.read_text(encoding="utf-8")
 
 
 def test_validation_receipt_spec_excludes_operational_timestamp_from_semantics() -> None:
@@ -395,6 +1723,11 @@ def test_persistence_package_does_not_import_the_tools_layer() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ""
+                if module == "medevidence.tools.provider_attempt_framing" and path.name in {
+                    "models.py",
+                    "repositories.py",
+                }:
+                    continue
                 absolute_tools = module == "medevidence.tools" or module.startswith(
                     "medevidence.tools."
                 )
@@ -481,12 +1814,14 @@ def test_migration_embeds_equivalent_private_metadata_without_application_import
     assert "medevidence.persistence" not in source
 
 
-def test_raw_bytes_have_no_postgresql_column() -> None:
-    assert all(
-        not isinstance(column.type, (sa.LargeBinary,)) and "BYTEA" not in str(column.type).upper()
+def test_medical_source_raw_bytes_have_no_postgresql_column() -> None:
+    binary_columns = {
+        (table.name, column.name)
         for table in models.metadata.tables.values()
         for column in table.columns
-    )
+        if isinstance(column.type, sa.LargeBinary) or "BYTEA" in str(column.type).upper()
+    }
+    assert binary_columns == {("m3_semantic_evaluation_events", "raw_body_bytes")}
 
 
 def test_m1b_dm002_exact_frozen_inventory_and_counts() -> None:
@@ -557,12 +1892,40 @@ def test_m1b_migration_embeds_exact_immutable_postgresql_ddl() -> None:
             CreateTable(models.metadata.tables[f"{models.SCHEMA}.{name}"]).compile(
                 dialect=postgresql.dialect()
             )
+        ).replace(
+            "status IN ('running','completed','degraded','failed') AND "
+            "(status<>'running' OR completed_at_utc IS NULL)",
+            "status IN ('completed','degraded','failed')",
+        )
+        if name == "m1b_runs"
+        else str(
+            CreateTable(models.metadata.tables[f"{models.SCHEMA}.{name}"]).compile(
+                dialect=postgresql.dialect()
+            )
+        ).replace(
+            "operation IN ('search','fetch') OR (source='dailymed' AND operation='packaging')",
+            "operation IN ('search','fetch')",
+        )
+        if name in {"m1b_acquisitions", "m1b_source_outcomes"}
+        else str(
+            CreateTable(models.metadata.tables[f"{models.SCHEMA}.{name}"]).compile(
+                dialect=postgresql.dialect()
+            )
         )
         for name in module._CREATE_ORDER
     )
     assert module.revision == "m1bdm002001"
     assert module.down_revision == "m1a003b0001"
     assert models.M1B_TABLE_ORDER[: len(module.TABLE_ORDER)] == module.TABLE_ORDER
+    # The historical DDL stays immutable; the occurrence key is a later migration.
+    expected = tuple(
+        statement.replace(
+            "CONSTRAINT pk_m1b_source_outcomes PRIMARY KEY "
+            "(run_id, source, acquisition_id, source_outcome_id)",
+            "CONSTRAINT pk_m1b_source_outcomes PRIMARY KEY (source_outcome_id)",
+        )
+        for statement in expected
+    )
     assert statements == expected
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "medevidence.persistence" not in source
@@ -877,12 +2240,26 @@ class _CapacityConnection:
         return self._count
 
 
-@pytest.mark.parametrize("table_name", EXPECTED_TABLES[:-1])
+@pytest.mark.parametrize(
+    "table_name",
+    tuple(
+        # These adapters have dedicated persistence APIs, not the generic _SPECS path.
+        name
+        for name in EXPECTED_TABLES
+        if name
+        not in {
+            "m3_provider_attempt_events",
+            "m3_exports",
+            "m3_dailymed_v2_records",
+            "m3_dailymed_v2_members",
+        }
+    ),
+)
 @pytest.mark.parametrize(
     "state",
     ("capacity_minus_one", "full_identical", "full_conflict", "full_new_identity"),
 )
-def test_capacity_guard_preserves_identity_precedence_for_every_table(
+def test_capacity_guard_preserves_identity_precedence_for_generic_repository_tables(
     table_name: str,
     state: str,
 ) -> None:

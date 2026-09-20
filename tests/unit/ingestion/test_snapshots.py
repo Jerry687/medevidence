@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import os
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -374,6 +376,41 @@ def test_source_replay_record_size_is_bounded_without_large_allocation(
         )
 
 
+def test_source_replay_read_caps_file_that_grows_after_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import medevidence.ingestion.snapshots as snapshots_module
+
+    snapshots = store(tmp_path / "snapshots")
+    keys = {
+        "run_id": "run:00000000-0000-4000-8000-000000000002",
+        "task_id": "source-task:fixture",
+        "attempt_id": "source-task-attempt:fixture",
+        "query_id": "query:fixture",
+        "acquisition_intent_id": "acquisition-intent:fixture",
+    }
+    with snapshots.writer():
+        published = snapshots.publish_source_replay("faers-aggregate", b"{}", **keys)
+    cap = snapshots_module.SOURCE_REPLAY_RECORD_BYTE_CAPACITY
+    original_open = Path.open
+    reads: list[int] = []
+
+    class GrowingFile(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            reads.append(size)
+            return super().read(size)
+
+    def changed_open(path: Path, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        if path == published.path and args == ("rb",):
+            return GrowingFile(b"x" * (cap + 100))
+        return original_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", changed_open)
+    with pytest.raises(SnapshotIntegrityError, match="changed during read"):
+        snapshots.read_source_replay("faers-aggregate", **keys)
+    assert reads == [cap + 1]
+
+
 def test_existing_corruption_is_never_overwritten(tmp_path: Path) -> None:
     snapshots = store(tmp_path / "snapshots")
     with snapshots.writer():
@@ -476,6 +513,49 @@ def test_default_ledger_counts_prior_committed_raw_bytes(
     second = store(root)
     with second.writer(), pytest.raises(SnapshotCapacityError, match="run-raw"):
         second.store_raw_body(b"x")
+
+
+def test_deepseek_generation_raw_is_counted_after_restart_and_consumes_same_quota(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import medevidence.ingestion.snapshots as snapshots_module
+
+    root = tmp_path / "snapshots"
+    body = b"bounded synthetic DeepSeek generation response"
+    digest = sha256(body).hexdigest()
+    relative = f"generation/deepseek/raw/sha256/{digest[:2]}/{digest}.bin"
+    first = store(root)
+    with first.writer():
+        first.publish_bytes(relative, body, artifact_class="raw")
+    restarted = store(root)
+    assert restarted._ledger().raw_bytes == len(body)
+    monkeypatch.setattr(snapshots_module, "RAW_RUN_BYTE_CAPACITY", len(body))
+    next_body = b"next"
+    next_digest = sha256(next_body).hexdigest()
+    next_relative = f"generation/deepseek/raw/sha256/{next_digest[:2]}/{next_digest}.bin"
+    with restarted.writer(), pytest.raises(SnapshotCapacityError, match="run-raw"):
+        restarted.publish_bytes(next_relative, next_body, artifact_class="raw")
+
+
+@pytest.mark.parametrize("tamper", ("content", "path"))
+def test_deepseek_generation_raw_scan_rejects_tampered_content_or_path(
+    tmp_path: Path, tamper: str
+) -> None:
+    root = tmp_path / "snapshots"
+    body = b"bounded synthetic response"
+    digest = sha256(body).hexdigest()
+    relative = f"generation/deepseek/raw/sha256/{digest[:2]}/{digest}.bin"
+    snapshots = store(root)
+    with snapshots.writer():
+        published = snapshots.publish_bytes(relative, body, artifact_class="raw")
+    if tamper == "content":
+        published.path.write_bytes(b"x" * len(body))
+        expected = SnapshotIntegrityError
+    else:
+        published.path.rename(published.path.with_name("0" * 64 + ".bin"))
+        expected = SnapshotContainmentError
+    with pytest.raises(expected):
+        store(root)._ledger()
 
 
 def test_all_publication_paths_require_writer_lock(tmp_path: Path) -> None:

@@ -376,9 +376,10 @@ class SnapshotStore:
         size = target.stat().st_size
         if size <= 0 or size > SOURCE_REPLAY_RECORD_BYTE_CAPACITY:
             raise SnapshotIntegrityError("source replay record has invalid size")
-        raw = target.read_bytes()
+        with target.open("rb") as handle:
+            raw = handle.read(SOURCE_REPLAY_RECORD_BYTE_CAPACITY + 1)
         self._require_safe_path(target, allow_missing_leaf=False)
-        if len(raw) != size:
+        if len(raw) > SOURCE_REPLAY_RECORD_BYTE_CAPACITY or len(raw) != size:
             raise SnapshotIntegrityError("source replay record changed during read")
         return raw
 
@@ -422,9 +423,10 @@ class SnapshotStore:
         size = target.stat().st_size
         if size <= 0 or size > GENERATION_RECEIPT_BYTE_CAPACITY:
             raise SnapshotIntegrityError("generation receipt has invalid size")
-        raw = target.read_bytes()
+        with target.open("rb") as handle:
+            raw = handle.read(GENERATION_RECEIPT_BYTE_CAPACITY + 1)
         SnapshotStore._require_safe_path(self, target, allow_missing_leaf=False)
-        if len(raw) != size:
+        if len(raw) > GENERATION_RECEIPT_BYTE_CAPACITY or len(raw) != size:
             raise SnapshotIntegrityError("generation receipt changed during read")
         return raw
 
@@ -742,7 +744,19 @@ class SnapshotStore:
                 committed_bytes += size
                 relative = path.relative_to(self.root).as_posix()
                 parts = PurePosixPath(relative).parts
-                if relative.endswith(".bin") and (
+                if relative.startswith("generation/deepseek/raw/"):
+                    if (
+                        len(parts) != 6
+                        or parts[:4] != ("generation", "deepseek", "raw", "sha256")
+                        or re.fullmatch(r"[0-9a-f]{2}", parts[4]) is None
+                        or re.fullmatch(r"[0-9a-f]{64}\.bin", parts[5]) is None
+                        or parts[4] != parts[5][:2]
+                        or not 0 < size <= 131_072
+                    ):
+                        raise SnapshotContainmentError("DeepSeek generation raw path is invalid")
+                    self._verify_file(path, parts[5][:-4], size)
+                    raw_bytes += size
+                elif relative.endswith(".bin") and (
                     (relative.startswith("pubmed/sha256/") and len(parts) == 4)
                     or (
                         (

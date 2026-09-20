@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,11 +33,16 @@ from medevidence.connectors.pubmed import (
 )
 from medevidence.connectors.pubmed.policy import PubMedConnectorConfig
 from medevidence.domain import (
+    CADEC_EXTERNAL_MANIFEST_SHA256,
+    CADEC_RECOVERY_MANIFEST_BYTES,
+    CADEC_RECOVERY_MANIFEST_SHA256,
     CoverageStatus,
     FaersAggregateRequestV1,
     FaersAggregateResult,
     M1BResearchReportV1,
     M1BResearchRequestV1,
+    M1BSourcePlanEntryV1,
+    PlanningStatus,
     PublicationRecord,
     ResearchReport,
     ResearchScope,
@@ -46,7 +52,23 @@ from medevidence.domain import (
     sha256_digest,
 )
 from medevidence.domain.identifiers import AcquisitionIntentId, LongText
+from medevidence.domain.sources import SourcePlanReasonCode
 from medevidence.infrastructure.cadec_local_search import CanonicalCadecEvidenceCollection
+from medevidence.infrastructure.cadec_material_runtime import CadecMaterialRuntime
+from medevidence.infrastructure.dailymed_v2_provenance import DailyMedV2ProvenanceStore
+from medevidence.infrastructure.dailymed_v2_record_store import DailyMedV2RecordStore
+from medevidence.infrastructure.dailymed_v2_source_execution import DailyMedV2SourceExecutionBridge
+from medevidence.infrastructure.evidence_provenance import VerifiedEvidenceProvenanceStore
+from medevidence.infrastructure.local_research_catalog import LocalResearchCatalogAdapter
+from medevidence.infrastructure.local_source_policy import LocalSourceQueryPolicy
+from medevidence.infrastructure.local_source_runtime import (
+    LocalDailyMedV2Capability,
+    LocalSourceEvidenceCollection,
+    VerifiedSourceMaterialReader,
+)
+from medevidence.infrastructure.m1b_evidence_provenance import VerifiedM1BEvidenceProvenanceStore
+from medevidence.infrastructure.m1b_source_execution import FaersSourceExecutionBridge
+from medevidence.infrastructure.pubmed_material_store import SnapshotPubMedMaterialStore
 from medevidence.ingestion import (
     AcquisitionIntent,
     AcquisitionRegistrationEnvelope,
@@ -72,13 +94,18 @@ from medevidence.ingestion.snapshots import (
     SnapshotStore,
     SourceReplayKind,
 )
+from medevidence.orchestration.contracts import SourceTaskAttemptRef, SourceTaskState
 from medevidence.orchestration.dailymed_faers_capability import (
     CanonicalDailyMedProjectionAuthority,
     CanonicalFaersProjectionAuthority,
     DailyMedPersistedProvenancePort,
     FaersPersistedProvenancePort,
 )
-from medevidence.orchestration.source_capabilities import SourceCapabilities
+from medevidence.orchestration.ports import EvidenceCollectionPort
+from medevidence.orchestration.source_capabilities import (
+    CanonicalSourcePlanningAuthority,
+    SourceCapabilities,
+)
 from medevidence.persistence import (
     AcquisitionRegistration,
     ArtifactLineageRow,
@@ -103,6 +130,8 @@ from medevidence.persistence import (
     ValidatedManifest,
     ValidatedManifestFile,
 )
+from medevidence.persistence.dailymed_v2 import DailyMedV2Repository
+from medevidence.persistence.research_jobs import ResearchJobRepository
 from medevidence.tools import (
     PubMedResearchService,
     ResearchPubMedRequest,
@@ -135,6 +164,7 @@ from medevidence.tools.ports import (
     ResponseObservation,
     RunFinalization,
 )
+from medevidence.tools.pubmed_local import LocalResearchPubMedRequest, PubMedBoundsPolicy
 
 _EVIDENCE_HEADERS = frozenset(
     {
@@ -777,6 +807,7 @@ def create_source_evidence_collection(
     faers_persistence: FaersPersistencePort | None = None,
     cadec_archive_path: Path | None = None,
     cadec_manifest_path: Path | None = None,
+    pubmed_bounds_policy: PubMedBoundsPolicy = PubMedBoundsPolicy.EXACT_SCOPE,
 ) -> CanonicalCadecEvidenceCollection | SourceCapabilities:
     """Construct only the exact requested source authorities without source I/O."""
 
@@ -784,6 +815,13 @@ def create_source_evidence_collection(
         source_request.model_dump(mode="python"), strict=True
     )
     selected = frozenset(source_request.scope.selected_sources)
+    if type(pubmed_bounds_policy) is not PubMedBoundsPolicy:
+        raise TypeError("PubMed composition requires an admitted bounds policy")
+    if (
+        SourceType.PUBMED not in selected
+        and pubmed_bounds_policy is not PubMedBoundsPolicy.EXACT_SCOPE
+    ):
+        raise TypeError("PubMed bounds policy is extraneous to the request")
     if frozenset(source_request.requested_sources) != selected:
         raise ValueError("requested sources must equal the exact selected source scope")
 
@@ -854,6 +892,7 @@ def create_source_evidence_collection(
                 repository=persistence_repository,
             ),
             runtime=_RuntimeAdapter(attempt_id_factory, utc_now),
+            bounds_policy=pubmed_bounds_policy,
         )
 
     dailymed: CanonicalDailyMedProjectionAuthority | None = None
@@ -905,8 +944,258 @@ def create_source_evidence_collection(
     return CanonicalCadecEvidenceCollection(
         archive_path=cadec_archive_path,
         manifest_path=cadec_manifest_path,
+        manifest_sha256=_cadec_manifest_profile(cadec_manifest_path),
         delegate=delegate,
     )
+
+
+def _cadec_manifest_profile(path: Path) -> str:
+    """Select only the byte-pinned recovery profile; all other inputs fail in admission."""
+
+    try:
+        if path.stat().st_size != CADEC_RECOVERY_MANIFEST_BYTES:
+            return CADEC_EXTERNAL_MANIFEST_SHA256
+        with path.open("rb") as stream:
+            payload = stream.read(CADEC_RECOVERY_MANIFEST_BYTES + 1)
+    except OSError:
+        return CADEC_EXTERNAL_MANIFEST_SHA256
+    if (
+        len(payload) == CADEC_RECOVERY_MANIFEST_BYTES
+        and hashlib.sha256(payload).hexdigest() == CADEC_RECOVERY_MANIFEST_SHA256
+    ):
+        return CADEC_RECOVERY_MANIFEST_SHA256
+    return CADEC_EXTERNAL_MANIFEST_SHA256
+
+
+@dataclass(frozen=True, slots=True)
+class LocalSourceRuntimeBundle:
+    """Run-scoped source authorities and the one owned PubMed connector."""
+
+    evidence_collection: EvidenceCollectionPort
+    planning: CanonicalSourcePlanningAuthority
+    material_reader: VerifiedSourceMaterialReader
+    provenance_store: VerifiedEvidenceProvenanceStore
+    pubmed_connector: PubMedConnector | None
+
+    def close(self) -> None:
+        if self.pubmed_connector is not None:
+            self.pubmed_connector.close()
+
+
+def build_local_source_runtime(
+    *,
+    run_id: str,
+    scope: ResearchScope,
+    run_created_at_utc: datetime,
+    code_revision: str,
+    snapshots: SnapshotStore,
+    repository: PersistenceRepository,
+    jobs: ResearchJobRepository,
+    transport_factory: Callable[[], httpx.BaseTransport],
+    attempt_id_factory: Callable[[], str],
+    utc_now: Callable[[], datetime],
+    cadec_archive_path: Path | None = None,
+    cadec_manifest_path: Path | None = None,
+) -> LocalSourceRuntimeBundle:
+    """Bind one local run to bounded source execution without making source requests."""
+
+    if type(scope) is not ResearchScope or type(snapshots) is not SnapshotStore:
+        raise TypeError("local source composition requires exact scope and snapshot authority")
+    if type(repository) is not PersistenceRepository:
+        raise TypeError("local source composition requires exact persistence authority")
+    if type(jobs) is not ResearchJobRepository:
+        raise TypeError("local source composition requires exact job authority")
+    if (cadec_archive_path is None) != (cadec_manifest_path is None):
+        raise ValueError("CADEC archive and manifest paths must be configured together")
+    policy = LocalSourceQueryPolicy(scope=scope, run_created_at_utc=run_created_at_utc)
+    request_id = run_id.replace("run:", "request:", 1)
+    source_request = policy.build_request(request_id)
+    cadec_ready = (
+        SourceType.CADEC in scope.selected_sources
+        and cadec_archive_path is not None
+        and cadec_manifest_path is not None
+        and cadec_archive_path.is_absolute()
+        and cadec_manifest_path.is_absolute()
+        and cadec_archive_path.is_file()
+        and cadec_manifest_path.is_file()
+    )
+    plan = tuple(
+        M1BSourcePlanEntryV1(
+            source=source,
+            planning_status=(
+                PlanningStatus.SKIPPED_BY_POLICY
+                if source is SourceType.CADEC and not cadec_ready
+                else PlanningStatus.SELECTED
+            ),
+            reason_code=(
+                SourcePlanReasonCode.SOURCE_EXECUTION_NOT_AUTHORIZED
+                if source is SourceType.CADEC and not cadec_ready
+                else None
+            ),
+            reason=(
+                "local_cadec_asset_unavailable: approved archive and manifest are not both "
+                "configured as readable local files."
+                if source is SourceType.CADEC and not cadec_ready
+                else None
+            ),
+        )
+        for source in scope.selected_sources
+    )
+    planning = CanonicalSourcePlanningAuthority(scope, plan)
+
+    m1b_provenance = VerifiedM1BEvidenceProvenanceStore(snapshots=snapshots, repository=repository)
+    daily_records = DailyMedV2RecordStore(
+        snapshots=snapshots, repository=DailyMedV2Repository(repository)
+    )
+    daily_provenance = DailyMedV2ProvenanceStore(
+        snapshots=snapshots, repository=repository, records=daily_records
+    )
+    provenance = VerifiedEvidenceProvenanceStore(
+        snapshots=snapshots,
+        repository=repository,
+        m1b=m1b_provenance,
+        dailymed_v2=daily_provenance,
+    )
+    pubmed_connector: PubMedConnector | None = None
+    pubmed_request: LocalResearchPubMedRequest | None = None
+    pubmed_catalog: LocalResearchCatalogAdapter | None = None
+    pubmed_material: SnapshotPubMedMaterialStore | None = None
+    pubmed_service: PubMedResearchService | None = None
+    resolved_catalog: ResolvedConceptCatalog | None = None
+    if SourceType.PUBMED in scope.selected_sources:
+        pubmed_connector = PubMedConnector(
+            transport_factory(), PubMedConnectorConfig.m1a_constrained_v1(), utc_now=utc_now
+        )
+        pubmed_catalog = LocalResearchCatalogAdapter(scope, today=lambda: run_created_at_utc.date())
+        resolved_catalog = pubmed_catalog.resolve(scope.scope_id)
+        pubmed_request = LocalResearchPubMedRequest(
+            request_id=request_id,
+            run_id=run_id,
+            created_at_utc=run_created_at_utc,
+            code_revision=code_revision,
+            scope=scope,
+        )
+        pubmed_material = SnapshotPubMedMaterialStore(
+            snapshots=snapshots, repository=repository, provenance=provenance, local_jobs=jobs
+        )
+        pubmed_service = PubMedResearchService(
+            catalog=pubmed_catalog,
+            execution=_ExecutionAdapter(pubmed_connector, utc_now),
+            acquisitions=_AcquisitionAdapter(
+                store=snapshots, repository=repository, code_revision=code_revision
+            ),
+            runs=_RunAdapter(store=snapshots, repository=repository),
+            runtime=_RuntimeAdapter(attempt_id_factory, utc_now),
+            bounds_policy=PubMedBoundsPolicy.LOCAL_PUBLIC_V1,
+        )
+    base = SourceCapabilities(
+        pubmed_request=pubmed_request,
+        pubmed_service=pubmed_service,
+        pubmed_material=pubmed_material,
+        pubmed_catalog=resolved_catalog,
+    )
+    cadec_runtime: CadecMaterialRuntime | None = None
+    base_collection: EvidenceCollectionPort = base
+    if cadec_ready:
+        assert cadec_archive_path is not None and cadec_manifest_path is not None
+        cadec_runtime = CadecMaterialRuntime(
+            delegate=CanonicalCadecEvidenceCollection(
+                archive_path=cadec_archive_path,
+                manifest_path=cadec_manifest_path,
+                manifest_sha256=_cadec_manifest_profile(cadec_manifest_path),
+                delegate=base,
+            ),
+            snapshots=snapshots,
+            archive_path=cadec_archive_path,
+            manifest_path=cadec_manifest_path,
+            manifest_sha256=_cadec_manifest_profile(cadec_manifest_path),
+            utc_now=utc_now,
+        )
+        base_collection = cadec_runtime
+        provenance = VerifiedEvidenceProvenanceStore(
+            snapshots=snapshots,
+            repository=repository,
+            m1b=m1b_provenance,
+            dailymed_v2=daily_provenance,
+            cadec=cadec_runtime,
+        )
+
+    def faers_bridge(
+        task: SourceTaskState, attempt: SourceTaskAttemptRef
+    ) -> FaersSourceExecutionBridge:
+        return FaersSourceExecutionBridge(
+            run_id=run_id,
+            scope=scope,
+            request=source_request,
+            task_id=task.task_id,
+            attempt_id=attempt.attempt_id,
+            clock=utc_now,
+            code_revision=code_revision,
+            transport_factory=transport_factory,
+            store=snapshots,
+            repository=repository,
+        )
+
+    def faers_capability(
+        task: SourceTaskState, attempt: SourceTaskAttemptRef
+    ) -> SourceCapabilities:
+        bridge = faers_bridge(task, attempt)
+        return SourceCapabilities(
+            faers_projection=CanonicalFaersProjectionAuthority(
+                request=source_request,
+                run_id=run_id,
+                provenance=bridge,
+                replay_store=_FaersReplayAdapter(snapshots),
+            ),
+            faers_execution=bridge,
+            faers_persistence=bridge,
+        )
+
+    def daily_bridge(
+        task: SourceTaskState, attempt: SourceTaskAttemptRef
+    ) -> DailyMedV2SourceExecutionBridge:
+        return DailyMedV2SourceExecutionBridge(
+            run_id=run_id,
+            scope=scope,
+            request=source_request,
+            task_id=task.task_id,
+            attempt_id=attempt.attempt_id,
+            clock=utc_now,
+            code_revision=code_revision,
+            native_requests=policy,
+            transport_factory=transport_factory,
+            snapshots=snapshots,
+            repository=repository,
+        )
+
+    daily = (
+        LocalDailyMedV2Capability(
+            run_id=run_id,
+            request=source_request,
+            records=daily_records,
+            bridge_factory=daily_bridge,
+        )
+        if SourceType.DAILYMED in scope.selected_sources
+        else None
+    )
+    collection = LocalSourceEvidenceCollection(
+        base=base_collection,
+        snapshots=snapshots,
+        dailymed_v2=daily,
+        faers_factory=faers_capability if SourceType.FAERS in scope.selected_sources else None,
+    )
+    reader = VerifiedSourceMaterialReader(
+        repository=repository,
+        provenance=provenance,
+        m1b_provenance=m1b_provenance,
+        dailymed_v2_provenance=daily_provenance,
+        dailymed_v2_records=daily_records,
+        pubmed_material=pubmed_material,
+        pubmed_catalog=resolved_catalog,
+        faers_bridge_factory=faers_bridge if SourceType.FAERS in scope.selected_sources else None,
+        cadec_material_reader=cadec_runtime.read_material if cadec_runtime is not None else None,
+    )
+    return LocalSourceRuntimeBundle(collection, planning, reader, provenance, pubmed_connector)
 
 
 def create_api_dependencies(

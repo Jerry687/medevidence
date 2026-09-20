@@ -87,6 +87,9 @@ from medevidence.orchestration.source_task_projection import (
     source_operation_observation,
 )
 from medevidence.tools.report_validation import (
+    M3_SEMANTIC_EVALUATION_V2,
+    M3_STAGE2_SEMANTIC_PROVIDER_METHOD_V2,
+    M3_VALIDATION_CONFIGURATION_V2,
     AcquisitionInput,
     CanonicalReportRequest,
     CitationInput,
@@ -101,6 +104,7 @@ from medevidence.tools.report_validation import (
     EvidenceReferenceInput,
     ExecutionBoundsInput,
     InferenceUse,
+    PlannedStage2SemanticInputV2,
     QualitativeCode,
     ScopeInput,
     SemanticEvaluationInput,
@@ -116,8 +120,15 @@ from medevidence.tools.report_validation import (
     canonical_evidence_id,
     canonical_report_content_hash,
     canonical_semantic_input_digest,
+    canonical_stage1_receipt_payload_v2,
     canonical_validation_receipt_payload,
+    stage1_receipt_from_payload_v2,
     validation_receipt_from_payload,
+)
+from medevidence.tools.semantic_evaluation import (
+    SemanticEvaluationCandidateV2,
+    SemanticRationaleCode,
+    build_semantic_evaluation_result_v2,
 )
 
 RUN_ID = "run:12345678-1234-4234-9234-123456789abc"
@@ -925,6 +936,7 @@ class FakeSynthesis:
         self.events = events
         self.registry = registry
         self.prior_hashes: list[str | None] = []
+        self.source_plans: list[tuple[M1BSourcePlanEntryV1, ...]] = []
         self.attempted_permission_override = True
 
     def synthesize(
@@ -933,11 +945,13 @@ class FakeSynthesis:
         run_id: str,
         report_id: str,
         scope: ResearchScope,
+        source_plan: tuple[M1BSourcePlanEntryV1, ...],
         source_tasks: tuple[SourceTaskState, ...],
         prior_report_content_hash: str | None,
     ) -> SynthesisState:
         self.events.append("synthesize_claims")
         self.prior_hashes.append(prior_report_content_hash)
+        self.source_plans.append(source_plan)
         assert all(task.status is SourceTaskStatus.TERMINAL for task in source_tasks)
         claims = tuple(
             ClaimReference(claim_id=item.claim_id)
@@ -1560,6 +1574,7 @@ def test_skipped_plan_rows_remain_visible_without_task_or_outcome() -> None:
     )
     assert pending_review.report_status is ReportStatus.PENDING_REVIEW
     assert pending_review.pending_draft is not None
+    assert harness.synthesis.source_plans == [planned.source_plan]
     approved = harness.workflow.request_export_approval(pending_review)
     exported = harness.workflow.finalize_and_export(approved)
 
@@ -3549,6 +3564,92 @@ def test_terminal_disposition_fields_and_decisions_are_revalidated() -> None:
     assert rejected_harness.export.calls == 0
 
 
+def test_v2_planned_workflow_persists_stage1_before_provider_and_replays_without_provider() -> None:
+    harness = Harness()
+    expectation = harness.registry.semantic_expectations[0]
+    harness.registry = replace(
+        harness.registry,
+        semantic_expectations=(
+            PlannedStage2SemanticInputV2(
+                expectation.citation_id,
+                expectation.input_digest,
+                M3_STAGE2_SEMANTIC_PROVIDER_METHOD_V2,
+                M3_SEMANTIC_EVALUATION_V2,
+            ),
+        ),
+        evaluator_identity=EvaluatorIdentityInput(
+            M3_STAGE2_SEMANTIC_PROVIDER_METHOD_V2, M3_SEMANTIC_EVALUATION_V2
+        ),
+        configuration_version=M3_VALIDATION_CONFIGURATION_V2,
+    )
+    harness.synthesis.registry = harness.registry
+
+    class Stage1Store:
+        def __init__(self) -> None:
+            self.saved: dict[str, dict[str, object]] = {}
+
+        def save_stage1_receipt(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+            receipt = stage1_receipt_from_payload_v2(dict(payload))
+            canonical = canonical_stage1_receipt_payload_v2(receipt)
+            self.saved[receipt.receipt_id] = canonical
+            harness.events.append("stage1_receipt:save")
+            return canonical
+
+        def load_stage1_receipt(self, receipt_id: str) -> Mapping[str, object] | None:
+            harness.events.append("stage1_receipt:load")
+            return self.saved.get(receipt_id)
+
+    class V2Provider:
+        def __init__(self) -> None:
+            self.requests: list[object] = []
+
+        def evaluate_v2(self, value: object) -> object:
+            harness.events.append("semantic_v2:evaluate")
+            self.requests.append(value)
+            return build_semantic_evaluation_result_v2(
+                value,
+                SemanticEvaluationCandidateV2(
+                    result=SemanticSupport.SUPPORTED,
+                    rationale_codes=(SemanticRationaleCode.DIRECT_SUPPORT,),
+                    explanation="The admitted bounded evidence directly supports this citation.",
+                ),
+            )
+
+    stage1_store, provider = Stage1Store(), V2Provider()
+    workflow = ControlledOrchestrationWorkflow(
+        scope_safety=harness.scope_safety,
+        source_planning=harness.planner,
+        evidence_collection=harness.collector,
+        synthesis=harness.synthesis,
+        validation_registry=harness.registry,
+        semantic_result_provider=harness.semantic,
+        semantic_result_provider_v2=provider,
+        validation_receipt_store=harness.receipts,
+        stage1_receipt_store=stage1_store,
+        draft_persistence=harness.persistence,
+        export_approval=harness.approval,
+        export=harness.export,
+    )
+    state = _run_until_node(workflow, _initial(), WorkflowNode.SAVE_PENDING_DRAFT)
+    assert state.validation.passed
+    assert state.stage1_receipt_ref is not None
+    assert len(provider.requests) == 1
+    assert harness.events.index("stage1_receipt:save") < harness.events.index(
+        "semantic_v2:evaluate"
+    )
+    with pytest.raises(WorkflowTransitionError, match="Stage-1 receipt reference is missing"):
+        workflow.save_pending_draft(state.model_copy(update={"stage1_receipt_ref": None}))
+    stage1_id = state.stage1_receipt_ref.receipt_id
+    original_stage1 = stage1_store.saved[stage1_id]
+    stage1_store.saved[stage1_id] = {**original_stage1, "stage1_passed": False}
+    with pytest.raises(WorkflowTransitionError):
+        workflow.save_pending_draft(state)
+    stage1_store.saved[stage1_id] = original_stage1
+    completed = _run_until_terminal(workflow, state)
+    assert completed.disposition is WorkflowDisposition.EXPORTED
+    assert len(provider.requests) == 1
+
+
 def test_closed_application_composition_ast_and_runtime_inventory() -> None:
     harness = Harness()
     assert not hasattr(harness.workflow, "__dict__")
@@ -3563,6 +3664,11 @@ def test_closed_application_composition_ast_and_runtime_inventory() -> None:
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     methods = {item.name: item for item in ast.walk(tree) if isinstance(item, ast.FunctionDef)}
+    projection_source = path.with_name("validation_projection.py").read_text(encoding="utf-8")
+    projection_tree = ast.parse(projection_source)
+    projection_methods = {
+        item.name: item for item in ast.walk(projection_tree) if isinstance(item, ast.FunctionDef)
+    }
 
     def attribute_call_lines(method: str, attribute: str) -> list[int]:
         return [
@@ -3636,7 +3742,23 @@ def test_closed_application_composition_ast_and_runtime_inventory() -> None:
         terminal_lines = class_call_lines(method, "_replay_terminal_tasks")
         assert len(plan_lines) == len(terminal_lines) == 1
         assert plan_lines[0] < terminal_lines[0]
-    assert len(named_call_lines("_build_validation_request", "source_plan_identity")) == 1
+    assert (
+        len(
+            [
+                item
+                for item in ast.walk(projection_methods["build_validation_request_projection"])
+                if isinstance(item, ast.Call)
+                and isinstance(item.func, ast.Name)
+                and item.func.id == "source_plan_identity"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(named_call_lines("_build_validation_request", "build_validation_request_projection"))
+        == 1
+    )
+    assert len(named_call_lines("_build_validation_request", "project_stored_validation")) == 1
 
     calls = [
         item
@@ -3645,14 +3767,14 @@ def test_closed_application_composition_ast_and_runtime_inventory() -> None:
         and isinstance(item.func, ast.Name)
         and item.func.id == "canonical_validate_report"
     ]
-    assert len(calls) == 2
+    assert len(calls) == 5
     modes = {
         keyword.value.attr
         for call in calls
         for keyword in call.keywords
         if keyword.arg == "mode" and isinstance(keyword.value, ast.Attribute)
     }
-    assert modes == {"ASSESS", "VERIFY_BINDING"}
+    assert modes == {"PREPARE_STAGE1", "ASSESS", "VERIFY_BINDING"}
     assert attribute_call_lines("validate_report", "_persist_validation_receipt")
     receipt_save_lines = attribute_call_lines("_persist_validation_receipt", "save_receipt")
     receipt_load_lines = attribute_call_lines("_persist_validation_receipt", "load_receipt")
@@ -3685,17 +3807,17 @@ def test_closed_application_composition_ast_and_runtime_inventory() -> None:
         "validation_receipt_from_payload",
     )
     verify_receipt_lines = named_call_lines("_verify_binding", "verify_validation_receipt")
-    assert len(verify_load_lines) == len(verify_reconstruction_lines) == 1
-    assert len(verify_request_lines) == 1
-    assert len(verify_canonical_lines) == 1
+    assert len(verify_load_lines) == len(verify_reconstruction_lines) == 2
+    assert len(verify_request_lines) == 2
+    assert len(verify_canonical_lines) == 2
     assert len(verify_pending_lines) == 1
     assert len(verify_receipt_lines) == 1
     assert (
-        verify_request_lines[0]
-        < verify_canonical_lines[0]
+        min(verify_request_lines)
+        < max(verify_canonical_lines)
         < verify_pending_lines[0]
-        < verify_load_lines[0]
-        < verify_reconstruction_lines[0]
+        < max(verify_load_lines)
+        < max(verify_reconstruction_lines)
         < verify_receipt_lines[0]
     )
 

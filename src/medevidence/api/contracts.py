@@ -19,8 +19,17 @@ from medevidence.domain import (
     ResultBounds,
     SourceType,
 )
+from medevidence.domain.reports import ResearchReport as DomainResearchReport
 
 from .errors import ApiErrorCode
+
+
+class ResearchReport(DomainResearchReport):
+    """Structured research-assistance draft without review or export state."""
+
+    # The legacy API keeps its original response schema as domain catalogs evolve.
+    catalog_version: Literal["m1a-concepts-v1"] = "m1a-concepts-v1"
+
 
 MAX_REQUEST_BYTES: Final = 65_536
 DRUG_CONCEPT_IDS: Final = frozenset(

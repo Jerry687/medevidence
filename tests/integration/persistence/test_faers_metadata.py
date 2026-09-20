@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -22,6 +22,7 @@ from medevidence.domain import (
     ResultStatus,
     SourceOutcome,
     SourceType,
+    sha256_digest,
 )
 from medevidence.persistence import (
     DATABASE_URL_ENV,
@@ -280,6 +281,53 @@ def test_faers_snapshot_membership_rejects_duplicate_retry_artifact() -> None:
             repository.insert_or_verify_m1b(
                 "m1b_snapshot_artifacts",
                 duplicate_retry,
+            )
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b'{"error":{"code":"NOT_FOUND","message":"No matches found!"}}',
+        b'{"results":[{"term":"NAUSEA","count":7}]}',
+    ),
+    ids=("recognized-404", "successful-200"),
+)
+def test_content_addressed_faers_raw_reuses_first_persisted_time_across_runs(
+    raw: bytes,
+) -> None:
+    repository = _repository()
+    artifact_id = sha256_digest(raw)
+    digest = artifact_id.removeprefix("sha256:")
+    first_values = {
+        "artifact_id": artifact_id,
+        "artifact_kind": "faers_http_response",
+        "source_partition": "faers",
+        "content_hash": artifact_id,
+        "byte_size": len(raw),
+        "media_type": "application/json",
+        "relative_storage_label": f"faers/raw/sha256/{digest[:2]}/{digest}.bin",
+        "schema_version": "m1b.faers.raw-response.v1",
+        "created_at_utc": NOW,
+        "corpus_id": None,
+        "corpus_version": None,
+        "split": None,
+    }
+    try:
+        first = repository.insert_or_verify_m1b_artifact(first_values)
+        second = repository.insert_or_verify_m1b_artifact(
+            {**first_values, "created_at_utc": NOW + timedelta(days=1)}
+        )
+        assert second == first
+        assert second["created_at_utc"] == first["created_at_utc"]
+        with pytest.raises(PersistenceConflict):
+            repository.insert_or_verify_m1b_artifact(
+                {
+                    **first_values,
+                    "created_at_utc": NOW + timedelta(days=2),
+                    "byte_size": len(raw) + 1,
+                }
             )
     finally:
         repository.close()

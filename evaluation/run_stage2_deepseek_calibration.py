@@ -7,6 +7,7 @@ import hashlib
 import math
 import os
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -34,22 +35,22 @@ from evaluation.stage2_deepseek_calibration import (
 )
 from medevidence.infrastructure.deepseek_responses_transport import (
     DeepSeekOneOperationObservation,
-    DeepSeekTransportErrorCode,
 )
 from medevidence.infrastructure.deepseek_semantic_evaluator import (
-    DeepSeekResponsesSemanticEvaluator,
+    DEEPSEEK_SEMANTIC_V2_PROVIDER_CONFIGURATION_HASH,
+    DeepSeekResponsesSemanticEvaluatorV2,
     DeepSeekSemanticEvaluatorError,
-    deepseek_provider_request_bytes,
-    finalize_deepseek_one_operation,
+    build_deepseek_v2_framing_observation,
+    deepseek_provider_request_semantic_v2_bytes,
+    derive_deepseek_v2_disposition,
+    finalize_deepseek_one_operation_semantic_v2,
 )
 from medevidence.persistence import (
     PersistenceSettings,
     ProviderAttemptLedgerRepository,
     make_provider_attempt_event,
 )
-from medevidence.tools.semantic_evaluation import (
-    DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
-)
+from medevidence.tools.provider_attempt_framing import Observation, build_unavailable_observation
 
 _KEY_NAME: Final = "DEEPSEEK_API_KEY"
 _TOTAL_DEADLINE_SECONDS: Final = 45.0
@@ -83,7 +84,7 @@ def _retry_delay_seconds(
     base = min(base, _RETRY_AFTER_CAP_SECONDS)
     jitter_seed = hashlib.sha256(f"{request_hash}:{attempt_ordinal}".encode("ascii")).digest()
     jitter = int.from_bytes(jitter_seed[:2], "big") / 65535 * 0.01
-    return min(_RETRY_AFTER_CAP_SECONDS, base + jitter)
+    return float(min(_RETRY_AFTER_CAP_SECONDS, base + jitter))
 
 
 def _attempt_disposition(one: object, error: Exception | None, *, stage: str) -> str:
@@ -91,33 +92,30 @@ def _attempt_disposition(one: object, error: Exception | None, *, stage: str) ->
         return "evidence_persistence_failure"
     if type(one) is not DeepSeekOneOperationObservation:
         return "transport_unavailable"
-    if one.credential_echo:
-        return "credential_echo"
-    if one.transport_error is DeepSeekTransportErrorCode.DEADLINE_EXCEEDED:
-        return "deadline_exceeded"
-    if one.transport_error is DeepSeekTransportErrorCode.RESPONSE_TOO_LARGE:
-        return "response_too_large"
-    if one.transport_error is not None or one.http_status is None:
-        return "transport_unavailable"
-    if one.http_status in {429, 500, 502, 503, 504}:
-        return "retryable_status"
-    if one.http_status in {401, 403}:
-        return "authentication_failed"
-    if one.http_status != 200:
-        return "provider_rejected"
+    disposition = derive_deepseek_v2_disposition(one)
+    if (
+        error is not None
+        and type(error) is not DeepSeekSemanticEvaluatorError
+        and stage == "validation"
+        and one.http_status is not None
+    ):
+        return "validation_internal_failure"
+    if disposition != "success":
+        return disposition
     if type(error) is DeepSeekSemanticEvaluatorError:
+        if error.code.value == "candidate_invalid":
+            return "candidate_invalid"
         if error.code.value in {
             "response_incomplete",
             "response_refused",
             "response_tool_output",
             "response_model_mismatch",
-            "candidate_invalid",
         }:
             return "response_invalid"
         return error.code.value
     if error is not None:
         return "transport_unavailable"
-    return "success"
+    return disposition
 
 
 def run_live_calibration(
@@ -130,6 +128,7 @@ def run_live_calibration(
     implementation_manifest_hash: str,
     transport: httpx.BaseTransport | None = None,
     ledger: ProviderAttemptLedgerRepository | None = None,
+    monotonic_clock: Callable[[], float] | None = None,
 ) -> dict[str, object]:
     """Run exactly 36 cases only after frozen input and explicit-live gates pass."""
 
@@ -141,9 +140,16 @@ def run_live_calibration(
         implementation_manifest_hash=implementation_manifest_hash,
     )
     durable_run_id = provider_attempt_run_id(configuration)
+    clock = monotonic_clock if monotonic_clock is not None else time.monotonic
+    first_case_deadline_monotonic = clock() + _TOTAL_DEADLINE_SECONDS
     owns_ledger = ledger is None
     attempt_ledger = ledger or ProviderAttemptLedgerRepository(PersistenceSettings.from_env())
-    lease = attempt_ledger.acquire_run_lease(durable_run_id)
+    try:
+        lease = attempt_ledger.acquire_run_lease(durable_run_id)
+    except Exception:
+        if owns_ledger:
+            attempt_ledger.close()
+        raise
     try:
         recovered = attempt_ledger.reconcile_orphan_starts(
             durable_run_id, recovered_at_utc=datetime.now(UTC)
@@ -251,7 +257,7 @@ def run_live_calibration(
     owns_transport = transport is None
     provider_transport = transport if transport is not None else httpx.HTTPTransport(retries=0)
     try:
-        evaluator = DeepSeekResponsesSemanticEvaluator(
+        evaluator = DeepSeekResponsesSemanticEvaluatorV2(
             api_key=api_key,
             transport=provider_transport,
         )
@@ -270,18 +276,17 @@ def run_live_calibration(
     observations: list[CalibrationObservation] = []
     current_case = None
     try:
-        for case in cases:
+        for case_index, case in enumerate(cases):
             current_case = case
             assessment = None
-            request_bytes = deepseek_provider_request_bytes(case.request)
+            case_deadline_monotonic = (
+                first_case_deadline_monotonic
+                if case_index == 0
+                else clock() + _TOTAL_DEADLINE_SECONDS
+            )
+            request_bytes = deepseek_provider_request_semantic_v2_bytes(case.request)
             request_hash = "sha256:" + hashlib.sha256(request_bytes).hexdigest()
-            case_started_monotonic = time.monotonic()
             for attempt_ordinal in range(1, 4):
-                remaining = _TOTAL_DEADLINE_SECONDS - (time.monotonic() - case_started_monotonic)
-                if remaining <= 0:
-                    raise DeepSeekCalibrationError(
-                        "provider retry deadline exhausted before next START"
-                    )
                 started = datetime.now(UTC)
                 start_event = make_provider_attempt_event(
                     provider_run_id=durable_run_id,
@@ -289,21 +294,45 @@ def run_live_calibration(
                     case_ordinal=case.ordinal,
                     attempt_ordinal=attempt_ordinal,
                     event_kind="START",
-                    configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+                    configuration_hash=DEEPSEEK_SEMANTIC_V2_PROVIDER_CONFIGURATION_HASH,
                     request_hash=request_hash,
                     started_at_utc=started,
+                    schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
                 )
                 attempt_ledger.append(start_event)
+                remaining = case_deadline_monotonic - clock()
+                if remaining <= 0:
+                    attempt_ledger.append(
+                        make_provider_attempt_event(
+                            provider_run_id=durable_run_id,
+                            case_id=case.case_id,
+                            case_ordinal=case.ordinal,
+                            attempt_ordinal=attempt_ordinal,
+                            event_kind="TERMINAL",
+                            start_event=start_event,
+                            configuration_hash=(DEEPSEEK_SEMANTIC_V2_PROVIDER_CONFIGURATION_HASH),
+                            request_hash=request_hash,
+                            started_at_utc=started,
+                            completed_at_utc=datetime.now(UTC),
+                            disposition="deadline_exceeded",
+                            error_code="deadline_exceeded",
+                            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+                        )
+                    )
+                    raise DeepSeekCalibrationError(
+                        "provider retry deadline exhausted after durable START"
+                    )
                 one = None
                 binding = None
                 candidate = None
                 caught = None
                 stage = "transport"
                 try:
-                    one = DeepSeekResponsesSemanticEvaluator.observe(
+                    one = DeepSeekResponsesSemanticEvaluatorV2.observe(
                         evaluator,
                         case.request,
-                        total_deadline_seconds=remaining,
+                        absolute_deadline_monotonic=case_deadline_monotonic,
+                        monotonic_clock=clock,
                     )
                     stage = "raw_persistence"
                     binding = persist_safe_raw_body(
@@ -314,10 +343,31 @@ def run_live_calibration(
                         provider_run_id=durable_run_id,
                     )
                     stage = "validation"
-                    candidate = finalize_deepseek_one_operation(case.request, one)
+                    candidate = finalize_deepseek_one_operation_semantic_v2(
+                        case.request,
+                        one,
+                        raw_body_hash=(binding.content_hash if binding is not None else None),
+                        raw_relative_path=(binding.relative_path if binding is not None else None),
+                    )
                 except Exception as error:
                     caught = error
                 disposition = _attempt_disposition(one, caught, stage=stage)
+                framing_observation: Observation | None = None
+                if one is not None and one.http_status is not None:
+                    if disposition in {"credential_echo", "evidence_persistence_failure"}:
+                        framing_observation = build_unavailable_observation(
+                            disposition=disposition,
+                            http_status=one.http_status,
+                        )
+                    else:
+                        framing_observation = build_deepseek_v2_framing_observation(
+                            one,
+                            disposition=disposition,
+                            raw_body_hash=(binding.content_hash if binding is not None else None),
+                            raw_relative_path=(
+                                binding.relative_path if binding is not None else None
+                            ),
+                        )
                 terminal = make_provider_attempt_event(
                     provider_run_id=durable_run_id,
                     case_id=case.case_id,
@@ -325,7 +375,7 @@ def run_live_calibration(
                     attempt_ordinal=attempt_ordinal,
                     event_kind="TERMINAL",
                     start_event=start_event,
-                    configuration_hash=DEEPSEEK_SEMANTIC_EVALUATION_CONFIGURATION_HASH,
+                    configuration_hash=DEEPSEEK_SEMANTIC_V2_PROVIDER_CONFIGURATION_HASH,
                     request_hash=request_hash,
                     started_at_utc=started,
                     completed_at_utc=(
@@ -334,25 +384,9 @@ def run_live_calibration(
                     http_status=one.http_status if one is not None else None,
                     disposition=disposition,
                     error_code=None if disposition == "success" else disposition,
-                    credential_echo=(one.credential_echo if one is not None else False),
-                    body_complete=(
-                        None
-                        if disposition == "evidence_persistence_failure"
-                        else True
-                        if binding is not None
-                        else one.body_complete
-                        if one is not None
-                        else None
-                    ),
-                    body_byte_count=(binding.byte_count if binding else None),
-                    body_hash=(binding.content_hash if binding else None),
-                    body_relative_path=(binding.relative_path if binding else None),
-                    observed_body_bytes_lower_bound=(
-                        one.observed_body_bytes_lower_bound if one is not None else None
-                    ),
-                    approved_header_names=(
-                        tuple(sorted(one.approved_headers)) if one is not None else ()
-                    ),
+                    credential_echo=disposition == "credential_echo",
+                    schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+                    framing_observation=framing_observation,
                 )
                 attempt_ledger.append(terminal)
                 if disposition == "success":
@@ -370,7 +404,7 @@ def run_live_calibration(
                         one.retry_after if one is not None else None,
                         now_utc=datetime.now(UTC),
                     )
-                    if time.monotonic() - case_started_monotonic + delay >= _TOTAL_DEADLINE_SECONDS:
+                    if clock() + delay >= case_deadline_monotonic:
                         raise DeepSeekCalibrationError(
                             "provider retry deadline exhausted after terminal"
                         )

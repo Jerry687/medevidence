@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, final
 
 from pydantic import ValidationError
@@ -9,27 +10,30 @@ from pydantic import ValidationError
 from medevidence.domain import PlanningStatus, ResearchScope, canonical_json, sha256_digest
 from medevidence.domain.identifiers import derive_identity
 from medevidence.tools.report_validation import (
-    AcquisitionInput,
-    ArtifactReferenceInput,
+    M3_VALIDATION_CONFIGURATION_V3,
     CanonicalReportRequest,
-    CitationReferenceInput,
-    ClaimReferenceInput,
-    EvidenceReferenceInput,
-    ExecutionBoundsInput,
+    PlannedStage2SemanticInputV2,
     ReportValidationAudit,
-    ScopeInput,
+    SemanticEvaluationPortV2,
     SemanticResultProvider,
-    SourceOutcomeInput,
-    StoredValidationInput,
-    SynthesisInput,
-    TerminalTaskInput,
+    Stage1ReceiptV2,
     ValidationMode,
+    ValidationReceiptV2,
     ValidationRegistryInput,
+    _copy_registry,
+    _is_v2_family_configuration,
+    _primitive,
+    _require_v3_semantic_port_identity,
+    _require_v4_semantic_port_identity,
+    canonical_stage1_receipt_payload_v2,
     canonical_validate_report,
     canonical_validation_receipt_payload,
+    stage1_receipt_from_payload_v2,
+    stage2_projections_from_receipt_v2,
     validation_receipt_from_payload,
     verify_validation_receipt,
 )
+from medevidence.tools.report_validation_v3 import M3_VALIDATION_CONFIGURATION_V4
 
 from .contracts import (
     WORKFLOW_TOPOLOGY,
@@ -42,18 +46,24 @@ from .contracts import (
     ReportValidationState,
     ReviewDecision,
     ReviewRecord,
+    RuntimeContext,
     SafetyOutcome,
     ScopeSafetyEvaluation,
     SourceTaskFailureRef,
     SourceTaskProgressResult,
     SourceTaskState,
     SourceTaskStatus,
+    Stage1ReceiptRef,
     SynthesisState,
     ValidationReceiptRef,
+    ValidationRegistryRef,
     WorkflowDisposition,
     WorkflowNode,
+    export_idempotency_key,
+    pending_draft_identity,
     source_task_attempt,
     source_task_id,
+    validate_terminal_operation_binding,
 )
 from .ports import (
     DraftPersistencePort,
@@ -61,8 +71,10 @@ from .ports import (
     ExportApprovalPort,
     ExportPort,
     ScopeSafetyPort,
+    Stage1ReceiptStorePort,
     SynthesisPort,
     ValidationReceiptStorePort,
+    ValidationRegistryProviderPort,
 )
 from .source_capabilities import (
     CanonicalSourcePlanningAuthority,
@@ -72,12 +84,16 @@ from .source_capabilities import (
     planned_running_source_task,
     replay_source_plan,
     replay_terminal_tasks,
-    source_plan_identity,
     source_task_after_failure,
     source_task_after_progress,
     terminal_source_task,
     verify_running_source_plan,
     with_source_task,
+)
+from .validation_projection import (
+    ValidationProjectionError,
+    build_validation_request_projection,
+    project_stored_validation,
 )
 
 __class__: type[ControlledOrchestrationWorkflow]
@@ -103,7 +119,7 @@ class ControlledOrchestrationWorkflow:
     """Coordinate injected capabilities without owning their business logic."""
 
     # fmt: off
-    __slots__ = ("_draft_persistence", "_evidence_collection", "_export", "_export_approval", "_scope_safety", "_semantic_result_provider", "_source_planning", "_synthesis", "_validation_receipt_store", "_validation_registry")  # noqa: E501
+    __slots__ = ("_draft_persistence", "_evidence_collection", "_export", "_export_approval", "_runtime_context", "_scope_safety", "_semantic_result_provider", "_semantic_result_provider_v2", "_source_planning", "_stage1_receipt_store", "_synthesis", "_validation_receipt_store", "_validation_registry", "_validation_registry_provider")  # noqa: E501
     def __init_subclass__(cls, **kwargs: Any) -> None: raise TypeError("controlled workflow is final")  # noqa: E501
     def __setattr__(self, name: str, value: object) -> None:
         if hasattr(self, name): raise AttributeError("controlled workflow authority is immutable after construction")  # noqa: E501, E701
@@ -117,19 +133,43 @@ class ControlledOrchestrationWorkflow:
         source_planning: CanonicalSourcePlanningAuthority,
         evidence_collection: EvidenceCollectionPort,
         synthesis: SynthesisPort,
-        validation_registry: ValidationRegistryInput,
+        validation_registry: ValidationRegistryInput | None = None,
         semantic_result_provider: SemanticResultProvider,
         validation_receipt_store: ValidationReceiptStorePort,
         draft_persistence: DraftPersistencePort,
         export_approval: ExportApprovalPort,
         export: ExportPort,
+        semantic_result_provider_v2: SemanticEvaluationPortV2 | None = None,
+        stage1_receipt_store: Stage1ReceiptStorePort | None = None,
+        runtime_context: RuntimeContext | None = None,
+        validation_registry_provider: ValidationRegistryProviderPort | None = None,
     ) -> None:
+        fixed = validation_registry is not None
+        dynamic = runtime_context is not None or validation_registry_provider is not None
+        if fixed == dynamic or (
+            dynamic and (runtime_context is None or validation_registry_provider is None)
+        ):
+            raise WorkflowTransitionError(
+                "exactly one fixed or dynamic registry authority is required"
+            )
+        if fixed and type(validation_registry) is not ValidationRegistryInput:
+            raise WorkflowTransitionError("fixed validation registry must use its exact type")
+        if runtime_context is not None:
+            if type(runtime_context) is not RuntimeContext:
+                raise WorkflowTransitionError("runtime context must use its exact type")
+            runtime_context = RuntimeContext.model_validate(
+                runtime_context.model_dump(mode="python"), strict=True
+            )
         self._scope_safety = scope_safety
         self._source_planning = exact_source_planning_authority(source_planning)
         self._evidence_collection = evidence_collection
         self._synthesis = synthesis
         self._validation_registry = validation_registry
+        self._runtime_context = runtime_context
+        self._validation_registry_provider = validation_registry_provider
         self._semantic_result_provider = semantic_result_provider
+        self._semantic_result_provider_v2 = semantic_result_provider_v2
+        self._stage1_receipt_store = stage1_receipt_store
         self._validation_receipt_store = validation_receipt_store
         self._draft_persistence = draft_persistence
         self._export_approval = export_approval
@@ -320,10 +360,12 @@ class ControlledOrchestrationWorkflow:
             run_id=state.run_id,
             report_id=state.report_id,
             scope=scope,
+            source_plan=state.source_plan,
             source_tasks=state.source_tasks,
             prior_report_content_hash=state.edit_base_content_hash,
         )
         synthesis = SynthesisState.model_validate(raw.model_dump(mode="python"))
+        __class__._registry_for(self, state, synthesis)
         if (
             state.edit_base_content_hash is not None
             and synthesis.report_content_hash == state.edit_base_content_hash
@@ -336,6 +378,7 @@ class ControlledOrchestrationWorkflow:
             synthesis=synthesis,
             validation=ReportValidationState(),
             validation_receipt_ref=None,
+            stage1_receipt_ref=None,
             report_status=ReportStatus.DRAFT,
             pending_draft=None,
             active_approval=None,
@@ -348,15 +391,48 @@ class ControlledOrchestrationWorkflow:
         state = __class__.validate_terminal_sources(self, state)
         __class__._require_node(state, WorkflowNode.VALIDATE_REPORT)
         request = __class__._build_validation_request(self, state, include_stored=False)
-        try:
-            audit = canonical_validate_report(
-                request,
-                mode=ValidationMode.ASSESS,
-                semantic_result_provider=self._semantic_result_provider,
+        is_v2_planned = (
+            _is_v2_family_configuration(request.registry.configuration_version)
+            and bool(request.registry.semantic_expectations)
+            and all(
+                type(item) is PlannedStage2SemanticInputV2
+                for item in request.registry.semantic_expectations
             )
+        )
+        if (
+            _is_v2_family_configuration(request.registry.configuration_version)
+            and request.synthesis.citations
+            and not is_v2_planned
+        ):
+            raise WorkflowTransitionError("V2 assessment requires an unlabelled citation plan")
+        stage1_ref: Stage1ReceiptRef | None = None
+        try:
+            if request.registry.configuration_version == M3_VALIDATION_CONFIGURATION_V3:
+                _require_v3_semantic_port_identity(self._semantic_result_provider_v2)
+            elif request.registry.configuration_version == M3_VALIDATION_CONFIGURATION_V4:
+                _require_v4_semantic_port_identity(self._semantic_result_provider_v2)
+            if is_v2_planned:
+                preflight = canonical_validate_report(request, mode=ValidationMode.PREPARE_STAGE1)
+                stage1_receipt = preflight.stage1_receipt
+                if stage1_receipt is not None:
+                    stage1_ref = __class__._persist_stage1_receipt(self, stage1_receipt)
+                audit = canonical_validate_report(
+                    request,
+                    mode=ValidationMode.ASSESS,
+                    semantic_result_provider_v2=self._semantic_result_provider_v2,
+                    stage1_receipt=stage1_receipt,
+                )
+            else:
+                audit = canonical_validate_report(
+                    request,
+                    mode=ValidationMode.ASSESS,
+                    semantic_result_provider=self._semantic_result_provider,
+                )
         except Exception as error:
             raise WorkflowTransitionError("canonical report validation failed") from error
-        receipt_ref = __class__._persist_validation_receipt(self, request, audit)
+        receipt_ref = __class__._persist_validation_receipt(
+            self, audit.resolved_request or request, audit
+        )
         summary = audit.summary
         validation = ReportValidationState(
             structural_citation_gate=(
@@ -381,6 +457,7 @@ class ControlledOrchestrationWorkflow:
                 next_node=None,
                 validation=validation,
                 validation_receipt_ref=receipt_ref,
+                stage1_receipt_ref=stage1_ref,
                 disposition=WorkflowDisposition.VALIDATION_BLOCKED,
             )
         return __class__._complete(
@@ -390,6 +467,7 @@ class ControlledOrchestrationWorkflow:
             next_node=WorkflowNode.SAVE_PENDING_DRAFT,
             validation=validation,
             validation_receipt_ref=receipt_ref,
+            stage1_receipt_ref=stage1_ref,
         )
 
     def save_pending_draft(self, state: OrchestrationState) -> OrchestrationState:
@@ -522,14 +600,8 @@ class ControlledOrchestrationWorkflow:
             or approval.decision is not ReviewDecision.APPROVE
         ):
             raise WorkflowTransitionError("formal export requires an active approval")
-        idempotency_key = sha256_digest(
-            canonical_json(
-                {
-                    "report_id": state.report_id,
-                    "report_content_hash": synthesis.report_content_hash,
-                    "destination": state.destination,
-                }
-            )
+        idempotency_key = export_idempotency_key(
+            state.report_id, synthesis.report_content_hash, state.destination
         )
         raw = self._export.finalize(
             report_id=state.report_id,
@@ -557,6 +629,67 @@ class ControlledOrchestrationWorkflow:
             disposition=WorkflowDisposition.EXPORTED,
         )
 
+    def _registry_for(
+        self, state: OrchestrationState, synthesis: SynthesisState
+    ) -> ValidationRegistryInput:
+        fixed = self._validation_registry
+        if fixed is not None:
+            if synthesis.validation_registry_ref is not None:
+                raise WorkflowTransitionError("fixed registry cannot accept a dynamic reference")
+            return fixed
+        context = self._runtime_context
+        provider = self._validation_registry_provider
+        reference = synthesis.validation_registry_ref
+        if context is None or provider is None or type(reference) is not ValidationRegistryRef:
+            raise WorkflowTransitionError("dynamic validation registry reference is missing")
+        if (
+            (context.run_id, context.report_id, context.scope_id)
+            != (state.run_id, state.report_id, state.original_scope.scope_id)
+            or (
+                state.interpreted_scope is not None
+                and state.interpreted_scope.scope_id != context.scope_id
+            )
+            or (
+                reference.run_id,
+                reference.report_id,
+                reference.scope_id,
+                reference.report_content_hash,
+            )
+            != (
+                context.run_id,
+                context.report_id,
+                context.scope_id,
+                synthesis.report_content_hash,
+            )
+        ):
+            raise WorkflowTransitionError("dynamic registry context differs from the job")
+        try:
+            copied_reference = ValidationRegistryRef.model_validate(
+                reference.model_dump(mode="python"), strict=True
+            )
+            raw = provider.load_registry(copied_reference)
+            if type(raw) is not ValidationRegistryInput:
+                raise WorkflowTransitionError("dynamic registry provider returned a foreign type")
+            copied = _copy_registry(raw)
+        except WorkflowTransitionError:
+            raise
+        except Exception as error:
+            raise WorkflowTransitionError("dynamic registry readback failed") from error
+        if (
+            copied != raw
+            or copied.run_id != context.run_id
+            or copied.scope_id != context.scope_id
+            or not _is_v2_family_configuration(copied.configuration_version)
+            or any(
+                type(item) is not PlannedStage2SemanticInputV2
+                for item in copied.semantic_expectations
+            )
+            or sha256_digest(canonical_json(_primitive(copied)))
+            != copied_reference.registry_content_hash
+        ):
+            raise WorkflowTransitionError("dynamic registry payload differs from the job")
+        return copied
+
     def _build_validation_request(
         self,
         state: OrchestrationState,
@@ -565,130 +698,40 @@ class ControlledOrchestrationWorkflow:
     ) -> CanonicalReportRequest:
         scope = __class__._require_interpreted_scope(state)
         synthesis = __class__._require_synthesis(state)
-        scope_input = ScopeInput(
-            scope_id=scope.scope_id,
-            drugs=tuple((item.concept_id, item.preferred_term) for item in scope.drugs),
-            adverse_reactions=tuple(
-                (item.concept_id, item.preferred_term) for item in scope.adverse_reactions
-            ),
-            date_range=(
-                None
-                if scope.date_range is None
-                else (
-                    scope.date_range.start_date.isoformat(),
-                    scope.date_range.end_date.isoformat(),
-                )
-            ),
-            selected_sources=scope.selected_sources,
-            comparison_intent=scope.comparison_intent,
-            max_query_characters=scope.query_bounds.max_query_characters,
-            max_pages=scope.query_bounds.max_pages,
-            max_total_seconds=scope.query_bounds.max_total_seconds,
-            max_records=scope.result_bounds.max_records,
-            max_payload_bytes=scope.result_bounds.max_payload_bytes,
-        )
-        selected_task_sources = tuple(
-            row.source
-            for row in state.source_plan
-            if row.planning_status is PlanningStatus.SELECTED
-        )
-        task_inputs: list[TerminalTaskInput] = []
-        for task in state.source_tasks:
-            terminal = task.terminal_outcome_ref
-            if terminal is None:
-                raise WorkflowTransitionError("canonical validation requires terminal tasks")
-            acquisition = terminal.acquisition
-            outcome = terminal.outcome
-            bounds = outcome.configured_bounds
-            task_inputs.append(
-                TerminalTaskInput(
-                    task_id=task.task_id,
-                    source=task.source,
-                    terminal=task.status is SourceTaskStatus.TERMINAL,
-                    acquisition=AcquisitionInput(
-                        run_id=acquisition.run_id,
-                        source=acquisition.source,
-                        acquisition_id=acquisition.acquisition_id,
-                        acquisition_intent_id=acquisition.acquisition_intent_id,
-                        acquisition_ordinal=acquisition.acquisition_ordinal,
-                        operation=acquisition.operation,
-                        query_id=outcome.query_id,
-                        source_outcome_id=terminal.terminal_outcome_id,
-                        snapshot_id=acquisition.snapshot_id,
-                    ),
-                    outcome=SourceOutcomeInput(
-                        source=outcome.source,
-                        query_id=outcome.query_id,
-                        execution_status=outcome.execution_status,
-                        coverage_status=outcome.coverage_status,
-                        result_status=outcome.result_status,
-                        configured_bounds=ExecutionBoundsInput(
-                            max_query_characters=bounds.max_query_characters,
-                            max_pages=bounds.max_pages,
-                            max_records=bounds.max_records,
-                            max_payload_bytes=bounds.max_payload_bytes,
-                            max_total_seconds=bounds.max_total_seconds,
-                        ),
-                        valid_result_count=outcome.valid_result_count,
-                        pages_completed=outcome.pages_completed,
-                        truncated=outcome.truncated,
-                        warning_codes=outcome.warning_codes,
-                        failure_id=outcome.failure_id,
-                    ),
-                    evidence_refs=tuple(
-                        EvidenceReferenceInput(
-                            evidence_id=item.evidence_id,
-                            source=item.source,
-                            snapshot_id=item.snapshot_id,
-                            content_hash=item.content_hash,
-                            locator_ref=item.locator_ref,
-                        )
-                        for item in task.evidence_refs
-                    ),
-                )
+        try:
+            stored = project_stored_validation(state.validation) if include_stored else None
+            return build_validation_request_projection(
+                run_id=state.run_id,
+                report_id=state.report_id,
+                scope=scope,
+                source_plan=state.source_plan,
+                source_tasks=state.source_tasks,
+                synthesis=synthesis,
+                registry=__class__._registry_for(self, state, synthesis),
+                stored_validation=stored,
             )
-        synthesis_input = SynthesisInput(
-            report_content_hash=synthesis.report_content_hash,
-            claims=tuple(ClaimReferenceInput(item.claim_id) for item in synthesis.claims),
-            citations=tuple(
-                CitationReferenceInput(item.citation_id, item.claim_id, item.evidence_id)
-                for item in synthesis.citations
-            ),
-            comparison_refs=tuple(
-                ArtifactReferenceInput(item.comparability_id, item.artifact_hash)
-                for item in synthesis.comparability_refs
-            ),
-            conflict_refs=tuple(
-                ArtifactReferenceInput(item.conflict_id, item.artifact_hash)
-                for item in synthesis.conflict_refs
-            ),
-            warning_codes=synthesis.warning_codes,
-        )
-        stored = None
-        if include_stored:
-            statuses = (
-                state.validation.structural_citation_gate,
-                state.validation.semantic_support_gate,
-                state.validation.safety_policy_gate,
-            )
-            if GateStatus.NOT_RUN in statuses:
-                raise WorkflowTransitionError("stored validation is not terminal")
-            stored = StoredValidationInput(
-                structural_passed=statuses[0] is GateStatus.PASSED,
-                semantic_passed=statuses[1] is GateStatus.PASSED,
-                safety_passed=statuses[2] is GateStatus.PASSED,
-                reason_codes=state.validation.reason_codes,
-            )
-        return CanonicalReportRequest(
-            run_id=state.run_id,
-            report_id=state.report_id,
-            scope=scope_input,
-            source_plan_id=source_plan_identity(state.source_plan),
-            selected_task_sources=selected_task_sources,
-            tasks=tuple(task_inputs),
-            synthesis=synthesis_input,
-            registry=self._validation_registry,
-            stored_validation=stored,
+        except ValidationProjectionError as error:
+            raise WorkflowTransitionError(str(error)) from error
+
+    def _persist_stage1_receipt(self, receipt: Stage1ReceiptV2) -> Stage1ReceiptRef:
+        store = self._stage1_receipt_store
+        if store is None:
+            raise WorkflowTransitionError("V2 Stage-1 receipt store is unavailable")
+        try:
+            payload = canonical_stage1_receipt_payload_v2(receipt)
+            saved = stage1_receipt_from_payload_v2(dict(store.save_stage1_receipt(payload)))
+            loaded_payload = store.load_stage1_receipt(receipt.receipt_id)
+            if loaded_payload is None:
+                raise WorkflowTransitionError("V2 Stage-1 receipt readback is unavailable")
+            loaded = stage1_receipt_from_payload_v2(dict(loaded_payload))
+        except WorkflowTransitionError:
+            raise
+        except Exception as error:
+            raise WorkflowTransitionError("V2 Stage-1 receipt persistence failed") from error
+        if saved != receipt or loaded != receipt:
+            raise WorkflowTransitionError("V2 Stage-1 receipt persistence returned drift")
+        return Stage1ReceiptRef(
+            receipt_id=receipt.receipt_id, receipt_content_hash=receipt.receipt_content_hash
         )
 
     def _persist_validation_receipt(
@@ -727,6 +770,66 @@ class ControlledOrchestrationWorkflow:
         require_pass: bool,
     ) -> None:
         request = __class__._build_validation_request(self, state, include_stored=True)
+        if _is_v2_family_configuration(request.registry.configuration_version):
+            receipt_ref = state.validation_receipt_ref
+            if receipt_ref is None:
+                raise WorkflowTransitionError("V2 validation receipt reference is missing")
+            try:
+                raw_receipt = self._validation_receipt_store.load_receipt(receipt_ref.receipt_id)
+                if raw_receipt is None:
+                    raise WorkflowTransitionError("V2 validation receipt is unavailable")
+                parsed_receipt = validation_receipt_from_payload(raw_receipt)
+                if type(parsed_receipt) is not ValidationReceiptV2 or (
+                    parsed_receipt.receipt_id,
+                    parsed_receipt.receipt_content_hash,
+                ) != (receipt_ref.receipt_id, receipt_ref.receipt_content_hash):
+                    raise WorkflowTransitionError("V2 validation receipt reference drift")
+                projections = stage2_projections_from_receipt_v2(parsed_receipt)
+                if projections:
+                    request = replace(
+                        request,
+                        registry=replace(request.registry, semantic_expectations=projections),
+                    )
+                if (
+                    projections
+                    and any(
+                        type(item) is PlannedStage2SemanticInputV2
+                        for item in __class__._registry_for(
+                            self, state, __class__._require_synthesis(state)
+                        ).semantic_expectations
+                    )
+                    and state.stage1_receipt_ref is None
+                ):
+                    raise WorkflowTransitionError("V2 Stage-1 receipt reference is missing")
+                if state.stage1_receipt_ref is not None:
+                    planned_request = __class__._build_validation_request(
+                        self, state, include_stored=False
+                    )
+                    preflight = canonical_validate_report(
+                        planned_request, mode=ValidationMode.PREPARE_STAGE1
+                    )
+                    expected_stage1 = preflight.stage1_receipt
+                    stage1_store = self._stage1_receipt_store
+                    if expected_stage1 is None or stage1_store is None:
+                        raise WorkflowTransitionError("V2 Stage-1 receipt authority is unavailable")
+                    raw_stage1 = stage1_store.load_stage1_receipt(
+                        state.stage1_receipt_ref.receipt_id
+                    )
+                    if raw_stage1 is None:
+                        raise WorkflowTransitionError("V2 Stage-1 receipt is unavailable")
+                    stored_stage1 = stage1_receipt_from_payload_v2(dict(raw_stage1))
+                    if stored_stage1 != expected_stage1 or (
+                        stored_stage1.receipt_id,
+                        stored_stage1.receipt_content_hash,
+                    ) != (
+                        state.stage1_receipt_ref.receipt_id,
+                        state.stage1_receipt_ref.receipt_content_hash,
+                    ):
+                        raise WorkflowTransitionError("V2 Stage-1 receipt binding drift")
+            except WorkflowTransitionError:
+                raise
+            except Exception as error:
+                raise WorkflowTransitionError("V2 saved authority reconstruction failed") from error
         try:
             audit = canonical_validate_report(request, mode=ValidationMode.VERIFY_BINDING)
         except Exception as error:
@@ -870,6 +973,10 @@ class ControlledOrchestrationWorkflow:
                 continue
             acquisition = terminal.acquisition
             outcome = terminal.outcome
+            try:
+                validate_terminal_operation_binding(terminal, task.operation_results)
+            except ValueError as error:
+                raise WorkflowTransitionError("terminal child acquisitions are invalid") from error
             if (
                 acquisition.run_id != state.run_id
                 or acquisition.source is not task.source
@@ -887,7 +994,12 @@ class ControlledOrchestrationWorkflow:
                     evidence.evidence_id in evidence_ids
                     or authority in evidence_authorities
                     or evidence.source is not task.source
-                    or evidence.snapshot_id != acquisition.snapshot_id
+                    or sum(
+                        observation.evidence_reference == evidence
+                        for result in task.operation_results
+                        for observation in result.observations
+                    )
+                    != 1
                 ):
                     raise WorkflowTransitionError("cross-task evidence authority is invalid")
                 evidence_ids.add(evidence.evidence_id)
@@ -927,16 +1039,10 @@ class ControlledOrchestrationWorkflow:
         if state.export_record is not None:
             synthesis = state.synthesis
             approval = state.active_approval
-            expected_key = sha256_digest(
-                canonical_json(
-                    {
-                        "report_id": state.report_id,
-                        "report_content_hash": (
-                            "" if synthesis is None else synthesis.report_content_hash
-                        ),
-                        "destination": state.destination,
-                    }
-                )
+            expected_key = export_idempotency_key(
+                state.report_id,
+                "" if synthesis is None else synthesis.report_content_hash,
+                state.destination,
             )
             if (
                 synthesis is None
@@ -1020,13 +1126,7 @@ class ControlledOrchestrationWorkflow:
 
     @staticmethod
     def _pending_draft_persistence_id(report_id: str, report_content_hash: str) -> str:
-        return derive_identity(
-            "pending-draft",
-            {
-                "report_id": report_id,
-                "report_content_hash": report_content_hash,
-            },
-        )
+        return pending_draft_identity(report_id, report_content_hash)
 
     def _complete(
         self,
@@ -1059,6 +1159,18 @@ class ControlledOrchestrationWorkflow:
             rebuilt = OrchestrationState.model_validate(
                 OrchestrationState.model_dump(state, mode="python")
             )
+            context = self._runtime_context
+            if context is not None and (
+                (rebuilt.run_id, rebuilt.report_id, rebuilt.original_scope.scope_id)
+                != (context.run_id, context.report_id, context.scope_id)
+                or (
+                    rebuilt.interpreted_scope is not None
+                    and rebuilt.interpreted_scope.scope_id != context.scope_id
+                )
+            ):
+                raise WorkflowTransitionError("runtime context differs from checkpoint")
+            if rebuilt.synthesis is not None:
+                __class__._registry_for(self, rebuilt, rebuilt.synthesis)
             __class__._validate_application_state(rebuilt)
             return rebuilt
         except (ValidationError, WorkflowTransitionError) as error:

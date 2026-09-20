@@ -17,6 +17,8 @@ param(
 
     [string]$OsvAcquisitionRecordPath,
 
+    [string]$InactiveWheelPath,
+
     [string]$LogicalBranch,
 
     [string]$ExpectedCommit
@@ -499,6 +501,17 @@ $reconciliationPath = Join-Path $resolvedOutput "package-reconciliation.json"
 $nativeInventoryPath = Join-Path $resolvedOutput "psycopg-binary-native-libraries.json"
 $manifestPath = Join-Path $resolvedOutput "evidence-manifest.json"
 $helperPath = Join-Path $resolvedOutput "dependency-evidence-helper.py"
+$inactiveWheelOutputPath = Join-Path $resolvedOutput "inactive-httpx2-jsfetch-1.0.whl"
+$resolvedInactiveWheelPath = $null
+if (-not $ReconcileOnly) {
+    if ([string]::IsNullOrWhiteSpace($InactiveWheelPath)) {
+        throw "Fresh dependency evidence requires -InactiveWheelPath for the exact locked JSFetch wheel."
+    }
+    $resolvedInactiveWheelPath = [System.IO.Path]::GetFullPath($InactiveWheelPath)
+    if (-not (Test-Path -LiteralPath $resolvedInactiveWheelPath -PathType Leaf)) {
+        throw "The exact inactive JSFetch wheel input is missing."
+    }
+}
 
 Push-Location $repositoryRoot
 try {
@@ -514,6 +527,7 @@ try {
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.metadata as metadata
 import json
 import pathlib
@@ -522,8 +536,14 @@ import re
 import sys
 import tomllib
 import urllib.parse
+import zipfile
+from collections import deque
 from datetime import datetime, timezone
+from email.parser import BytesParser
+from email.policy import default as email_policy
 from typing import Any
+
+from packaging.markers import InvalidMarker, Marker, default_environment
 
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 PIN_PATTERN = re.compile(
@@ -568,6 +588,15 @@ INACTIVE_TORCH_WHEEL_URL = (
 INACTIVE_TORCH_WHEEL_SHA256 = (
     "sha256:2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027"
 )
+INACTIVE_JSFETCH_WHEEL_URL = (
+    "https://files.pythonhosted.org/packages/9b/43/832f631d32e4f1211caa2ba368317739fe71f0b8530e4c9d15dc454bac2a/"
+    "httpx2_jsfetch-1.0-py3-none-any.whl"
+)
+INACTIVE_JSFETCH_WHEEL_SHA256 = (
+    "sha256:cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32"
+)
+INACTIVE_JSFETCH_WHEEL_BYTES = 6382
+INACTIVE_JSFETCH_METADATA_PATH = "httpx2_jsfetch-1.0.dist-info/METADATA"
 TORCH_LICENSE_EXPRESSION = (
     "Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND "
     "BSD-3-Clause AND BSL-1.0 AND MIT"
@@ -636,6 +665,8 @@ APPROVED_SPDX_LICENSE_IDS = {
     "ISC",
     "LGPL-3.0-only",
     "MIT",
+    "MIT-0",
+    "MIT-CMU",
     "MPL-2.0",
     "PSF-2.0",
     "Zlib",
@@ -673,6 +704,24 @@ SNIFFIO_1_3_1_LICENSE_EVIDENCE_SHA256 = {
     "LICENSE.MIT": "3e6dae555eb92787fc82d1d48355677f454c7f65aeb38d3f9e72bf9a3daf034b",
     "METADATA": "0b318b57098edeccf585e60a889a6b6a7b5c4086f3a9aa62eff76a1d3cee12d9",
     "RECORD": "e6c97953661def7ab6dac78f83c86f31e622bee38ff55ea508cb04e1a604d4ff",
+}
+EXACT_INSTALLED_LICENSE_FALLBACKS = {
+    ("protobuf", "7.36.1"): (
+        "protobuf-7.36.1.dist-info/LICENSE",
+        1732,
+        "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+        "947ed3f132e70411555388d7fcd36712fdd60c8db6345001fb23bb56a2c6cab7",
+        "3-Clause BSD License",
+        "BSD-3-Clause",
+    ),
+    ("pydeck", "0.9.3"): (
+        "pydeck-0.9.3.dist-info/licenses/LICENSE.txt",
+        621,
+        "fa22bc5599b857a628e0757d4a95024f4c392aa2a4321053d61f34ce505d6d90",
+        "c906606245b896f48f560a2175dc6ade991447f8e545dec8539678e1134eb71d",
+        "Apache License 2.0",
+        "Apache-2.0",
+    ),
 }
 
 
@@ -795,15 +844,153 @@ def validate_registry(name: Any, registry: Any) -> str:
     return expected
 
 
-def package_is_active_on_windows(record: dict[str, Any]) -> bool:
+def windows_marker_environment() -> dict[str, str]:
+    machine = platform.machine().casefold()
+    if (
+        sys.platform != "win32"
+        or sys.implementation.name != "cpython"
+        or sys.version_info[:3] != (3, 12, 13)
+        or machine not in {"amd64", "x86_64", "arm64", "aarch64"}
+    ):
+        fail("dependency reachability requires supported Windows CPython 3.12.13")
+    environment = default_environment()
+    if (
+        environment.get("sys_platform") != "win32"
+        or environment.get("python_full_version") != "3.12.13"
+        or environment.get("implementation_name") != "cpython"
+        or environment.get("platform_machine", "").casefold() != machine
+    ):
+        fail("Windows dependency marker environment differs from the verified host")
+    return environment
+
+
+def marker_applies(value: Any, environment: dict[str, str], extras: tuple[str, ...] = ()) -> bool:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        fail(f"malformed dependency marker: {value!r}")
+    try:
+        marker = Marker(value)
+        return any(
+            marker.evaluate({**environment, "extra": extra}) for extra in ("", *extras)
+        )
+    except (InvalidMarker, KeyError, ValueError) as error:
+        fail(f"invalid dependency marker {value!r}: {error}")
+
+
+def package_is_active_on_windows(record: dict[str, Any], environment: dict[str, str]) -> bool:
     markers = record.get("resolution-markers", [])
-    if markers == []:
+    if not isinstance(markers, list) or len(markers) > 32:
+        fail(f"unsupported package resolution markers: {markers!r}")
+    if not markers:
         return True
-    if markers == ["sys_platform != 'darwin'"]:
-        return True
-    if markers == ["sys_platform == 'darwin'"]:
-        return False
-    fail(f"unsupported package resolution markers: {markers!r}")
+    if any(not isinstance(marker, str) for marker in markers):
+        fail("package resolution marker is not a string")
+    if len(markers) != len(set(markers)):
+        fail("duplicate package resolution markers")
+    matches = [marker_applies(marker, environment) for marker in markers]
+    if sum(matches) > 1:
+        fail("ambiguous package resolution markers on Windows")
+    return any(matches)
+
+
+def lock_dependency_edges(record: dict[str, Any], *, root: bool) -> dict[str, list[dict[str, Any]]]:
+    dependencies = record.get("dependencies", [])
+    optional = record.get("optional-dependencies", {})
+    groups = record.get("dev-dependencies", {})
+    if not isinstance(dependencies, list) or not isinstance(optional, dict):
+        fail("uv.lock has malformed dependency edges")
+    if not isinstance(groups, dict) or (groups and not root):
+        fail("uv.lock has malformed dependency groups")
+    if root and set(groups) != {"dev", "retrieval"}:
+        fail("uv.lock root does not bind both audited dependency groups")
+    result = {"": dependencies}
+    for extra, edges in optional.items():
+        if not isinstance(extra, str) or not NAME_PATTERN.fullmatch(extra) or not isinstance(edges, list):
+            fail("uv.lock has malformed optional dependency edges")
+        result[extra] = edges
+    if root:
+        for group, edges in groups.items():
+            if not isinstance(edges, list):
+                fail("uv.lock has malformed dependency group edges")
+            result[f"group:{group}"] = edges
+    return result
+
+
+def windows_reachable_lock_identities(records: list[dict[str, Any]]) -> set[str]:
+    environment = windows_marker_environment()
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    roots: list[dict[str, Any]] = []
+    for record in records:
+        name = normalize_name(record.get("name"))
+        validate_version(record.get("version"))
+        package_is_active_on_windows(record, environment)
+        if is_local_source(name, record.get("source"), None):
+            if name != "medevidence":
+                fail("uv.lock has an unexpected local dependency")
+            roots.append(record)
+        else:
+            by_name.setdefault(name, []).append(record)
+    if len(roots) != 1 or package_is_active_on_windows(roots[0], environment) is not True:
+        fail("uv.lock has no unique active local project root")
+    edge_groups = {id(record): lock_dependency_edges(record, root=record is roots[0]) for record in records}
+    for groups in edge_groups.values():
+        for edges in groups.values():
+            for edge in edges:
+                if not isinstance(edge, dict) or not set(edge) <= {"name", "version", "source", "marker", "extra"}:
+                    fail("uv.lock has an unknown dependency edge shape")
+                name = normalize_name(edge.get("name"))
+                if name not in by_name:
+                    fail(f"uv.lock dependency edge has no locked package: {name}")
+                if "version" in edge:
+                    validate_version(edge["version"])
+                if "source" in edge:
+                    source = edge["source"]
+                    if not isinstance(source, dict) or set(source) != {"registry"}:
+                        fail("uv.lock dependency edge has an unknown source shape")
+                    validate_registry(name, source["registry"])
+                if "marker" in edge:
+                    marker_applies(edge["marker"], environment)
+                extras = edge.get("extra", [])
+                if not isinstance(extras, list) or any(
+                    not isinstance(extra, str) or not NAME_PATTERN.fullmatch(extra) for extra in extras
+                ) or len(set(extras)) != len(extras):
+                    fail("uv.lock dependency edge extras are malformed")
+    root = roots[0]
+    pending = deque([(root, ())])
+    visited: set[tuple[str, str, tuple[str, ...]]] = set()
+    reachable: set[str] = set()
+    while pending:
+        record, extras = pending.popleft()
+        name = normalize_name(record["name"])
+        version = validate_version(record["version"])
+        state = (name, version, extras)
+        if state in visited:
+            continue
+        visited.add(state)
+        if record is not root:
+            reachable.add(f"{name}=={version}")
+        groups = edge_groups[id(record)]
+        selected = [*groups[""]]
+        if record is root:
+            selected.extend(groups["group:dev"])
+            selected.extend(groups["group:retrieval"])
+        for extra in extras:
+            if extra not in groups:
+                fail(f"uv.lock references absent optional dependency group: {name}[{extra}]")
+            selected.extend(groups[extra])
+        for edge in selected:
+            if "marker" in edge and not marker_applies(edge["marker"], environment, extras):
+                continue
+            target_name = normalize_name(edge["name"])
+            candidates = [
+                target for target in by_name[target_name]
+                if ("version" not in edge or target["version"] == edge["version"])
+                and ("source" not in edge or target["source"] == edge["source"])
+                and package_is_active_on_windows(target, environment)
+            ]
+            if len(candidates) != 1:
+                fail(f"uv.lock has ambiguous or missing Windows dependency: {target_name}")
+            pending.append((candidates[0], tuple(sorted(edge.get("extra", [])))))
+    return reachable
 
 
 def assert_no_accelerator_closure(name: Any) -> None:
@@ -825,11 +1012,22 @@ def assert_exact_torch_lock(records: list[dict[str, Any]]) -> dict[str, str]:
         )
         for record in torch_records
     }
-    expected_identities = {
-        ("2.13.0", ("sys_platform == 'darwin'",)),
-        ("2.13.0+cpu", ("sys_platform != 'darwin'",)),
+    expected_cpu_markers = {
+        ("sys_platform != 'darwin'",),
+        (
+            "sys_platform == 'win32'",
+            "sys_platform == 'emscripten'",
+            "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+        ),
     }
-    if identities != expected_identities or len(torch_records) != 2:
+    if len(torch_records) != 2 or not any(
+        identities
+        == {
+            ("2.13.0", ("sys_platform == 'darwin'",)),
+            ("2.13.0+cpu", cpu_markers),
+        }
+        for cpu_markers in expected_cpu_markers
+    ):
         fail("uv.lock does not contain the exact approved CPU-only torch identities")
     machine = platform.machine().casefold()
     architecture = {"amd64": "amd64", "x86_64": "amd64", "arm64": "arm64", "aarch64": "arm64"}.get(machine)
@@ -865,6 +1063,24 @@ def assert_exact_torch_lock(records: list[dict[str, Any]]) -> dict[str, str]:
     }
 
 
+def assert_exact_jsfetch_lock(records: list[dict[str, Any]]) -> None:
+    matching = [record for record in records if normalize_name(record.get("name")) == "httpx2-jsfetch"]
+    if len(matching) != 1:
+        fail("inactive JSFetch must have one exact locked record")
+    wheels = matching[0].get("wheels")
+    if not isinstance(wheels, list) or any(not isinstance(wheel, dict) for wheel in wheels):
+        fail("inactive JSFetch wheel records are malformed")
+    if (
+        matching[0].get("version") != "1.0"
+        or matching[0].get("source") != {"registry": PYPI_REGISTRY}
+        or [
+            (wheel.get("url"), wheel.get("hash"), wheel.get("size"))
+            for wheel in wheels
+        ] != [(INACTIVE_JSFETCH_WHEEL_URL, INACTIVE_JSFETCH_WHEEL_SHA256, INACTIVE_JSFETCH_WHEEL_BYTES)]
+    ):
+        fail("inactive JSFetch wheel is not bound to the exact locked URL and hash")
+
+
 def package_sets_from_lock(path: pathlib.Path) -> tuple[PackageSet, PackageSet, PackageSet, dict[str, str]]:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -873,6 +1089,20 @@ def package_sets_from_lock(path: pathlib.Path) -> tuple[PackageSet, PackageSet, 
     records = data.get("package")
     if not isinstance(records, list) or not records:
         fail("uv.lock package records are missing or empty")
+    if any(not isinstance(record, dict) for record in records):
+        fail("uv.lock contains a malformed package record")
+    resolution_markers = data.get("resolution-markers")
+    if (
+        not isinstance(resolution_markers, list)
+        or not resolution_markers
+        or any(not isinstance(marker, str) for marker in resolution_markers)
+        or len(resolution_markers) != len(set(resolution_markers))
+    ):
+        fail("uv.lock has malformed top-level resolution markers")
+    environment = windows_marker_environment()
+    if sum(marker_applies(marker, environment) for marker in resolution_markers) != 1:
+        fail("uv.lock has ambiguous or absent Windows resolution")
+    reachable = windows_reachable_lock_identities(records)
     result = PackageSet("uv.lock")
     active = PackageSet("uv.lock Windows-active")
     inactive = PackageSet("uv.lock Windows-inactive")
@@ -891,13 +1121,14 @@ def package_sets_from_lock(path: pathlib.Path) -> tuple[PackageSet, PackageSet, 
         assert_no_accelerator_closure(name)
         external_records.append(record)
         result.add(name, version)
-        if package_is_active_on_windows(record):
+        if f"{normalize_name(name)}=={validate_version(version)}" in reachable:
             active.add(name, version)
         else:
             inactive.add(name, version)
     if result.count == 0:
         fail("uv.lock external package set is empty")
     torch_binding = assert_exact_torch_lock(external_records)
+    assert_exact_jsfetch_lock(external_records)
     if set(active.items) & set(inactive.items):
         fail("Windows-active and Windows-inactive package identities overlap")
     if set(active.items) | set(inactive.items) != set(result.items):
@@ -1255,28 +1486,58 @@ def packages_from_licenses(
         if reachability == "windows_active":
             if metadata_source != "installed_distribution" or wheel_url is not None or wheel_sha256 is not None:
                 fail("active license metadata must come only from the installed distribution")
-        elif (
-            metadata_source != "locked_registry_wheel"
-            or source_registry != PYTORCH_CPU_REGISTRY
-            or record["name"] != "torch"
-            or record["version"] != "2.13.0"
-            or wheel_url != INACTIVE_TORCH_WHEEL_URL
-            or wheel_sha256 != INACTIVE_TORCH_WHEEL_SHA256
-        ):
-            fail("inactive license metadata is not bound to the exact registry wheel")
+        elif metadata_source != "locked_registry_wheel":
+            fail("inactive license metadata must come from an exact registry wheel")
+        elif record["name"] == "torch" and record["version"] == "2.13.0":
+            if (
+                source_registry != PYTORCH_CPU_REGISTRY
+                or wheel_url != INACTIVE_TORCH_WHEEL_URL
+                or wheel_sha256 != INACTIVE_TORCH_WHEEL_SHA256
+            ):
+                fail("inactive torch license differs from the exact registry wheel")
+        elif record["name"] == "httpx2-jsfetch" and record["version"] == "1.0":
+            if (
+                source_registry != PYPI_REGISTRY
+                or wheel_url != INACTIVE_JSFETCH_WHEEL_URL
+                or wheel_sha256 != INACTIVE_JSFETCH_WHEEL_SHA256
+            ):
+                fail("inactive JSFetch license differs from the exact registry wheel")
+            expected_expression, expected_classifiers = locked_jsfetch_license_metadata(
+                path.with_name("inactive-httpx2-jsfetch-1.0.whl")
+            )
+            if (
+                record["license_expression"] != expected_expression
+                or tuple(record["license_classifiers"]) != expected_classifiers
+            ):
+                fail("inactive JSFetch license differs from preserved wheel metadata")
+        else:
+            fail("inactive license metadata is not bound to an approved registry wheel")
         review_status = record["review_status"]
         if not isinstance(review_status, str) or review_status != "declared":
             if isinstance(review_status, str) and review_status == "needs_review":
                 review_counts["needs_review"] += 1
             fail("license review_status must equal exactly 'declared'")
-        license_expression, classifiers = resolve_license_metadata(
-            record["license_expression"],
-            None,
-            record["license_classifiers"],
-            normalize_name(record["name"]),
-            record["version"],
-            record["license_evidence_sha256"],
-        )
+        package_key = (normalize_name(record["name"]), record["version"])
+        if package_key in EXACT_INSTALLED_LICENSE_FALLBACKS:
+            expected_expression, expected_evidence = exact_installed_license_fallback(
+                metadata.distribution(package_key[0]), *package_key
+            )
+            if (
+                record["license_expression"] != expected_expression
+                or record["license_classifiers"] != []
+                or record["license_evidence_sha256"] != expected_evidence
+            ):
+                fail("exact installed license fallback differs from preserved bytes")
+            license_expression, classifiers = expected_expression, ()
+        else:
+            license_expression, classifiers = resolve_license_metadata(
+                record["license_expression"],
+                None,
+                record["license_classifiers"],
+                package_key[0],
+                package_key[1],
+                record["license_evidence_sha256"],
+            )
         if license_expression is None and not classifiers:
             review_counts["missing_metadata"] += 1
             fail("license record has no valid declaration source")
@@ -1585,9 +1846,12 @@ def exact_pins(path: pathlib.Path) -> dict[str, list[str]]:
         "httpx==0.28.1",
         "langgraph==1.2.11",
         "langgraph-checkpoint-postgres==3.1.2",
+        "mcp==2.2.0",
         "psycopg[binary]==3.3.4",
         "pydantic==2.13.4",
         "SQLAlchemy==2.0.51",
+        "streamlit==1.63.0",
+        "uvicorn==0.52.4",
     ]
     if production != approved_production:
         fail("production direct pins differ from the exact Owner-approved set")
@@ -1628,7 +1892,117 @@ def compare(reference: PackageSet, representation: PackageSet) -> None:
         )
 
 
-def create_license_inventory(lock_path: pathlib.Path) -> dict[str, Any]:
+def locked_jsfetch_license_metadata(wheel_path: pathlib.Path) -> tuple[str | None, tuple[str, ...]]:
+    if not wheel_path.is_file() or wheel_path.is_symlink():
+        fail("exact inactive JSFetch wheel is missing or link-backed")
+    if wheel_path.stat().st_size != INACTIVE_JSFETCH_WHEEL_BYTES:
+        fail("inactive JSFetch wheel byte count differs from lock")
+    raw = wheel_path.read_bytes()
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != INACTIVE_JSFETCH_WHEEL_SHA256:
+        fail("inactive JSFetch wheel hash differs from lock")
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            members = archive.infolist()
+            if not members or len(members) > 128:
+                fail("inactive JSFetch wheel member count is invalid")
+            names: set[str] = set()
+            metadata_members: list[zipfile.ZipInfo] = []
+            for member in members:
+                name = member.filename
+                parts = name.rstrip("/").split("/")
+                if (
+                    not name
+                    or name.startswith("/")
+                    or "\\" in name
+                    or ":" in name
+                    or any(part in {"", ".", ".."} for part in parts)
+                    or name in names
+                    or member.flag_bits & 1
+                    or member.file_size > 131_072
+                ):
+                    fail("inactive JSFetch wheel contains an unsafe member")
+                names.add(name)
+                if name.endswith("/METADATA"):
+                    metadata_members.append(member)
+            if (
+                len(metadata_members) != 1
+                or metadata_members[0].filename != INACTIVE_JSFETCH_METADATA_PATH
+            ):
+                fail("inactive JSFetch wheel has missing or ambiguous METADATA")
+            with archive.open(metadata_members[0]) as member_file:
+                metadata_raw = member_file.read(131_073)
+            if len(metadata_raw) > 131_072:
+                fail("inactive JSFetch wheel METADATA exceeds bound")
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as error:
+        fail(f"inactive JSFetch wheel cannot be verified: {error}")
+    message = BytesParser(policy=email_policy).parsebytes(metadata_raw)
+    if message.defects:
+        fail("inactive JSFetch wheel METADATA is malformed")
+    if message.get_all("Name") != ["httpx2-jsfetch"] or message.get_all("Version") != ["1.0"]:
+        fail("inactive JSFetch wheel METADATA has wrong project or version")
+    expressions = message.get_all("License-Expression", [])
+    legacy = message.get_all("License", [])
+    if len(expressions) > 1 or len(legacy) > 1:
+        fail("inactive JSFetch wheel has ambiguous license declarations")
+    expression, classifiers = resolve_license_metadata(
+        expressions[0] if expressions else None,
+        legacy[0] if legacy else None,
+        [
+            value
+            for value in message.get_all("Classifier", [])
+            if value.startswith("License ::")
+        ],
+        "httpx2-jsfetch",
+        "1.0",
+    )
+    if expression is None and not classifiers:
+        fail("inactive JSFetch wheel has no declared license")
+    return expression, classifiers
+
+
+def exact_installed_license_fallback(
+    distribution: metadata.Distribution, name: str, version: str
+) -> tuple[str, dict[str, str]]:
+    authority = EXACT_INSTALLED_LICENSE_FALLBACKS.get((name, version))
+    if authority is None:
+        fail("installed license fallback is not approved for this package and version")
+    license_relative, license_size, license_hash, metadata_hash, legacy_name, expression = authority
+    if (
+        normalize_name(distribution.metadata.get("Name")) != name
+        or distribution.version != version
+        or distribution.metadata.get("License-Expression") is not None
+        or distribution.metadata.get("License") != legacy_name
+        or any(
+            value.startswith("License ::")
+            for value in distribution.metadata.get_all("Classifier", [])
+        )
+    ):
+        fail("exact installed license fallback metadata identity drift")
+    prefix = f"{name}-{version}.dist-info/"
+    files = {str(item).replace("\\", "/"): item for item in distribution.files or []}
+    if len(files) != len(distribution.files or []):
+        fail("installed license fallback has ambiguous file paths")
+    observed: dict[str, str] = {}
+    for label, relative, expected_hash, expected_size in (
+        ("LICENSE", license_relative, license_hash, license_size),
+        ("METADATA", prefix + "METADATA", metadata_hash, None),
+    ):
+        member = files.get(relative)
+        if member is None:
+            fail("exact installed license fallback file is missing")
+        path = pathlib.Path(distribution.locate_file(member))
+        if not path.is_file() or path.is_symlink():
+            fail("exact installed license fallback file is missing or link-backed")
+        raw = path.read_bytes()
+        if (expected_size is not None and len(raw) != expected_size) or hashlib.sha256(raw).hexdigest() != expected_hash:
+            fail("exact installed license fallback file bytes differ")
+        observed[label] = expected_hash
+    if validate_license_expression(expression) != expression:
+        fail("exact installed license fallback expression is invalid")
+    return expression, observed
+
+
+def create_license_inventory(lock_path: pathlib.Path, wheel_path: pathlib.Path) -> dict[str, Any]:
     _, active, inactive, _ = package_sets_from_lock(lock_path)
     records: list[dict[str, Any]] = []
     for normalized_name, expected_version in sorted(active.packages.values()):
@@ -1660,14 +2034,20 @@ def create_license_inventory(lock_path: pathlib.Path) -> dict[str, Any]:
                 license_evidence_sha256[file_name] = hashlib.sha256(
                     evidence_path.read_bytes()
                 ).hexdigest()
-        license_expression, validated = resolve_license_metadata(
-            license_expression,
-            legacy_license,
-            classifiers,
-            normalized_name,
-            expected_version,
-            license_evidence_sha256,
-        )
+        if (normalized_name, expected_version) in EXACT_INSTALLED_LICENSE_FALLBACKS:
+            license_expression, license_evidence_sha256 = exact_installed_license_fallback(
+                distribution, normalized_name, expected_version
+            )
+            validated = ()
+        else:
+            license_expression, validated = resolve_license_metadata(
+                license_expression,
+                legacy_license,
+                classifiers,
+                normalized_name,
+                expected_version,
+                license_evidence_sha256,
+            )
         validated_classifiers = list(validated)
         records.append(
             {
@@ -1688,8 +2068,24 @@ def create_license_inventory(lock_path: pathlib.Path) -> dict[str, Any]:
                 ),
             }
         )
-    if inactive.items != ("torch==2.13.0",):
-        fail("the exact inactive package identity is not torch==2.13.0")
+    if inactive.items != ("httpx2-jsfetch==1.0", "torch==2.13.0"):
+        fail("inactive package identities differ from the exact Windows lock")
+    expression, classifiers = locked_jsfetch_license_metadata(wheel_path)
+    records.append(
+        {
+            "name": "httpx2-jsfetch",
+            "version": "1.0",
+            "source_registry": PYPI_REGISTRY,
+            "reachability": "windows_inactive",
+            "metadata_source": "locked_registry_wheel",
+            "source_wheel_url": INACTIVE_JSFETCH_WHEEL_URL,
+            "source_wheel_sha256": INACTIVE_JSFETCH_WHEEL_SHA256,
+            "license_expression": expression,
+            "license_classifiers": list(classifiers),
+            "license_evidence_sha256": None,
+            "review_status": "declared",
+        }
+    )
     records.append(
         {
             "name": "torch",
@@ -1716,43 +2112,38 @@ def finalize_advisory_dispositions(
     fallback: dict[str, Any] | None,
 ) -> tuple[list[dict[str, str]], dict[str, int]]:
     finalized = list(dispositions)
-    finalized.append(
-        {
-            "name": "torch",
-            "version": "2.13.0",
-            "disposition": INACTIVE_MARKER_DISPOSITION,
-        }
-    )
+    for identity in inactive_lock.items:
+        name, version = identity.split("==", 1)
+        finalized.append(
+            {
+                "name": name,
+                "version": version,
+                "disposition": INACTIVE_MARKER_DISPOSITION,
+            }
+        )
     finalized.sort(key=lambda item: (item["name"], item["version"], item["disposition"]))
     counts: dict[str, int] = {}
     for disposition in finalized:
         name = disposition["disposition"]
         counts[name] = counts.get(name, 0) + 1
-    expected_counts = (
-        {
-            PIP_AUDIT_PASS_DISPOSITION: 105,
-            OSV_FALLBACK_DISPOSITION: 1,
-            INACTIVE_MARKER_DISPOSITION: 1,
-        }
-        if fallback is not None
-        else {
-            PIP_AUDIT_PASS_DISPOSITION: 106,
-            INACTIVE_MARKER_DISPOSITION: 1,
-        }
-    )
+    expected_counts = {
+        PIP_AUDIT_PASS_DISPOSITION: active_lock.count - (1 if fallback is not None else 0),
+        INACTIVE_MARKER_DISPOSITION: inactive_lock.count,
+    }
+    if fallback is not None:
+        expected_counts[OSV_FALLBACK_DISPOSITION] = 1
     represented_identities = {
         f"{item['name']}=={item['version']}" for item in finalized
     }
     if (
-        lock.count != 107
-        or active_lock.count != 106
-        or inactive_lock.items != ("torch==2.13.0",)
-        or len(finalized) != 107
-        or len(represented_identities) != 107
+        inactive_lock.items != ("httpx2-jsfetch==1.0", "torch==2.13.0")
+        or lock.count != active_lock.count + inactive_lock.count
+        or len(finalized) != lock.count
+        or len(represented_identities) != lock.count
         or represented_identities != set(lock.items)
         or counts != expected_counts
     ):
-        fail("advisory dispositions do not exactly account for all 107 lock identities")
+        fail("advisory dispositions do not exactly account for all lock identities")
     return finalized, counts
 
 
@@ -1836,9 +2227,9 @@ def main() -> None:
         fail("helper command is required")
     command = sys.argv[1]
     if command == "licenses":
-        if len(sys.argv) != 3:
-            fail("licenses requires a lock path")
-        output = create_license_inventory(pathlib.Path(sys.argv[2]))
+        if len(sys.argv) != 4:
+            fail("licenses requires a lock path and exact inactive wheel path")
+        output = create_license_inventory(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))
     elif command == "reconcile":
         output = reconcile(sys.argv[2:])
     elif command == "normalize-audit":
@@ -1978,9 +2369,12 @@ if __name__ == "__main__":
         "--format", "cyclonedx1.5", "--output-file", $sbomPath
     )
 
+    Copy-Item -LiteralPath $resolvedInactiveWheelPath `
+        -Destination $inactiveWheelOutputPath -ErrorAction Stop
     $licenses = Invoke-CheckedCapture -Command $uvCommand.Source -Arguments @(
         "run", "--locked", "--no-sync", "python", $helperPath,
-        "licenses", (Join-Path $repositoryRoot "uv.lock")
+        "licenses", (Join-Path $repositoryRoot "uv.lock"),
+        $inactiveWheelOutputPath
     )
     Write-Utf8NoBom -Path $licensesPath -Content $licenses
     Write-Utf8NoBom -Path $exceptionsPath -Content (

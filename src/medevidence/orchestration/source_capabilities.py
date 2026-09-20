@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol, final
 
 from medevidence.domain import (
+    CADEC_EXTERNAL_MANIFEST_SHA256,
     CADEC_MANDATORY_LIMITATIONS,
     AcquisitionOutcomeRef,
     CoverageStatus,
@@ -28,12 +29,14 @@ from medevidence.tools.cadec_runtime import (
     reconstruct_cadec_local_search_plan,
     reconstruct_cadec_search_result,
 )
-from medevidence.tools.contracts import ResearchPubMedRequest
+from medevidence.tools.contracts import ResearchPubMedRequest, ResolvedConceptCatalog
 from medevidence.tools.ports import (
     DailyMedExecutionPort,
     FaersExecutionPort,
     FaersPersistencePort,
 )
+from medevidence.tools.pubmed_local import reconstruct_pubmed_request
+from medevidence.tools.pubmed_material_ports import VerifiedPubMedMaterialPort
 from medevidence.tools.research import PubMedResearchService
 
 from .contracts import (
@@ -451,6 +454,8 @@ class SourceCapabilities:
         "_faers_persistence",
         "_faers_projection",
         "_is_frozen",
+        "_pubmed_catalog",
+        "_pubmed_material",
         "_pubmed_request",
         "_pubmed_service",
         "_sources",
@@ -470,6 +475,8 @@ class SourceCapabilities:
         *,
         pubmed_request: ResearchPubMedRequest | None = None,
         pubmed_service: PubMedResearchService | None = None,
+        pubmed_material: VerifiedPubMedMaterialPort | None = None,
+        pubmed_catalog: ResolvedConceptCatalog | None = None,
         dailymed_projection: CanonicalDailyMedProjectionAuthority | None = None,
         dailymed_execution: DailyMedExecutionPort | None = None,
         faers_projection: CanonicalFaersProjectionAuthority | None = None,
@@ -485,6 +492,10 @@ class SourceCapabilities:
         )
         if len(set(pubmed_present)) != 1:
             raise TypeError("SourceCapabilities requires the complete PubMed dependency group")
+        if (pubmed_material is None) != (pubmed_catalog is None):
+            raise TypeError("verified PubMed material requires the complete dependency group")
+        if pubmed_material is not None and not all(pubmed_present):
+            raise TypeError("verified PubMed material requires the PubMed execution group")
         if len(set(dailymed_present)) != 1:
             raise TypeError("SourceCapabilities requires the complete DailyMed dependency group")
         if len(set(faers_present)) != 1:
@@ -499,10 +510,10 @@ class SourceCapabilities:
             raise TypeError("SourceCapabilities requires canonical FAERS authority")
         sources: set[SourceType] = set()
         if pubmed_request is not None and pubmed_service is not None:
-            self._pubmed_request = ResearchPubMedRequest.model_validate(
-                pubmed_request.model_dump(mode="python"), strict=True
-            )
+            self._pubmed_request = reconstruct_pubmed_request(pubmed_request)
             self._pubmed_service = pubmed_service
+            self._pubmed_material = pubmed_material
+            self._pubmed_catalog = pubmed_catalog
             sources.add(SourceType.PUBMED)
         if dailymed_projection is not None and dailymed_execution is not None:
             self._dailymed_projection = dailymed_projection
@@ -575,6 +586,8 @@ class SourceCapabilities:
                 attempt=attempt,
                 request=self._pubmed_request,
                 service=self._pubmed_service,
+                material=self._pubmed_material,
+                catalog=self._pubmed_catalog,
             )
         if task.source is SourceType.DAILYMED:
             if SourceType.DAILYMED not in self._sources:
@@ -662,6 +675,7 @@ def plan_cadec_operations(
     task: SourceTaskState,
     scope: ResearchScope,
     attempt: SourceTaskAttemptRef,
+    manifest_sha256: str = CADEC_EXTERNAL_MANIFEST_SHA256,
 ) -> tuple[RequiredSourceOperation, ...]:
     """Freeze exact CADEC verify/search operations without opening either asset."""
 
@@ -670,7 +684,8 @@ def plan_cadec_operations(
     attempt = SourceTaskAttemptRef.model_validate(attempt.model_dump(mode="python"), strict=True)
     _validate_cadec_context(task, scope, attempt)
     plan = CadecLocalSearchPlan.model_validate(
-        plan_cadec_local_search(scope).model_dump(mode="python"), strict=True
+        plan_cadec_local_search(scope, manifest_sha256=manifest_sha256).model_dump(mode="python"),
+        strict=True,
     )
     operations = _cadec_operations(task, plan)
     if task.status is SourceTaskStatus.RUNNING and task.required_operations != operations:
@@ -684,16 +699,21 @@ def collect_cadec_capability(
     scope: ResearchScope,
     attempt: SourceTaskAttemptRef,
     search: CadecLocalSearchPort,
+    manifest_sha256: str = CADEC_EXTERNAL_MANIFEST_SHA256,
 ) -> CollectedEvidenceResult:
     """Execute exact local CADEC verification/search with no partial-evidence fallback."""
 
     task = SourceTaskState.model_validate(task.model_dump(mode="python"), strict=True)
     scope = ResearchScope.model_validate(scope.model_dump(mode="python"), strict=True)
     attempt = SourceTaskAttemptRef.model_validate(attempt.model_dump(mode="python"), strict=True)
-    operations = plan_cadec_operations(task=task, scope=scope, attempt=attempt)
+    operations = plan_cadec_operations(
+        task=task, scope=scope, attempt=attempt, manifest_sha256=manifest_sha256
+    )
     if task.status is not SourceTaskStatus.RUNNING:
         raise ValueError("CADEC collection requires an exact planned running task")
-    plan = reconstruct_cadec_local_search_plan(plan_cadec_local_search(scope), scope)
+    plan = reconstruct_cadec_local_search_plan(
+        plan_cadec_local_search(scope, manifest_sha256=manifest_sha256), scope
+    )
     try:
         result = search.search(plan=plan, scope=scope)
         result = reconstruct_cadec_search_result(result, scope=scope, plan=plan)

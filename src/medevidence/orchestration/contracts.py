@@ -21,6 +21,7 @@ from medevidence.domain import (
     ResearchScope,
     ResultStatus,
     RunId,
+    ScopeId,
     Sha256Digest,
     SourceOutcome,
     SourceType,
@@ -45,7 +46,7 @@ type PolicyReasonCode = Annotated[
 ]
 type ValidationReceiptId = Annotated[
     str,
-    StringConstraints(pattern=r"^validation-receipt:sha256:[0-9a-f]{64}$"),
+    StringConstraints(pattern=r"^validation-receipt(?:-v2)?:sha256:[0-9a-f]{64}$"),
 ]
 
 
@@ -223,6 +224,7 @@ class SourceOperationKind(StrEnum):
     PUBMED_SEARCH = "pubmed_search"
     PUBMED_FETCH = "pubmed_fetch"
     DAILYMED_DISCOVERY = "dailymed_discovery"
+    DAILYMED_CANDIDATE_ENRICHMENT = "dailymed_candidate_enrichment"
     DAILYMED_FETCH = "dailymed_fetch"
     FAERS_AGGREGATE = "faers_aggregate"
     CADEC_VERIFY = "cadec_verify"
@@ -235,6 +237,8 @@ class SourceOperationInputRole(StrEnum):
     REQUEST = "request"
     PUBMED_PMID = "pubmed_pmid"
     DAILYMED_DECISION = "dailymed_decision"
+    DAILYMED_DISCOVERY_QUERY = "dailymed_discovery_query"
+    DISCOVERY_SUMMARY = "discovery_summary"
     CANDIDATE = "candidate"
     SETID = "setid"
     SPL_VERSION = "spl_version"
@@ -569,6 +573,12 @@ def validate_required_operation_plan(
         SourceOperationKind.PUBMED_SEARCH: (SourceOperationInputRole.QUERY_PLAN,),
         SourceOperationKind.PUBMED_FETCH: (SourceOperationInputRole.PUBMED_PMID,),
         SourceOperationKind.DAILYMED_DISCOVERY: (SourceOperationInputRole.REQUEST,),
+        SourceOperationKind.DAILYMED_CANDIDATE_ENRICHMENT: (
+            SourceOperationInputRole.DISCOVERY_SUMMARY,
+            SourceOperationInputRole.DAILYMED_DISCOVERY_QUERY,
+            SourceOperationInputRole.SETID,
+            SourceOperationInputRole.SPL_VERSION,
+        ),
         SourceOperationKind.DAILYMED_FETCH: (
             SourceOperationInputRole.DAILYMED_DECISION,
             SourceOperationInputRole.CANDIDATE,
@@ -603,6 +613,14 @@ def validate_required_operation_plan(
     elif source is SourceType.DAILYMED:
         if len(operations) > 8:
             raise ValueError("DailyMed operation count exceeds four discovery/fetch groups")
+        first_enrichment = next(
+            (
+                index
+                for index, item in enumerate(operations)
+                if item.kind is not SourceOperationKind.DAILYMED_DISCOVERY
+            ),
+            len(operations),
+        )
         first_fetch = next(
             (
                 index
@@ -611,14 +629,23 @@ def validate_required_operation_plan(
             ),
             len(operations),
         )
-        discoveries = operations[:first_fetch]
+        discoveries = operations[:first_enrichment]
+        enrichments = operations[first_enrichment:first_fetch]
         fetches = operations[first_fetch:]
         if not discoveries or any(
             item.kind is not SourceOperationKind.DAILYMED_DISCOVERY for item in discoveries
         ):
             raise ValueError("DailyMed requires a nonempty discovery prefix")
-        if any(item.kind is not SourceOperationKind.DAILYMED_FETCH for item in fetches):
+        if any(
+            item.kind is SourceOperationKind.DAILYMED_DISCOVERY
+            for item in operations[first_enrichment:]
+        ):
             raise ValueError("DailyMed discovery cannot appear after the fetch suffix begins")
+        if any(
+            item.kind is not SourceOperationKind.DAILYMED_CANDIDATE_ENRICHMENT
+            for item in enrichments
+        ) or any(item.kind is not SourceOperationKind.DAILYMED_FETCH for item in fetches):
+            raise ValueError("DailyMed operations must order discovery, enrichment, then fetch")
         discovery_query_ids = tuple(item.query_id for item in discoveries)
         if len(set(discovery_query_ids)) != len(discovery_query_ids):
             raise ValueError("DailyMed discovery query identities must be unique")
@@ -628,6 +655,18 @@ def validate_required_operation_plan(
         if len(set(fetch_query_ids)) != len(fetch_query_ids):
             raise ValueError("DailyMed permits at most one fetch per discovery")
         discovery_order = {query_id: index for index, query_id in enumerate(discovery_query_ids)}
+        enrichment_parent_queries = tuple(item.input_refs[1].value for item in enrichments)
+        if any(query_id not in discovery_order for query_id in enrichment_parent_queries):
+            raise ValueError("DailyMed enrichment must bind a prior discovery query")
+        if tuple(discovery_order[item] for item in enrichment_parent_queries) != tuple(
+            sorted(discovery_order[item] for item in enrichment_parent_queries)
+        ):
+            raise ValueError("DailyMed enrichment must preserve discovery order")
+        summary_ids = tuple(item.input_refs[0].value for item in enrichments)
+        if len(set(summary_ids)) != len(summary_ids):
+            raise ValueError("DailyMed enrichment summaries must be unique")
+        if len({item.query_id for item in enrichments}) != len(enrichments):
+            raise ValueError("DailyMed enrichment query identities must be unique")
         if any(query_id not in discovery_order for query_id in fetch_query_ids):
             raise ValueError("DailyMed fetch must bind a prior discovery query")
         fetch_order = tuple(discovery_order[query_id] for query_id in fetch_query_ids)
@@ -900,6 +939,45 @@ class CollectedEvidenceResult(DurableModel):
         return self
 
 
+class RuntimeContext(DurableModel):
+    """One job's immutable run/report/scope authority before source collection."""
+
+    schema_version: Literal["m3.runtime-context.v1"] = "m3.runtime-context.v1"
+    run_id: RunId
+    report_id: ReportId
+    scope_id: ScopeId
+
+
+class ValidationRegistryRef(DurableModel):
+    """Content-addressed pre-semantic registry bound to exact synthesized report."""
+
+    schema_version: Literal["m3.validation-registry-ref.v1"] = "m3.validation-registry-ref.v1"
+    run_id: RunId
+    report_id: ReportId
+    scope_id: ScopeId
+    report_content_hash: Sha256Digest
+    registry_content_hash: Sha256Digest
+    registry_id: Annotated[
+        str, StringConstraints(pattern=r"^validation-registry:sha256:[0-9a-f]{64}$")
+    ]
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> Self:
+        expected = derive_identity(
+            "validation-registry",
+            {
+                "run_id": self.run_id,
+                "report_id": self.report_id,
+                "scope_id": self.scope_id,
+                "report_content_hash": self.report_content_hash,
+                "registry_content_hash": self.registry_content_hash,
+            },
+        )
+        if self.registry_id != expected:
+            raise ValueError("registry reference differs from exact report context")
+        return self
+
+
 class SynthesisState(DurableModel):
     """Small synthesis result containing identities rather than report content."""
 
@@ -910,6 +988,9 @@ class SynthesisState(DurableModel):
     comparability_refs: tuple[ComparabilityReference, ...] = Field(max_length=100)
     conflict_refs: tuple[ConflictReference, ...] = Field(max_length=100)
     warning_codes: tuple[PolicyReasonCode, ...] = Field(default=(), max_length=100)
+    validation_registry_ref: ValidationRegistryRef | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def validate_reference_graph(self) -> Self:
@@ -925,6 +1006,11 @@ class SynthesisState(DurableModel):
             raise ValueError("warning codes must be unique")
         if self.warning_codes != tuple(sorted(self.warning_codes)):
             raise ValueError("warning codes must be canonically sorted")
+        if (
+            self.validation_registry_ref is not None
+            and self.validation_registry_ref.report_content_hash != self.report_content_hash
+        ):
+            raise ValueError("synthesis registry does not bind report content")
         return self
 
 
@@ -978,6 +1064,16 @@ class ValidationReceiptRef(DurableModel):
 
     schema_version: Literal["m3.validation-receipt-ref.v1"] = "m3.validation-receipt-ref.v1"
     receipt_id: ValidationReceiptId
+    receipt_content_hash: Sha256Digest
+
+
+class Stage1ReceiptRef(DurableModel):
+    """Checkpoint reference to a separately persisted V2 Stage-1 receipt."""
+
+    schema_version: Literal["m3.stage1-receipt-ref.v2"] = "m3.stage1-receipt-ref.v2"
+    receipt_id: Annotated[
+        str, StringConstraints(pattern=r"^validation-stage1-receipt-v2:sha256:[0-9a-f]{64}$")
+    ]
     receipt_content_hash: Sha256Digest
 
 
@@ -1056,6 +1152,33 @@ class ExportRecord(DurableModel):
     exported_at_utc: UtcDateTime
 
 
+def pending_draft_identity(report_id: ReportId, report_content_hash: Sha256Digest) -> str:
+    """Derive the one pending-draft identity shared by workflow and storage."""
+
+    return derive_identity(
+        "pending-draft",
+        {"report_id": report_id, "report_content_hash": report_content_hash},
+    )
+
+
+def export_idempotency_key(
+    report_id: ReportId,
+    report_content_hash: Sha256Digest,
+    destination: ExportDestinationRef,
+) -> str:
+    """Bind a logical export to exact report content and destination."""
+
+    return sha256_digest(
+        canonical_json(
+            {
+                "report_id": report_id,
+                "report_content_hash": report_content_hash,
+                "destination": destination,
+            }
+        )
+    )
+
+
 class WorkflowDisposition(StrEnum):
     """Terminal or active workflow disposition, separate from report status."""
 
@@ -1084,6 +1207,7 @@ class OrchestrationState(DurableModel):
     synthesis: SynthesisState | None = None
     validation: ReportValidationState = Field(default_factory=ReportValidationState)
     validation_receipt_ref: ValidationReceiptRef | None = None
+    stage1_receipt_ref: Stage1ReceiptRef | None = None
     report_status: ReportStatus = ReportStatus.DRAFT
     destination: ExportDestinationRef
     pending_draft: PendingDraftRef | None = None
@@ -1123,6 +1247,14 @@ class OrchestrationState(DurableModel):
             self.interpreted_scope.selected_sources != self.original_scope.selected_sources
         ):
             raise ValueError("interpreted scope cannot change source permissions")
+        if self.synthesis is not None and self.synthesis.validation_registry_ref is not None:
+            registry_ref = self.synthesis.validation_registry_ref
+            if (
+                registry_ref.run_id != self.run_id
+                or registry_ref.report_id != self.report_id
+                or registry_ref.scope_id != (self.interpreted_scope or self.original_scope).scope_id
+            ):
+                raise ValueError("checkpoint registry reference belongs to another job")
 
         if self.source_plan:
             plan_sources = tuple(item.source for item in self.source_plan)
