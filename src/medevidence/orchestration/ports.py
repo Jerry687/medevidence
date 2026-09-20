@@ -7,6 +7,7 @@ from typing import Protocol
 
 from medevidence.domain import M1BSourcePlanEntryV1, ReportId, ResearchScope, RunId
 from medevidence.domain.identifiers import Sha256Digest
+from medevidence.tools.report_validation import ValidationRegistryInput
 
 from .contracts import (
     CollectedEvidenceResult,
@@ -22,6 +23,7 @@ from .contracts import (
     SourceTaskProgressResult,
     SourceTaskState,
     SynthesisState,
+    ValidationRegistryRef,
 )
 
 
@@ -75,9 +77,16 @@ class SynthesisPort(Protocol):
         run_id: RunId,
         report_id: ReportId,
         scope: ResearchScope,
+        source_plan: tuple[M1BSourcePlanEntryV1, ...],
         source_tasks: tuple[SourceTaskState, ...],
         prior_report_content_hash: Sha256Digest | None,
     ) -> SynthesisState: ...
+
+
+class ValidationRegistryProviderPort(Protocol):
+    """Reparse one immutable pre-semantic registry by its checkpoint reference."""
+
+    def load_registry(self, reference: ValidationRegistryRef) -> ValidationRegistryInput: ...
 
 
 class ValidationReceiptStorePort(Protocol):
@@ -89,6 +98,16 @@ class ValidationReceiptStorePort(Protocol):
     ) -> Mapping[str, object]: ...
 
     def load_receipt(self, receipt_id: str) -> Mapping[str, object] | None: ...
+
+
+class Stage1ReceiptStorePort(Protocol):
+    """Persist and reload one exact Stage-1 receipt before V2 evaluation."""
+
+    def save_stage1_receipt(
+        self, receipt_payload: Mapping[str, object]
+    ) -> Mapping[str, object]: ...
+
+    def load_stage1_receipt(self, receipt_id: str) -> Mapping[str, object] | None: ...
 
 
 class DraftPersistencePort(Protocol):

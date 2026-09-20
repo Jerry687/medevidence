@@ -1,5 +1,122 @@
 # Stage-2 evaluator calibration framework
 
+## M3-008B DeepSeek calibration closure
+
+The DeepSeek calibration path is closed as
+`M3-008B-DEEPSEEK-CALIBRATION_CLOSED_EXTERNAL_EXECUTION_NOT_ACCEPTED`.
+Attempt009 and Attempt010 are immutable truthful historical evidence. Each succeeded
+on cases1-4, then case5 received HTTP 200 responses that did not complete
+within the unchanged shared deadline: attempt1 closed
+`transport_unavailable`, attempt2 closed `deadline_exceeded`, and no attempt3
+started. Implementation review remained `P0 0 / P1 0 / P2 0`; neither run
+established accepted 36-case metrics or an accepted calibration artifact. This
+is external-execution non-acceptance, not an implementation failure.
+
+No Attempt011, deadline/retry weakening, M3-009 start, or Holdout-20 access is
+authorized. The DeepSeek implementation and evidence remain historical and do
+not grant execution authority. ADR-023 records the provider-replacement
+readiness package; another provider requires separate Owner authorization.
+
+## M3-008B Successor-005 semantic contract
+
+`M3-008B-SUCCESSOR-005-APPLICATION-DERIVED-HUMAN-REVIEW` introduces the
+provider-neutral `M3_STAGE2_SEMANTIC_RESULT_V2` family. Provider output has
+exactly four ordered fields: schema version, semantic result, bounded rationale
+codes, and bounded explanation. It contains no provider-authored
+`human_review_required` field. The provider decides semantic support only;
+rationale codes do not drive workflow policy.
+
+The semantic family is exactly
+`m3.stage2-semantic-result.contract.v2`, identity
+`sha256:9b97996233f6dc80091f196209b18c27b23e0eeb5c82c6e7e8c0f954df69a3bb`.
+V2 result, receipt, and calibration provenance bind the exact evaluator method
+`deepseek.responses.independent_semantic_evaluation`, provider-neutral
+configuration
+`sha256:fd3e9bda090c92b0c83244d521cb3163f4c3e43bda74b1132efaad7ffbb7f491`,
+and the historical DeepSeek provider v2 profile
+`sha256:64890c63e275c5bbce00f18e31899b4326d16220e6e7865356a3618ef4e557e9`.
+Arbitrary evaluators and method/profile substitutions fail closed.
+
+After exact candidate reconstruction, the application derives a separately
+versioned canonical routing disposition. Unsupported rejects the formal
+citation. Uncertain requires human review. Ordinary supported/supports without
+a governed escalation requires none. Supported/contradicts, an applicable
+non-consistent comparability/conflict outcome, or a policy-sensitive inference
+requires review. Stage-1 failure is terminal before provider execution. The
+routing policy and its exact derived disposition are bound to validation and
+calibration provenance, but routing correctness is tested separately and never
+enters semantic agreement or recall.
+
+One ordered declarative six-rule table generates routing policy bytes/hash,
+runtime rule selection, and the full routing matrix. The semantic contract
+separately carries per-state allowed, required-any, and forbidden rationale-code
+sets; rationale validity is checked before routing. Calibration artifacts bind
+the routing-table identity but do not count routing outcomes as semantic labels.
+
+Report validation binds each result to either exact empty comparability or one
+exact participating comparison/conflict pair with IDs, hashes, and outcome.
+Only that participant can escalate routing. Foreign, stale, partial, or swapped
+bindings reject, and unrelated report conflicts have no ambient routing power.
+
+The frozen Project-Owner human resolution identity remains
+`sha256:758aaccd90e2e545af2215640426a20b2c75c038d40f0d1d2b2e0cc716aaf806`.
+Its 36 labels are semantic-support truth only, not workflow-review labels.
+Attempts001-006 and the exhausted V1 prompt/rubric versions remain immutable.
+Attempt006 retains five successful cases and case006
+`human_review_binding_invalid`, governed as
+`V1_PROVIDER_OUTPUT_VALID_BUT_APPLICATION_POLICY_BINDING_FAILED`, not a model
+semantic failure. Successor-004 infrastructure is accepted for successor reuse,
+but its calibration is not accepted and it was not integrated.
+
+Attempt007 is immutable failed evidence under provider v1 profile
+`sha256:2798cf926eb197b746fd3c321d50047c28dea5061d2f4613adb5c81b30c80b35`.
+Its run has 10 events and five HTTP attempts: cases1-4 succeeded; case5 closed
+`response_invalid` after valid HTTP/1.1 chunked headers but an incomplete
+zero-lower-bound body with no raw artifact. No quality result exists.
+
+Attempt008 is immutable failed provider-availability/deadline evidence under
+that v2 profile. Its manifest is
+`sha256:bdbc9b07a12433b082bc6d1bec62445f9e73810f2b6ed7857c700e92526b19b2`,
+run is `sha256:0b4e918e30c511174ad12ce6b07b25312688995fb2dc46d81868e2caa40baa89`,
+and it contains 12 events across six HTTP attempts. Cases1-4 retain exact raw
+success evidence. Case5 attempt1 is `transport_unavailable` after HTTP 200 with
+an incomplete zero-byte-lower-bound body and no raw artifact; attempt2 is
+`deadline_exceeded` under the same absolute deadline with no raw artifact, and
+there is no attempt3. Projection
+`sha256:936ddc9e280b9ed5bda1f2b630c675d54e75e58c2a3dbb7a67cdf35b781ecbb5`
+and status
+`sha256:ca68ddf05134464d5d1802b11b113440b63752e5f5aa809f1614a7d816448185`
+are exact. No quality result or accepted calibration artifact exists.
+
+Attempt009 is also immutable failed provider-availability/deadline evidence
+under the unchanged v2 profile. Its manifest is
+`sha256:99af376d7cbacd0eec72c4520337f4ce73a4cfaa36455a6b99a18fda1656fa13`,
+run is `sha256:4e1d5b2cd481ae62752d1eddda33bd8acbc43679f50bada019d414c4aef6d0e6`,
+and it contains 12 events across six HTTP attempts. Cases1-4 retain exact raw
+success evidence. Case5 attempt1 is `transport_unavailable`; attempt2 is
+`deadline_exceeded` under the same absolute deadline. Both are HTTP 200
+incomplete-body closures with zero-byte lower bounds and no raw artifact; no
+attempt3 exists. Projection
+`sha256:c02f71b8e928ea4076af9997c4c07ebd4cb27e7c290f64ed44dadeb3c91a1b46`
+and status
+`sha256:3d883dfd3dd8af63abf11b05f516477e1091179ab17b57085a12ddd18bee4b22`
+are exact. Its terminal evidence result is `FAIL — P0 0 / P1 0 / P2 0`, an
+external-execution non-acceptance rather than an implementation finding.
+
+Attempt010 is immutable failed provider-availability/deadline evidence. Its
+manifest is
+`sha256:2de9fd9eeb293bd19ae860f6a4f71dbf4f9b308bd7baa0974e7426d9021a614a`,
+run is `sha256:e85887cb2f409bc03bf1b6964b073efe78415e83bd754b9aaa4e3795a45aaa63`,
+projection is
+`sha256:ecc271a70ab6c482b32576432e690afec2da4f62dd09f46710076065db616694`,
+and status is
+`sha256:c65e2dc63e6d14cc7a10631d45b9c9af21468d2d941ee3b2af18a448b2e7ec6f`.
+It contains 12 events across six HTTP attempts. Cases1-4 retain exact raw
+success evidence; case5 attempt1 is `transport_unavailable` and attempt2 is
+`deadline_exceeded`, both after incomplete HTTP 200 bodies without raw
+artifacts. No quality result exists. Partial continuation and Attempt011 are
+prohibited.
+
 `evaluation.stage2_calibration` defines the offline calibration-evidence
 contract for the independent Stage-2 semantic evaluator. It accepts only an
 exact canonical `SemanticEvaluationRequest` produced by the current production
@@ -30,9 +147,11 @@ Validation applies production-equivalent closed envelope, message, content,
 reasoning, and configuration rules; rejects tools, refusals, unknown or
 multiple output, and configuration drift; and cross-binds response ID, usage,
 and inner bytes. The inner candidate must pass the public canonical
-semantic-result authority before its state, rationale/explanation hashes, and
-human-review flag can enter metrics. No independent input dictionary, direct
-candidate state, or substituted hash is authoritative.
+semantic-result authority before its state and rationale/explanation hashes can
+enter semantic metrics. For the V2 contract family, no provider-authored human-
+review flag exists; application routing is reconstructed independently. No
+independent input dictionary, direct candidate state, or substituted hash is
+authoritative.
 
 The raw response byte count and hex length are checked against the shared
 131,072-byte provider-response maximum before hex decoding or JSON parsing.
@@ -47,11 +166,13 @@ Existing outputs, pending transactions, repository-contained paths, and
 symlinked ancestry fail closed. The operational UTC timestamp is retained but
 excluded from the semantic artifact identity.
 
-Current status: **`AWAITING_APPROVED_CALIBRATION_PACKET`**. No approved
-calibration fixture or human labels are present, no calibration result is
-claimed, and Holdout-20 remains sealed. Unit tests exercise the framework with
-tiny synthetic nonmedical cases only; they are framework validation, not model
-calibration evidence.
+Current Successor-005 status:
+**`M3-008B-DEEPSEEK-CALIBRATION_CLOSED_EXTERNAL_EXECUTION_NOT_ACCEPTED`**. The
+approved 36-case semantic packet and provider-neutral V2 contract are frozen,
+but no accepted V2 calibration result is claimed. Unit tests and the routing
+matrix are framework validation, not model calibration evidence. Retained
+DeepSeek code is historical and has no execution authority. Holdout-20 remains
+sealed.
 
 # M2 retrieval evaluation
 

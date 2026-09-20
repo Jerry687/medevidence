@@ -283,6 +283,14 @@ CADEC_EXTERNAL_MANIFEST_BYTES: Final = 1_699_979
 CADEC_EXTERNAL_MANIFEST_SHA256: Final = (
     "1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
 )
+CADEC_RECOVERY_MANIFEST_BYTES: Final = 1_235_699
+CADEC_RECOVERY_MANIFEST_SHA256: Final = (
+    "a450e571db19c8d2c79944363daea5421e9aad8101e3da7f14e9cc464360c75b"
+)
+CADEC_RECOVERY_AUDIT_BYTES: Final = 1_909
+CADEC_RECOVERY_AUDIT_SHA256: Final = (
+    "4a9c87b32e739926098a570ed51d82543393bcd2e54b3683992cde7470dd4dc7"
+)
 CADEC_TERMINAL_FREEZE_AUDIT_BYTES: Final = 6_354
 CADEC_TERMINAL_FREEZE_AUDIT_SHA256: Final = (
     "18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
@@ -311,6 +319,7 @@ CADEC_CORPUS_ID: Final[
 CADEC_CORPUS_VERSION: Final[
     Literal["sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"]
 ] = "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
+CADEC_RECOVERY_CORPUS_VERSION: Final = f"sha256:{CADEC_RECOVERY_MANIFEST_SHA256}"
 CADEC_LICENCE_RECORD_SHA256: Final = (
     "e799218a8f6eda79156913d0aaae0e7023cb80fe7e99b2db45c09ae0051ec941"
 )
@@ -488,21 +497,15 @@ class CadecReleaseManifestV1(DurableModel):
     model_config = ConfigDict(extra="forbid", frozen=True, revalidate_instances="always")
 
     schema_version: Literal["m1b.cadec.release-manifest.v1"] = "m1b.cadec.release-manifest.v1"
-    work_item: Literal["M1B-CADEC-001"] = "M1B-CADEC-001"
+    work_item: Literal["M1B-CADEC-001", "CADEC-ASSET-RECOVERY-20260918"] = "M1B-CADEC-001"
     source: Literal[SourceType.CADEC] = SourceType.CADEC
     corpus_id: Literal["sha256:4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"]
-    corpus_version: Literal[
-        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
-    ]
+    corpus_version: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     archive_sha256: Literal["4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"]
-    external_manifest_bytes: Literal[1_699_979]
-    external_manifest_sha256: Literal[
-        "1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
-    ]
-    terminal_freeze_audit_bytes: Literal[6_354]
-    terminal_freeze_audit_sha256: Literal[
-        "18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
-    ]
+    external_manifest_bytes: int
+    external_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    terminal_freeze_audit_bytes: int
+    terminal_freeze_audit_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     canonical_document_count: Literal[1_250]
     approved_document_count: Literal[1_248]
     excluded_document_ids: tuple[Literal["DICLOFENAC-SODIUM.7"], Literal["LIPITOR.221"]]
@@ -523,17 +526,26 @@ class CadecReleaseManifestV1(DurableModel):
     corpus_derived_real_fixtures: Literal[False]
 
     @classmethod
-    def create(cls) -> Self:
+    def create(cls, *, recovery: bool = False) -> Self:
         """Construct exact freeze metadata without pretending a provider version label."""
 
         return cls(
+            work_item="CADEC-ASSET-RECOVERY-20260918" if recovery else "M1B-CADEC-001",
             corpus_id=CADEC_CORPUS_ID,
-            corpus_version=CADEC_CORPUS_VERSION,
+            corpus_version=CADEC_RECOVERY_CORPUS_VERSION if recovery else CADEC_CORPUS_VERSION,
             archive_sha256=CADEC_ARCHIVE_SHA256,
-            external_manifest_bytes=CADEC_EXTERNAL_MANIFEST_BYTES,
-            external_manifest_sha256=CADEC_EXTERNAL_MANIFEST_SHA256,
-            terminal_freeze_audit_bytes=CADEC_TERMINAL_FREEZE_AUDIT_BYTES,
-            terminal_freeze_audit_sha256=CADEC_TERMINAL_FREEZE_AUDIT_SHA256,
+            external_manifest_bytes=(
+                CADEC_RECOVERY_MANIFEST_BYTES if recovery else CADEC_EXTERNAL_MANIFEST_BYTES
+            ),
+            external_manifest_sha256=(
+                CADEC_RECOVERY_MANIFEST_SHA256 if recovery else CADEC_EXTERNAL_MANIFEST_SHA256
+            ),
+            terminal_freeze_audit_bytes=(
+                CADEC_RECOVERY_AUDIT_BYTES if recovery else CADEC_TERMINAL_FREEZE_AUDIT_BYTES
+            ),
+            terminal_freeze_audit_sha256=(
+                CADEC_RECOVERY_AUDIT_SHA256 if recovery else CADEC_TERMINAL_FREEZE_AUDIT_SHA256
+            ),
             canonical_document_count=CADEC_CANONICAL_DOCUMENT_COUNT,
             approved_document_count=CADEC_APPROVED_DOCUMENT_COUNT,
             excluded_document_ids=CADEC_EXCLUDED_DOCUMENT_IDS,
@@ -559,6 +571,33 @@ class CadecReleaseManifestV1(DurableModel):
 
     @model_validator(mode="after")
     def validate_exact_freeze(self) -> Self:
+        admitted_profiles = (
+            (
+                "M1B-CADEC-001",
+                CADEC_CORPUS_VERSION,
+                CADEC_EXTERNAL_MANIFEST_BYTES,
+                CADEC_EXTERNAL_MANIFEST_SHA256,
+                CADEC_TERMINAL_FREEZE_AUDIT_BYTES,
+                CADEC_TERMINAL_FREEZE_AUDIT_SHA256,
+            ),
+            (
+                "CADEC-ASSET-RECOVERY-20260918",
+                CADEC_RECOVERY_CORPUS_VERSION,
+                CADEC_RECOVERY_MANIFEST_BYTES,
+                CADEC_RECOVERY_MANIFEST_SHA256,
+                CADEC_RECOVERY_AUDIT_BYTES,
+                CADEC_RECOVERY_AUDIT_SHA256,
+            ),
+        )
+        if (
+            self.work_item,
+            self.corpus_version,
+            self.external_manifest_bytes,
+            self.external_manifest_sha256,
+            self.terminal_freeze_audit_bytes,
+            self.terminal_freeze_audit_sha256,
+        ) not in admitted_profiles:
+            raise ValueError("CADEC release must bind one exact closed manifest and audit profile")
         if self.excluded_document_ids != tuple(sorted(CADEC_EXCLUDED_DOCUMENT_IDS)):
             raise ValueError("CADEC exclusions must be exact, unique, and sorted")
         if self.encoding_exceptions != (CadecEncodingExceptionV1(),):
@@ -593,15 +632,13 @@ class _CadecCompositeOwner(DurableModel):
     corpus_id: Literal[
         "sha256:4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"
     ] = CADEC_CORPUS_ID
-    corpus_version: Literal[
-        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
-    ] = CADEC_CORPUS_VERSION
-    release_manifest_sha256: Literal[
-        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
-    ] = CADEC_CORPUS_VERSION
-    terminal_freeze_audit_sha256: Literal[
-        "sha256:18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
-    ] = "sha256:18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
+    corpus_version: str = Field(default=CADEC_CORPUS_VERSION, pattern=r"^sha256:[0-9a-f]{64}$")
+    release_manifest_sha256: str = Field(
+        default=CADEC_CORPUS_VERSION, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    terminal_freeze_audit_sha256: str = Field(
+        default=f"sha256:{CADEC_TERMINAL_FREEZE_AUDIT_SHA256}", pattern=r"^sha256:[0-9a-f]{64}$"
+    )
     split: CadecSplit
     split_membership_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     artifact_id: ArtifactId
@@ -609,6 +646,24 @@ class _CadecCompositeOwner(DurableModel):
 
     @model_validator(mode="after")
     def validate_release_binding(self) -> Self:
+        admitted_profiles = (
+            (
+                CADEC_CORPUS_VERSION,
+                CADEC_CORPUS_VERSION,
+                f"sha256:{CADEC_TERMINAL_FREEZE_AUDIT_SHA256}",
+            ),
+            (
+                CADEC_RECOVERY_CORPUS_VERSION,
+                CADEC_RECOVERY_CORPUS_VERSION,
+                f"sha256:{CADEC_RECOVERY_AUDIT_SHA256}",
+            ),
+        )
+        if (
+            self.corpus_version,
+            self.release_manifest_sha256,
+            self.terminal_freeze_audit_sha256,
+        ) not in admitted_profiles:
+            raise ValueError("CADEC child must bind one exact closed release profile")
         expected = {
             CadecSplit.TRAIN: CADEC_TRAIN_MEMBERSHIP_SHA256,
             CadecSplit.DEVELOPMENT: CADEC_DEVELOPMENT_MEMBERSHIP_SHA256,

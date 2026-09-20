@@ -60,3 +60,6 @@ exports/
 reports/generated/
 logs/
 *.log
+
+# Machine-local worktrees, credentials, data and evidence
+.local/

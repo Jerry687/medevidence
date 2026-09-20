@@ -1,5 +1,131 @@
 # Product Requirements Document
 
+## Current local delivery (2026-09-18)
+
+The Owner selected qwen3.8-max-0902 and authorized completing the local application.
+ADR039-042 and the configured local runtime supersede the historical active-provider
+prohibitions below for this delivery only; failed historical runs remain unchanged.
+Qwen V4 uses the existing semantic V2 contract and application-owned review routing.
+Source collection, verified material, generation, semantic validation, durable review
+and approved export are now composed. See LOCAL_RUNBOOK.md for configuration and
+current evidence. Missing approved CADEC assets are visible policy skips. No held-out
+or clinical acceptance is claimed by the Development score or offline tests.
+
+## M3-008B DeepSeek calibration closure
+
+The DeepSeek calibration path is closed as
+`M3-008B-DEEPSEEK-CALIBRATION_CLOSED_EXTERNAL_EXECUTION_NOT_ACCEPTED`.
+Attempt009 and Attempt010 are immutable truthful historical evidence. In both runs,
+cases1-4 succeeded before case5 received HTTP 200 responses that did not
+complete within the unchanged governed shared deadline: attempt1 closed
+`transport_unavailable` and attempt2 closed `deadline_exceeded`. Implementation
+review remained `P0 0 / P1 0 / P2 0`; this is external-execution
+non-acceptance, not an implementation failure. No accepted 36-case calibration
+metrics or artifact were established.
+
+Attempt011 is not authorized. Deadlines, retries, Owner labels, and historical
+provider-attempt evidence must not be changed to force completion. M3-009 must
+not start, and Holdout-20 remains sealed. The retained DeepSeek implementation
+is historical provider-evaluation work; its presence grants no execution
+authority. A replacement provider requires separate Owner authorization.
+
+## M3-008B Successor-005 semantic-result requirement
+
+`M3-008B-SUCCESSOR-005-APPLICATION-DERIVED-HUMAN-REVIEW` introduces the new
+provider-neutral `M3_STAGE2_SEMANTIC_RESULT_V2` contract family. The provider
+returns only one of `supported`, `uncertain`, or `unsupported`, one to eight
+bounded canonical rationale codes, and a bounded explanation. Provider output
+must not contain, decide, or persist `human_review_required`; rationale codes
+describe semantic support and never control workflow routing.
+
+The distinct semantic contract version is
+`m3.stage2-semantic-result.contract.v2`, identity
+`sha256:9b97996233f6dc80091f196209b18c27b23e0eeb5c82c6e7e8c0f954df69a3bb`.
+Every active V2 result and receipt binds the exact evaluator method
+`deepseek.responses.independent_semantic_evaluation`, provider version
+`m3.semantic-evaluation.v2.deepseek-responses.v2`, and DeepSeek profile
+identity
+`sha256:64890c63e275c5bbce00f18e31899b4326d16220e6e7865356a3618ef4e557e9`.
+An arbitrary evaluator or substituted profile fails closed.
+
+After canonical Stage-2 reconstruction, one versioned deterministic
+application policy derives the workflow disposition:
+
+- `unsupported` rejects the formal citation;
+- `uncertain` requires human review;
+- ordinary `supported` plus `supports`, with no governed escalation, requires
+  no human review;
+- `supported` plus `contradicts` requires human review; and
+- an applicable non-consistent comparability/conflict state or
+  policy-designated safety-sensitive inference requires human review.
+
+One ordered declarative six-rule table is the sole routing authority and drives
+the policy hash, runtime selection, and complete routing matrix. The semantic
+contract separately defines, for each semantic state, the allowed, required-
+any, and forbidden rationale-code sets; invalid state/code combinations fail
+before routing.
+
+Each report result binds either an empty comparability registry or exactly one
+participating comparison/conflict pair with its exact identities, hashes, and
+outcome. Only that bound participant may affect routing. Unrelated conflicts do
+not escalate the result, while foreign, stale, partial, or swapped participant
+bindings fail closed.
+
+Stage-1 failure remains terminal before provider execution. The derived routing
+decision and its policy identity are bound into result and validation
+provenance, but routing correctness is evaluated separately from provider
+semantic agreement. The frozen 36 Project-Owner labels, identity
+`sha256:758aaccd90e2e545af2215640426a20b2c75c038d40f0d1d2b2e0cc716aaf806`,
+are semantic-support truth only and are not human-review labels.
+
+The exhausted V1 prompt/rubric versions 1 through 3 and Attempts001-006 remain
+immutable history. Attempt006 completed five successful cases; its valid case
+006 provider output failed the V1 application-policy binding and is governed as
+`V1_PROVIDER_OUTPUT_VALID_BUT_APPLICATION_POLICY_BINDING_FAILED`, not a model
+semantic failure. Successor-004 calibration is not accepted.
+
+Attempts007-010 are immutable failed Semantic Contract V2 Development-version-1
+evidence. Attempt007 recorded 10 ledger events across five HTTP attempts.
+Attempts008, 009, and 010 each recorded 12 events across six HTTP attempts:
+cases1-4 succeeded with exact raw evidence; case5 attempt1 closed
+`transport_unavailable` after an HTTP 200 incomplete body with no raw artifact,
+then attempt2 reached the same absolute deadline with no raw artifact and no
+attempt3. Attempt009 and Attempt010 therefore establish the same exact external
+provider-availability/deadline non-acceptance under the frozen policy, not a
+code or semantic defect, and neither produced a calibration-quality result or
+artifact. The DeepSeek path is closed; no Attempt011 is authorized. V2 has at
+most three globally applicable Development prompt/rubric versions. Holdout-20
+remains sealed.
+
+## M3-008B accepted provider-attempt infrastructure
+
+The exact Successor-004 provider transport, credential handling, durable
+attempt ledger, framing/media authority, V1/V2 evidence separation, and
+terminal evidence architecture are accepted only as infrastructure for
+successor reuse. Successor-005 mechanically reconstructs the exact audited
+25-path input manifest
+`sha256:3764ce9a44294a0d2df1c7d9864747c1869fc4f6a88aded89d0567f387b19faa`
+at baseline `26c67108bf5b8de8b05bddf7e7ec5bac61261425`; this is implementation
+input, not evidence that Successor-004 was integrated or calibration-passed.
+
+## M3-008B secure provider-attempt successor
+
+ADR-022 requires committed START-before-send, insert-only terminal/recovery
+truth, credential-echo suppression, safe raw-before-parse persistence, and
+ledger-derived external calibration evidence.
+
+## M3-008B DeepSeek calibration provider
+
+ADR-021 established the dedicated
+DeepSeek Responses adapter using `deepseek-v4-pro`, high reasoning, strict
+application-validated JSON Schema output, and no tools or web search. The
+provider profile remains isolated from semantic/workflow authority. ADR-023
+replaces only the active semantic contract with the semantic-only V2 family;
+the frozen 36-case Project-Owner semantic truth remains unchanged. This
+provider is advisory only and is authorized solely for public research data;
+no PHI, private clinical record, Holdout content, or label may enter a provider
+request.
+
 ## M1B FAERS aggregate contract candidate
 
 M1B adds a bounded, research-only FAERS aggregate domain contract without

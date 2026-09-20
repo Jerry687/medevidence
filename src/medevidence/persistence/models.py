@@ -9,6 +9,11 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from medevidence.tools.provider_attempt_framing import (
+    render_postgres_contract,
+    render_v1_immutability_predicate,
+)
+
 SCHEMA = "medevidence"
 
 EXPECTED_CHECK_NAMES = (
@@ -79,6 +84,35 @@ EXPECTED_CHECK_NAMES = (
     "ck_m3_validation_receipts_hashes",
     "ck_m3_validation_receipts_versions",
     "ck_m3_validation_receipts_payload",
+    "ck_m3_stage1_receipts_schema",
+    "ck_m3_stage1_receipts_identities",
+    "ck_m3_stage1_receipts_hashes",
+    "ck_m3_stage1_receipts_versions",
+    "ck_m3_stage1_receipts_payload",
+    "ck_m3_provider_attempt_events_schema",
+    "ck_m3_provider_attempt_events_identity",
+    "ck_m3_provider_attempt_events_ordinals",
+    "ck_m3_provider_attempt_events_bindings",
+    "ck_m3_provider_attempt_events_shape",
+    "ck_m3_provider_attempt_events_headers",
+    "ck_m3_provider_attempt_events_closure_binding",
+    "ck_m3_provider_attempt_events_v1_immutable",
+    "ck_m3_provider_attempt_events_framing_v2",
+    "ck_m3_report_documents_identity",
+    "ck_m3_report_documents_hashes",
+    "ck_m3_report_documents_payload",
+    "ck_m3_pending_drafts_identity",
+    "ck_m3_pending_drafts_hash",
+    "ck_m3_review_records_identity",
+    "ck_m3_review_records_decision",
+    "ck_m3_review_records_payload",
+    "ck_m3_exports_identity",
+    "ck_m3_exports_hashes",
+    "ck_m3_exports_status",
+    "ck_m3_exports_names",
+    "ck_m3_evidence_provenance_identity",
+    "ck_m3_evidence_provenance_path",
+    "ck_m3_evidence_provenance_source",
 )
 
 OUTCOME = """(execution_status, coverage_status, result_status) IN (
@@ -136,6 +170,57 @@ top = sql_text_array(TOP_KEYS)
 status = sql_text_array(STATUS_KEYS)
 relationship = sql_text_array(RELATIONSHIP_KEYS)
 
+PROVIDER_V1_TERMINAL_DISPOSITIONS = (
+    "success",
+    "retryable_status",
+    "transport_unavailable",
+    "deadline_exceeded",
+    "response_invalid",
+    "response_too_large",
+    "credential_echo",
+    "authentication_failed",
+    "provider_rejected",
+    "candidate_invalid",
+    "evidence_persistence_failure",
+)
+PROVIDER_V2_TERMINAL_DISPOSITIONS = (
+    *PROVIDER_V1_TERMINAL_DISPOSITIONS,
+    "validation_internal_failure",
+)
+
+
+def _provider_attempt_shape(dispositions: tuple[str, ...]) -> str:
+    terminal_dispositions = ",".join(f"'{item}'" for item in dispositions)
+    return (
+        "(event_kind='START' AND disposition='started' AND completed_at_utc IS NULL "
+        "AND http_status IS NULL AND error_code IS NULL AND credential_echo=false "
+        "AND body_complete IS NULL AND body_byte_count IS NULL AND body_hash IS NULL "
+        "AND body_relative_path IS NULL AND observed_body_bytes_lower_bound IS NULL) OR "
+        "(event_kind='RECOVERY' AND disposition='interrupted_unknown_after_start' "
+        "AND completed_at_utc IS NOT NULL AND http_status IS NULL "
+        "AND error_code='interrupted_unknown_after_start' AND credential_echo=false "
+        "AND body_complete IS NULL AND body_byte_count IS NULL AND body_hash IS NULL "
+        "AND body_relative_path IS NULL AND observed_body_bytes_lower_bound IS NULL) OR "
+        "(event_kind='TERMINAL' AND completed_at_utc IS NOT NULL AND disposition IN ("
+        f"{terminal_dispositions}) AND ((disposition='success' AND error_code IS NULL) OR "
+        "(disposition<>'success' AND error_code=disposition)) AND ((credential_echo=true "
+        "AND disposition='credential_echo' AND body_hash IS NULL AND body_relative_path IS NULL) "
+        "OR (credential_echo=false AND ((body_hash IS NOT NULL AND body_relative_path IS NOT NULL "
+        "AND body_complete=true AND body_byte_count IS NOT NULL "
+        "AND observed_body_bytes_lower_bound=body_byte_count) OR "
+        "(body_hash IS NULL AND body_relative_path IS NULL)))))"
+    )
+
+
+PROVIDER_V1_SHAPE_SQL = _provider_attempt_shape(PROVIDER_V1_TERMINAL_DISPOSITIONS)
+PROVIDER_VERSIONED_SHAPE_SQL = (
+    "((schema_version IS NOT DISTINCT FROM 'M3_PROVIDER_ATTEMPT_EVENT_V1' AND "
+    f"({PROVIDER_V1_SHAPE_SQL})) OR "
+    "(schema_version IS NOT DISTINCT FROM 'M3_PROVIDER_ATTEMPT_EVENT_V2' AND "
+    f"({_provider_attempt_shape(PROVIDER_V2_TERMINAL_DISPOSITIONS)}))) IS TRUE"
+)
+
+
 CHECK_SQL = {
     "ck_artifact_hashes": "artifact_id ~ '^sha256:[0-9a-f]{64}$' AND content_hash ~ '^sha256:[0-9a-f]{64}$' AND artifact_id = content_hash",
     "ck_artifact_kind_partition": "(artifact_kind,source_partition) IN (('pubmed_http_response','pubmed'),('snapshot_manifest','pubmed'),('publication_record','pubmed'),('acquisition_registration_envelope','pubmed'),('run_registration_envelope','global'),('research_report','global'))",
@@ -164,7 +249,7 @@ CHECK_SQL = {
     "ck_artifact_lineage_schema": "schema_version='1.0' AND lineage_ordinal BETWEEN 0 AND 100",
     "ck_artifact_lineage_type_shape": "lineage_type IN ('manifest_to_raw_response','publication_to_manifest','acquisition_envelope_to_manifest','acquisition_envelope_to_raw_response','acquisition_envelope_to_publication','report_to_publication','run_envelope_to_report')",
     "ck_research_run_ids": f"run_id ~ '^run:{UUID4}$' AND run_intent_id ~ '^run-intent:sha256:[0-9a-f]{{64}}$' AND request_id ~ '^request:{UUID4}$' AND scope_id ~ '^scope:sha256:[0-9a-f]{{64}}$' AND report_id ~ '^report:sha256:[0-9a-f]{{64}}$'",
-    "ck_research_run_static": "code_revision ~ '^[0-9a-f]{40}$' AND execution_profile_id='M1A_CONSTRAINED_V1' AND catalog_version='m1a-concepts-v1' AND catalog_content_hash='sha256:eaffc3ee01ecd46a134578838b0304474642bf5e4a0c6e87302825d52be7682e' AND source='pubmed' AND char_length(pubmed_query) BETWEEN 1 AND 512",
+    "ck_research_run_static": "code_revision ~ '^[0-9a-f]{40}$' AND execution_profile_id='M1A_CONSTRAINED_V1' AND ((catalog_version='m1a-concepts-v1' AND catalog_content_hash='sha256:eaffc3ee01ecd46a134578838b0304474642bf5e4a0c6e87302825d52be7682e') OR (catalog_version='m3.local-research-input.v1' AND catalog_content_hash='sha256:60ad5de184b4ab9972ca6179e4df8fd0f56d8e6741852f48331b465772b0e4ba')) AND source='pubmed' AND char_length(pubmed_query) BETWEEN 1 AND 512",
     "ck_research_run_concepts": "cardinality(drug_concept_ids) BETWEEN 1 AND 4 AND cardinality(adverse_event_concept_ids) BETWEEN 1 AND 4 AND array_position(drug_concept_ids,NULL) IS NULL AND array_position(adverse_event_concept_ids,NULL) IS NULL",
     "ck_research_run_dates": "(start_date IS NULL AND end_date IS NULL) OR (start_date IS NOT NULL AND end_date IS NOT NULL AND start_date<=end_date)",
     "ck_research_run_times": "completed_at_utc >= started_at_utc",
@@ -198,11 +283,45 @@ CHECK_SQL = {
     "ck_registration_observation_expected_binding": "(expected_artifact_id IS NULL AND expected_content_hash IS NULL AND expected_artifact_kind IS NULL AND expected_source_partition IS NULL) OR (expected_artifact_id IS NOT NULL AND expected_content_hash IS NOT NULL AND expected_artifact_kind IS NOT NULL AND expected_source_partition IS NOT NULL AND expected_artifact_id=expected_content_hash AND (expected_artifact_kind,expected_source_partition) IN (('pubmed_http_response','pubmed'),('snapshot_manifest','pubmed'),('publication_record','pubmed'),('acquisition_registration_envelope','pubmed'),('run_registration_envelope','global'),('research_report','global')))",
     "ck_registration_observation_shape": "(observation_kind='missing_expected_artifact' AND observed_relative_path IS NOT NULL AND expected_artifact_id IS NOT NULL AND expected_artifact_kind IS NOT NULL AND expected_source_partition IS NOT NULL AND expected_content_hash IS NOT NULL AND expected_byte_size IS NOT NULL AND expected_envelope_id IS NULL AND observed_artifact_id IS NULL AND observed_envelope_id IS NULL AND observed_content_hash IS NULL AND observed_byte_size IS NULL) OR (observation_kind='corrupt_content' AND observed_relative_path IS NOT NULL AND expected_artifact_id IS NOT NULL AND expected_artifact_kind IS NOT NULL AND expected_source_partition IS NOT NULL AND expected_content_hash IS NOT NULL AND expected_byte_size IS NOT NULL AND observed_artifact_id IS NOT NULL AND observed_content_hash IS NOT NULL AND observed_byte_size IS NOT NULL AND observed_artifact_id=observed_content_hash AND (expected_content_hash<>observed_content_hash OR expected_byte_size<>observed_byte_size) AND expected_envelope_id IS NULL AND observed_envelope_id IS NULL) OR (observation_kind='invalid_envelope' AND observed_relative_path IS NOT NULL AND expected_artifact_id IS NULL AND expected_artifact_kind IS NULL AND expected_source_partition IS NULL AND expected_content_hash IS NULL AND observed_artifact_id IS NULL AND observed_content_hash IS NULL AND expected_byte_size IS NULL AND observed_byte_size IS NULL) OR (observation_kind='unregistered_orphan' AND observed_relative_path IS NOT NULL AND expected_artifact_id IS NULL AND expected_artifact_kind IS NULL AND expected_source_partition IS NULL AND expected_content_hash IS NULL AND expected_envelope_id IS NULL AND observed_content_hash IS NOT NULL AND observed_byte_size IS NOT NULL AND NOT (observed_artifact_id IS NOT NULL AND observed_envelope_id IS NOT NULL) AND (observed_artifact_id IS NULL OR observed_artifact_id=observed_content_hash))",
     "ck_registration_observation_detail": "char_length(btrim(redacted_detail)) BETWEEN 1 AND 512",
-    "ck_m3_validation_receipts_schema": "schema_version='M3_VALIDATION_RECEIPT_V1'",
-    "ck_m3_validation_receipts_identities": f"receipt_id ~ '^validation-receipt:sha256:[0-9a-f]{{64}}$' AND run_id ~ '^run:{UUID4.replace('-4', '-[1-5]')}$' AND report_id ~ '^report:sha256:[0-9a-f]{{64}}$'",
+    "ck_m3_validation_receipts_schema": "schema_version IN ('M3_VALIDATION_RECEIPT_V1','M3_VALIDATION_RECEIPT_V2')",
+    "ck_m3_validation_receipts_identities": f"((schema_version='M3_VALIDATION_RECEIPT_V1' AND receipt_id ~ '^validation-receipt:sha256:[0-9a-f]{{64}}$') OR (schema_version='M3_VALIDATION_RECEIPT_V2' AND receipt_id ~ '^validation-receipt-v2:sha256:[0-9a-f]{{64}}$')) AND run_id ~ '^run:{UUID4.replace('-4', '-[1-5]')}$' AND report_id ~ '^report:sha256:[0-9a-f]{{64}}$'",
     "ck_m3_validation_receipts_hashes": "receipt_content_hash ~ '^sha256:[0-9a-f]{64}$' AND report_content_hash ~ '^sha256:[0-9a-f]{64}$' AND validation_input_hash ~ '^sha256:[0-9a-f]{64}$' AND task_binding_hash ~ '^sha256:[0-9a-f]{64}$'",
     "ck_m3_validation_receipts_versions": "char_length(btrim(evaluator_method)) BETWEEN 1 AND 512 AND char_length(btrim(evaluator_version)) BETWEEN 1 AND 512 AND char_length(btrim(policy_version)) BETWEEN 1 AND 512 AND char_length(btrim(configuration_version)) BETWEEN 1 AND 512",
     "ck_m3_validation_receipts_payload": "jsonb_typeof(receipt_payload)='object'",
+    "ck_m3_stage1_receipts_schema": "schema_version='M3_STAGE1_VALIDATION_RECEIPT_V2'",
+    "ck_m3_stage1_receipts_identities": f"receipt_id ~ '^validation-stage1-receipt-v2:sha256:[0-9a-f]{{64}}$' AND run_id ~ '^run:{UUID4.replace('-4', '-[1-5]')}$' AND scope_id ~ '^scope:sha256:[0-9a-f]{{64}}$' AND report_id ~ '^report:sha256:[0-9a-f]{{64}}$' AND stage1_result_id ~ '^validation-stage1-result:sha256:[0-9a-f]{{64}}$'",
+    "ck_m3_stage1_receipts_hashes": "receipt_content_hash ~ '^sha256:[0-9a-f]{64}$' AND report_content_hash ~ '^sha256:[0-9a-f]{64}$' AND validation_input_hash ~ '^sha256:[0-9a-f]{64}$' AND registry_binding_hash ~ '^sha256:[0-9a-f]{64}$' AND task_binding_hash ~ '^sha256:[0-9a-f]{64}$'",
+    "ck_m3_stage1_receipts_versions": "char_length(btrim(policy_version)) BETWEEN 1 AND 512 AND char_length(btrim(configuration_version)) BETWEEN 1 AND 512",
+    "ck_m3_stage1_receipts_payload": "jsonb_typeof(receipt_payload)='object'",
+    "ck_m3_report_documents_identity": "document_id ~ '^report-document:sha256:[0-9a-f]{64}$' AND report_id ~ '^report:sha256:[0-9a-f]{64}$' AND validation_receipt_id ~ '^validation-receipt(-v2)?:sha256:[0-9a-f]{64}$'",
+    "ck_m3_report_documents_hashes": "report_content_hash ~ '^sha256:[0-9a-f]{64}$' AND validation_receipt_hash ~ '^sha256:[0-9a-f]{64}$' AND render_document_hash ~ '^sha256:[0-9a-f]{64}$' AND json_byte_hash ~ '^sha256:[0-9a-f]{64}$' AND markdown_byte_hash ~ '^sha256:[0-9a-f]{64}$'",
+    "ck_m3_report_documents_payload": "jsonb_typeof(request_payload)='object' AND jsonb_typeof(provenance_payload)='array' AND jsonb_typeof(document_payload)='object'",
+    "ck_m3_pending_drafts_identity": "persistence_id ~ '^pending-draft:sha256:[0-9a-f]{64}$' AND report_id ~ '^report:sha256:[0-9a-f]{64}$'",
+    "ck_m3_pending_drafts_hash": "report_content_hash ~ '^sha256:[0-9a-f]{64}$'",
+    "ck_m3_review_records_identity": "review_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' AND pending_draft_persistence_id ~ '^pending-draft:sha256:[0-9a-f]{64}$' AND document_id ~ '^report-document:sha256:[0-9a-f]{64}$' AND destination_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'",
+    "ck_m3_review_records_decision": "decision IN ('approve','reject','edit')",
+    "ck_m3_review_records_payload": "jsonb_typeof(review_payload)='object'",
+    "ck_m3_exports_identity": "export_id ~ '^export:sha256:[0-9a-f]{64}$' AND review_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' AND document_id ~ '^report-document:sha256:[0-9a-f]{64}$' AND report_id ~ '^report:sha256:[0-9a-f]{64}$' AND destination_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'",
+    "ck_m3_exports_hashes": "idempotency_key ~ '^sha256:[0-9a-f]{64}$' AND report_content_hash ~ '^sha256:[0-9a-f]{64}$' AND json_byte_hash ~ '^sha256:[0-9a-f]{64}$' AND markdown_byte_hash ~ '^sha256:[0-9a-f]{64}$'",
+    "ck_m3_exports_status": "(status='prepared' AND exported_at_utc IS NULL) OR (status='committed' AND exported_at_utc IS NOT NULL)",
+    "ck_m3_exports_names": "json_filename ~ '^export-[0-9a-f]{64}\\.json$' AND markdown_filename ~ '^export-[0-9a-f]{64}\\.md$'",
+    "ck_m3_evidence_provenance_identity": f"run_id ~ '^run:{UUID4}$' AND evidence_id ~ '^evidence:sha256:[0-9a-f]{{64}}$' AND envelope_id='evidence-provenance:' || envelope_hash AND envelope_hash ~ '^sha256:[0-9a-f]{{64}}$'",
+    "ck_m3_evidence_provenance_path": "relative_path='m3/evidence-provenance/' || substr(envelope_hash,8,2) || '/' || substr(envelope_hash,8) || '.json' AND byte_size BETWEEN 1 AND 32768",
+    "ck_m3_evidence_provenance_source": "source IN ('pubmed','dailymed','faers','cadec') AND char_length(snapshot_id) BETWEEN 1 AND 160",
+    "ck_m3_provider_attempt_events_schema": "schema_version IN ('M3_PROVIDER_ATTEMPT_EVENT_V1','M3_PROVIDER_ATTEMPT_EVENT_V2')",
+    "ck_m3_provider_attempt_events_identity": "event_id ~ '^provider-attempt-event:sha256:[0-9a-f]{64}$' AND provider_run_id ~ '^provider-attempt-run:sha256:[0-9a-f]{64}$' AND case_id ~ '^M3-008B-CAL-[0-9]{3}$'",
+    "ck_m3_provider_attempt_events_ordinals": "case_ordinal BETWEEN 1 AND 36 AND attempt_ordinal BETWEEN 1 AND 3 AND event_slot BETWEEN 0 AND 1 AND (event_kind,event_slot) IN (('START',0),('TERMINAL',1),('RECOVERY',1))",
+    "ck_m3_provider_attempt_events_bindings": "provider='DeepSeek API' AND endpoint='https://api.deepseek.com/responses' AND model='deepseek-v4-pro' AND configuration_hash ~ '^sha256:[0-9a-f]{64}$' AND request_hash ~ '^sha256:[0-9a-f]{64}$' AND case_id='M3-008B-CAL-' || lpad(case_ordinal::text,3,'0')",
+    "ck_m3_provider_attempt_events_shape": PROVIDER_VERSIONED_SHAPE_SQL,
+    "ck_m3_provider_attempt_events_headers": "cardinality(approved_header_names)<=5 AND array_position(approved_header_names,NULL) IS NULL AND approved_header_names <@ ARRAY['content-type','content-length','transfer-encoding','content-encoding','x-request-id']::varchar[] AND (completed_at_utc IS NULL OR completed_at_utc>=started_at_utc) AND (http_status IS NULL OR http_status BETWEEN 100 AND 599) AND (body_byte_count IS NULL OR body_byte_count BETWEEN 0 AND 131072) AND (observed_body_bytes_lower_bound IS NULL OR observed_body_bytes_lower_bound>=0) AND (body_hash IS NULL OR body_hash ~ '^sha256:[0-9a-f]{64}$') AND (body_relative_path IS NULL OR (char_length(body_relative_path) BETWEEN 1 AND 1024 AND left(body_relative_path,1)<>'/' AND position(chr(92) IN body_relative_path)=0 AND body_relative_path !~ '(^|/)\\.{1,2}(/|$)'))",
+    "ck_m3_provider_attempt_events_closure_binding": "((event_kind='START' AND start_event_id IS NULL AND start_event_kind IS NULL) OR (event_kind IN ('TERMINAL','RECOVERY') AND start_event_id IS NOT NULL AND start_event_kind='START')) AND (event_kind<>'TERMINAL' OR (((disposition='success' AND error_code IS NULL) OR (disposition<>'success' AND error_code=disposition)) AND (disposition<>'success' OR (body_complete=true AND body_hash IS NOT NULL AND body_relative_path IS NOT NULL AND body_byte_count IS NOT NULL))))",
+    "ck_m3_provider_attempt_events_v1_immutable": render_v1_immutability_predicate(),
+    "ck_m3_provider_attempt_events_framing_v2": (
+        "(schema_version IS DISTINCT FROM 'M3_PROVIDER_ATTEMPT_EVENT_V2' OR "
+        f"({render_postgres_contract().fact_free_v2_event_predicate} OR "
+        "(event_kind IS NOT DISTINCT FROM 'TERMINAL' AND "
+        f"{render_postgres_contract().canonical_decision_check}))) IS TRUE"
+    ),
 }
 
 CHECK_SQL["ck_publication_version_payload"] = f"""
@@ -257,7 +376,7 @@ AND ((version_payload#>'{{publication_status,relationship}}')='null'::jsonb OR
 AND schema_version='1.0'
 """
 
-assert len(CHECK_SQL) == 67
+assert len(CHECK_SQL) == 96
 
 
 def ck(name: str) -> sa.CheckConstraint:
@@ -854,6 +973,329 @@ m3_validation_receipts = sa.Table(
     schema=SCHEMA,
 )
 
+m3_stage1_receipts = sa.Table(
+    "m3_stage1_receipts",
+    metadata,
+    sa.Column("receipt_id", sa.String(128), nullable=False),
+    sa.Column("schema_version", sa.String(40), nullable=False),
+    sa.Column("receipt_content_hash", sa.CHAR(71), nullable=False),
+    sa.Column("run_id", sa.String(128), nullable=False),
+    sa.Column("scope_id", sa.String(128), nullable=False),
+    sa.Column("report_id", sa.String(128), nullable=False),
+    sa.Column("report_content_hash", sa.CHAR(71), nullable=False),
+    sa.Column("validation_input_hash", sa.CHAR(71), nullable=False),
+    sa.Column("registry_binding_hash", sa.CHAR(71), nullable=False),
+    sa.Column("task_binding_hash", sa.CHAR(71), nullable=False),
+    sa.Column("stage1_result_id", sa.String(128), nullable=False),
+    sa.Column("policy_version", sa.String(512), nullable=False),
+    sa.Column("configuration_version", sa.String(512), nullable=False),
+    sa.Column("receipt_payload", postgresql.JSONB(), nullable=False),
+    sa.Column(
+        "persisted_at_utc",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.PrimaryKeyConstraint("receipt_id", name="pk_m3_stage1_receipts"),
+    sa.UniqueConstraint("receipt_content_hash", name="uq_m3_stage1_receipts_content_hash"),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[67:72]),
+    schema=SCHEMA,
+)
+
+m3_provider_attempt_events = sa.Table(
+    "m3_provider_attempt_events",
+    metadata,
+    sa.Column("event_id", sa.String(96), nullable=False),
+    sa.Column("schema_version", sa.String(40), nullable=False),
+    sa.Column("provider_run_id", sa.String(96), nullable=False),
+    sa.Column("case_id", sa.String(32), nullable=False),
+    sa.Column("case_ordinal", sa.SmallInteger(), nullable=False),
+    sa.Column("attempt_ordinal", sa.SmallInteger(), nullable=False),
+    sa.Column("event_kind", sa.String(16), nullable=False),
+    sa.Column("event_slot", sa.SmallInteger(), nullable=False),
+    sa.Column("start_event_id", sa.String(96), nullable=True),
+    sa.Column("start_event_kind", sa.String(16), nullable=True),
+    sa.Column("provider", sa.String(32), nullable=False),
+    sa.Column("endpoint", sa.String(256), nullable=False),
+    sa.Column("model", sa.String(128), nullable=False),
+    sa.Column("configuration_hash", sa.CHAR(71), nullable=False),
+    sa.Column("request_hash", sa.CHAR(71), nullable=False),
+    sa.Column("started_at_utc", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at_utc", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("http_status", sa.SmallInteger(), nullable=True),
+    sa.Column("disposition", sa.String(64), nullable=False),
+    sa.Column("error_code", sa.String(64), nullable=True),
+    sa.Column("credential_echo", sa.Boolean(), nullable=False),
+    sa.Column("body_complete", sa.Boolean(), nullable=True),
+    sa.Column("body_byte_count", sa.BigInteger(), nullable=True),
+    sa.Column("body_hash", sa.CHAR(71), nullable=True),
+    sa.Column("body_relative_path", sa.String(1024), nullable=True),
+    sa.Column("observed_body_bytes_lower_bound", sa.BigInteger(), nullable=True),
+    sa.Column(
+        "approved_header_names",
+        postgresql.ARRAY(sa.String(64), dimensions=1),
+        nullable=False,
+    ),
+    sa.Column(
+        "persisted_at_utc",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.Column("approved_header_names_identity", sa.String(128), nullable=True),
+    sa.Column(
+        "normalized_header_names",
+        postgresql.ARRAY(sa.String(64), dimensions=1),
+        nullable=True,
+    ),
+    sa.Column(
+        "normalized_content_encoding_values",
+        postgresql.ARRAY(sa.String(8192), dimensions=1),
+        nullable=True,
+    ),
+    sa.Column(
+        "normalized_content_length_values",
+        postgresql.ARRAY(sa.String(8192), dimensions=1),
+        nullable=True,
+    ),
+    sa.Column(
+        "normalized_content_type_values",
+        postgresql.ARRAY(sa.String(8192), dimensions=1),
+        nullable=True,
+    ),
+    sa.Column(
+        "normalized_transfer_encoding_values",
+        postgresql.ARRAY(sa.String(8192), dimensions=1),
+        nullable=True,
+    ),
+    sa.Column(
+        "normalized_x_request_id_values",
+        postgresql.ARRAY(sa.String(8192), dimensions=1),
+        nullable=True,
+    ),
+    sa.Column("normalized_header_facts_identity", sa.String(128), nullable=True),
+    sa.Column("raw_header_field_count", sa.BigInteger(), nullable=True),
+    sa.Column("framing_contract_identity", sa.String(128), nullable=True),
+    sa.Column("framing_input_identity", sa.String(128), nullable=True),
+    sa.Column("http_version_state", sa.String(16), nullable=True),
+    sa.Column("observed_http_version", sa.String(16), nullable=True),
+    sa.Column("header_surface_state", sa.String(16), nullable=True),
+    sa.Column("content_length_state", sa.String(16), nullable=True),
+    sa.Column("content_length_value", sa.BigInteger(), nullable=True),
+    sa.Column("transfer_encoding_state", sa.String(16), nullable=True),
+    sa.Column("content_encoding_state", sa.String(16), nullable=True),
+    sa.Column("content_type_state", sa.String(16), nullable=True),
+    sa.Column("actual_body_byte_count", sa.BigInteger(), nullable=True),
+    sa.Column("raw_evidence_state", sa.String(16), nullable=True),
+    sa.Column("raw_body_hash", sa.CHAR(71), nullable=True),
+    sa.Column("raw_relative_path", sa.String(1024), nullable=True),
+    sa.Column("raw_artifact_identity", sa.String(128), nullable=True),
+    sa.Column("framing_status", sa.String(32), nullable=True),
+    sa.Column("accepted_framing_class", sa.String(32), nullable=True),
+    sa.Column("framing_rejection_code", sa.String(64), nullable=True),
+    sa.PrimaryKeyConstraint("event_id", name="pk_m3_provider_attempt_events"),
+    sa.UniqueConstraint(
+        "provider_run_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "event_slot",
+        name="uq_m3_provider_attempt_event_slot",
+    ),
+    sa.UniqueConstraint(
+        "event_id",
+        "event_kind",
+        "schema_version",
+        "provider_run_id",
+        "case_ordinal",
+        "attempt_ordinal",
+        "configuration_hash",
+        "request_hash",
+        name="uq_m3_provider_attempt_event_start_binding",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "start_event_id",
+            "start_event_kind",
+            "schema_version",
+            "provider_run_id",
+            "case_ordinal",
+            "attempt_ordinal",
+            "configuration_hash",
+            "request_hash",
+        ],
+        [
+            "medevidence.m3_provider_attempt_events.event_id",
+            "medevidence.m3_provider_attempt_events.event_kind",
+            "medevidence.m3_provider_attempt_events.schema_version",
+            "medevidence.m3_provider_attempt_events.provider_run_id",
+            "medevidence.m3_provider_attempt_events.case_ordinal",
+            "medevidence.m3_provider_attempt_events.attempt_ordinal",
+            "medevidence.m3_provider_attempt_events.configuration_hash",
+            "medevidence.m3_provider_attempt_events.request_hash",
+        ],
+        name="fk_m3_provider_attempt_event_start",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+        match="SIMPLE",
+    ),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[72:81]),
+    schema=SCHEMA,
+)
+
+m3_report_documents = sa.Table(
+    "m3_report_documents",
+    metadata,
+    sa.Column("document_id", sa.String(128), nullable=False),
+    sa.Column("report_id", sa.String(128), nullable=False),
+    sa.Column("report_content_hash", sa.CHAR(71), nullable=False),
+    sa.Column("validation_receipt_id", sa.String(128), nullable=False),
+    sa.Column("validation_receipt_hash", sa.CHAR(71), nullable=False),
+    sa.Column("render_document_hash", sa.CHAR(71), nullable=False),
+    sa.Column("request_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("provenance_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("document_payload", postgresql.JSONB(), nullable=False),
+    sa.Column("json_byte_hash", sa.CHAR(71), nullable=False),
+    sa.Column("markdown_byte_hash", sa.CHAR(71), nullable=False),
+    sa.Column("generated_at_utc", sa.DateTime(timezone=True), nullable=False),
+    sa.Column(
+        "persisted_at_utc",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.PrimaryKeyConstraint("document_id", name="pk_m3_report_documents"),
+    sa.UniqueConstraint(
+        "report_id", "report_content_hash", name="uq_m3_report_document_report_hash"
+    ),
+    sa.ForeignKeyConstraint(
+        ["validation_receipt_id"],
+        ["medevidence.m3_validation_receipts.receipt_id"],
+        name="fk_m3_report_document_receipt",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[81:84]),
+    schema=SCHEMA,
+)
+
+m3_pending_drafts = sa.Table(
+    "m3_pending_drafts",
+    metadata,
+    sa.Column("persistence_id", sa.String(128), nullable=False),
+    sa.Column("report_id", sa.String(128), nullable=False),
+    sa.Column("report_content_hash", sa.CHAR(71), nullable=False),
+    sa.Column(
+        "persisted_at_utc",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.PrimaryKeyConstraint("persistence_id", name="pk_m3_pending_drafts"),
+    sa.UniqueConstraint("report_id", "report_content_hash", name="uq_m3_pending_draft_report_hash"),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[84:86]),
+    schema=SCHEMA,
+)
+
+m3_review_records = sa.Table(
+    "m3_review_records",
+    metadata,
+    sa.Column("review_id", sa.String(128), nullable=False),
+    sa.Column("pending_draft_persistence_id", sa.String(128), nullable=False),
+    sa.Column("document_id", sa.String(128), nullable=False),
+    sa.Column("destination_id", sa.String(128), nullable=False),
+    sa.Column("decision", sa.String(16), nullable=False),
+    sa.Column("review_payload", postgresql.JSONB(), nullable=False),
+    sa.Column(
+        "persisted_at_utc",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.PrimaryKeyConstraint("review_id", name="pk_m3_review_records"),
+    sa.UniqueConstraint(
+        "pending_draft_persistence_id", "destination_id", name="uq_m3_review_pending_destination"
+    ),
+    sa.ForeignKeyConstraint(
+        ["pending_draft_persistence_id"],
+        ["medevidence.m3_pending_drafts.persistence_id"],
+        name="fk_m3_review_pending",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    sa.ForeignKeyConstraint(
+        ["document_id"],
+        ["medevidence.m3_report_documents.document_id"],
+        name="fk_m3_review_document",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[86:89]),
+    schema=SCHEMA,
+)
+
+m3_exports = sa.Table(
+    "m3_exports",
+    metadata,
+    sa.Column("export_id", sa.String(128), nullable=False),
+    sa.Column("idempotency_key", sa.CHAR(71), nullable=False),
+    sa.Column("review_id", sa.String(128), nullable=False),
+    sa.Column("document_id", sa.String(128), nullable=False),
+    sa.Column("report_id", sa.String(128), nullable=False),
+    sa.Column("report_content_hash", sa.CHAR(71), nullable=False),
+    sa.Column("destination_id", sa.String(128), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("json_filename", sa.String(96), nullable=False),
+    sa.Column("markdown_filename", sa.String(96), nullable=False),
+    sa.Column("json_byte_hash", sa.CHAR(71), nullable=False),
+    sa.Column("markdown_byte_hash", sa.CHAR(71), nullable=False),
+    sa.Column("prepared_at_utc", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("exported_at_utc", sa.DateTime(timezone=True), nullable=True),
+    sa.PrimaryKeyConstraint("export_id", name="pk_m3_exports"),
+    sa.UniqueConstraint("idempotency_key", name="uq_m3_export_idempotency"),
+    sa.UniqueConstraint(
+        "report_id", "report_content_hash", "destination_id", name="uq_m3_export_report_destination"
+    ),
+    sa.ForeignKeyConstraint(
+        ["review_id"],
+        ["medevidence.m3_review_records.review_id"],
+        name="fk_m3_export_review",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    sa.ForeignKeyConstraint(
+        ["document_id"],
+        ["medevidence.m3_report_documents.document_id"],
+        name="fk_m3_export_document",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[89:93]),
+    schema=SCHEMA,
+)
+
+m3_evidence_provenance = sa.Table(
+    "m3_evidence_provenance",
+    metadata,
+    sa.Column("run_id", sa.String(40), nullable=False),
+    sa.Column("evidence_id", sa.String(80), nullable=False),
+    sa.Column("source", sa.String(16), nullable=False),
+    sa.Column("snapshot_id", sa.String(160), nullable=False),
+    sa.Column("envelope_id", sa.String(96), nullable=False),
+    sa.Column("envelope_hash", sa.CHAR(71), nullable=False),
+    sa.Column("relative_path", sa.String(160), nullable=False),
+    sa.Column("byte_size", sa.Integer(), nullable=False),
+    sa.Column(
+        "persisted_at_utc",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.PrimaryKeyConstraint("run_id", "evidence_id", name="pk_m3_evidence_provenance"),
+    sa.UniqueConstraint("envelope_id", name="uq_m3_evidence_provenance_envelope"),
+    *(ck(name) for name in EXPECTED_CHECK_NAMES[93:96]),
+    schema=SCHEMA,
+)
+
 sa.Index(
     "ix_artifact_kind_partition", artifact.c.artifact_kind.asc(), artifact.c.source_partition.asc()
 )
@@ -1229,7 +1671,11 @@ m1b_runs = sa.Table(
     _column("schema_version", sa.Text()),
     sa.PrimaryKeyConstraint("run_id", name="pk_m1b_runs"),
     sa.UniqueConstraint("request_id", name="uq_m1b_runs_request"),
-    _m1b_ck("ck_m1b_runs_status", "status IN ('completed','degraded','failed')"),
+    _m1b_ck(
+        "ck_m1b_runs_status",
+        "status IN ('running','completed','degraded','failed') AND "
+        "(status<>'running' OR completed_at_utc IS NULL)",
+    ),
     _m1b_ck(
         "ck_m1b_runs_timestamp_order",
         "completed_at_utc IS NULL OR completed_at_utc >= created_at_utc",
@@ -1255,7 +1701,10 @@ m1b_acquisitions = sa.Table(
     _column("schema_version", sa.Text()),
     sa.PrimaryKeyConstraint("acquisition_id", name="pk_m1b_acquisitions"),
     _m1b_ck("ck_m1b_acquisitions_source", "source IN ('pubmed','dailymed','faers','cadec')"),
-    _m1b_ck("ck_m1b_acquisitions_operation", "operation IN ('search','fetch')"),
+    _m1b_ck(
+        "ck_m1b_acquisitions_operation",
+        "operation IN ('search','fetch') OR (source='dailymed' AND operation='packaging')",
+    ),
     _m1b_ck(
         "ck_m1b_acquisitions_faers_profile",
         "source<>'faers' OR execution_profile_id='FAERS_M1B_CONSTRAINED_V1'",
@@ -1429,9 +1878,18 @@ m1b_source_outcomes = sa.Table(
     _column("failure_id", sa.Text(), True),
     _column("warning_codes", postgresql.JSONB()),
     _column("schema_version", sa.Text()),
-    sa.PrimaryKeyConstraint("source_outcome_id", name="pk_m1b_source_outcomes"),
+    sa.PrimaryKeyConstraint(
+        "run_id",
+        "source",
+        "acquisition_id",
+        "source_outcome_id",
+        name="pk_m1b_source_outcomes",
+    ),
     _m1b_ck("ck_outcome_source", "source IN ('pubmed','dailymed','faers','cadec')"),
-    _m1b_ck("ck_outcome_operation", "operation IN ('search','fetch')"),
+    _m1b_ck(
+        "ck_outcome_operation",
+        "operation IN ('search','fetch') OR (source='dailymed' AND operation='packaging')",
+    ),
     _m1b_ck(
         "ck_outcome_seven",
         "(execution_status,coverage_status,result_status) IN (('succeeded','complete','matches'),('succeeded','complete','no_match'),('succeeded','partial','matches'),('succeeded','partial','indeterminate'),('failed','partial','matches'),('failed','partial','indeterminate'),('failed','unavailable','indeterminate'))",
@@ -2269,6 +2727,130 @@ m1b_faers_buckets = sa.Table(
     schema=SCHEMA,
 )
 
+m3_dailymed_v2_records = sa.Table(
+    "m3_dailymed_v2_records",
+    metadata,
+    sa.Column("record_id", sa.Text(), nullable=False),
+    sa.Column("schema_version", sa.Text(), nullable=False),
+    sa.Column("record_kind", sa.Text(), nullable=False),
+    sa.Column("run_id", sa.Text(), nullable=False),
+    sa.Column("scope_id", sa.Text(), nullable=False),
+    sa.Column("task_id", sa.Text(), nullable=False),
+    sa.Column("attempt_id", sa.Text(), nullable=False),
+    sa.Column("query_id", sa.Text(), nullable=False),
+    sa.Column("acquisition_id", sa.Text(), nullable=False),
+    sa.Column("acquisition_intent_id", sa.Text(), nullable=False),
+    sa.Column("snapshot_id", sa.Text(), nullable=False),
+    sa.Column("manifest_id", sa.Text(), nullable=False),
+    sa.Column("item_ordinal", sa.Integer(), nullable=False),
+    sa.Column("payload_hash", sa.Text(), nullable=False),
+    sa.Column("payload_bytes", sa.Integer(), nullable=False),
+    sa.Column("payload_json", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at_utc", sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint("record_id", name="pk_m3_dailymed_v2_records"),
+    sa.UniqueConstraint(
+        "run_id",
+        "attempt_id",
+        "record_kind",
+        "query_id",
+        "item_ordinal",
+        name="uq_m3_dailymed_v2_record_slot",
+    ),
+    sa.ForeignKeyConstraint(
+        ["acquisition_id"],
+        [f"{SCHEMA}.m1b_acquisitions.acquisition_id"],
+        name="fk_m3_dailymed_v2_record_acquisition",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    sa.ForeignKeyConstraint(
+        ["snapshot_id"],
+        [f"{SCHEMA}.m1b_snapshots.snapshot_id"],
+        name="fk_m3_dailymed_v2_record_snapshot",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    sa.ForeignKeyConstraint(
+        ["manifest_id"],
+        [f"{SCHEMA}.m1b_artifacts.artifact_id"],
+        name="fk_m3_dailymed_v2_record_manifest",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    sa.CheckConstraint(
+        "schema_version='m3.dailymed-v2-record.v1'",
+        name="ck_m3_dailymed_v2_record_schema",
+    ),
+    sa.CheckConstraint(
+        "record_kind IN ('discovery','packaging','decision','selected_spl','chunk')",
+        name="ck_m3_dailymed_v2_record_kind",
+    ),
+    sa.CheckConstraint(
+        "record_id ~ '^dailymed-v2-record:sha256:[0-9a-f]{64}$' AND "
+        "payload_hash ~ '^sha256:[0-9a-f]{64}$' AND "
+        "manifest_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="ck_m3_dailymed_v2_record_identity",
+    ),
+    sa.CheckConstraint(
+        "item_ordinal BETWEEN 0 AND 99 AND payload_bytes BETWEEN 2 AND 2097152 AND "
+        "jsonb_typeof(payload_json)='object' AND "
+        "octet_length(payload_json::text) BETWEEN 2 AND 2097152",
+        name="ck_m3_dailymed_v2_record_bounds",
+    ),
+    schema=SCHEMA,
+)
+
+m3_dailymed_v2_members = sa.Table(
+    "m3_dailymed_v2_members",
+    metadata,
+    sa.Column("run_id", sa.Text(), nullable=False),
+    sa.Column("acquisition_id", sa.Text(), nullable=False),
+    sa.Column("snapshot_id", sa.Text(), nullable=False),
+    sa.Column("ordinal", sa.Integer(), nullable=False),
+    sa.Column("link_id", sa.Text(), nullable=False),
+    sa.Column("artifact_id", sa.Text(), nullable=False),
+    sa.Column("content_hash", sa.Text(), nullable=False),
+    sa.Column("relative_path", sa.Text(), nullable=False),
+    sa.Column("byte_size", sa.Integer(), nullable=False),
+    sa.Column("media_type", sa.Text(), nullable=False),
+    sa.Column("http_status", sa.Integer(), nullable=False),
+    sa.Column("observed_at_utc", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("body_complete", sa.Boolean(), nullable=False),
+    sa.Column("termination_reason", sa.Text(), nullable=False),
+    sa.Column("page_number", sa.Integer(), nullable=False),
+    sa.Column("attempt_count", sa.Integer(), nullable=False),
+    sa.Column("request_url", sa.Text(), nullable=False),
+    sa.Column("final_url", sa.Text(), nullable=False),
+    sa.PrimaryKeyConstraint("acquisition_id", "ordinal", name="pk_m3_dailymed_v2_members"),
+    sa.UniqueConstraint("acquisition_id", "link_id", name="uq_m3_dailymed_v2_member_link"),
+    sa.ForeignKeyConstraint(
+        ["snapshot_id"],
+        [f"{SCHEMA}.m1b_snapshots.snapshot_id"],
+        name="fk_m3_dailymed_v2_member_snapshot",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    sa.ForeignKeyConstraint(
+        ["artifact_id"],
+        [f"{SCHEMA}.m1b_artifacts.artifact_id"],
+        name="fk_m3_dailymed_v2_member_artifact",
+        onupdate="RESTRICT",
+        ondelete="RESTRICT",
+    ),
+    sa.CheckConstraint(
+        "ordinal BETWEEN 0 AND 19 AND byte_size BETWEEN 0 AND 5242880 AND "
+        "page_number BETWEEN 1 AND 5 AND attempt_count BETWEEN 1 AND 2 AND "
+        "http_status BETWEEN 100 AND 599",
+        name="ck_m3_dailymed_v2_member_bounds",
+    ),
+    sa.CheckConstraint(
+        "content_hash ~ '^sha256:[0-9a-f]{64}$' AND artifact_id=content_hash AND "
+        "(body_complete=(termination_reason='complete_response'))",
+        name="ck_m3_dailymed_v2_member_identity",
+    ),
+    schema=SCHEMA,
+)
+
 TABLE_ORDER = (
     artifact,
     source_snapshot,
@@ -2284,4 +2866,13 @@ TABLE_ORDER = (
     artifact_integrity_event,
     registration_observation,
     m3_validation_receipts,
+    m3_stage1_receipts,
+    m3_provider_attempt_events,
+    m3_report_documents,
+    m3_pending_drafts,
+    m3_review_records,
+    m3_exports,
+    m3_evidence_provenance,
+    m3_dailymed_v2_records,
+    m3_dailymed_v2_members,
 )

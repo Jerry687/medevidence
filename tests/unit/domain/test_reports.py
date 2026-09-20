@@ -251,7 +251,7 @@ def test_cadec_locator_validate_against_rejects_forged_self_fields() -> None:
 NOW = datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
 RUN_ID = "run:00000000-0000-4000-8000-000000000002"
 RUN_INTENT_ID = f"run-intent:sha256:{'1' * 64}"
-CATALOG_HASH = f"sha256:{'2' * 64}"
+CATALOG_HASH = "sha256:eaffc3ee01ecd46a134578838b0304474642bf5e4a0c6e87302825d52be7682e"
 SNAPSHOT_ID = f"sha256:{'3' * 64}"
 ENVELOPE_ID = f"registration-envelope:acquisition:sha256:{'4' * 64}"
 

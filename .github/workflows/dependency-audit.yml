@@ -104,6 +104,14 @@ jobs:
                   "sha256:a8b450c1e58e5800e5b4691dac412f8d2d65a1dc3298166f91596603a3531e6f"
               ),
           }
+          JSFETCH_HOST = "files.pythonhosted.org"
+          JSFETCH_PATH = (
+              "/packages/9b/43/832f631d32e4f1211caa2ba368317739fe71f0b8530e4c9d15dc454bac2a/"
+              "httpx2_jsfetch-1.0-py3-none-any.whl"
+          )
+          JSFETCH_URL = "https://" + JSFETCH_HOST + JSFETCH_PATH
+          JSFETCH_BYTES = 6382
+          JSFETCH_SHA256 = "cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32"
 
 
           def fail(message: str) -> None:
@@ -235,7 +243,14 @@ jobs:
               if len(active) != 1:
                   fail("uv.lock does not contain exactly one Windows CPU torch record")
               record = active[0]
-              if record.get("resolution-markers") != ["sys_platform != 'darwin'"]:
+              if record.get("resolution-markers") not in (
+                  ["sys_platform != 'darwin'"],
+                  [
+                      "sys_platform == 'win32'",
+                      "sys_platform == 'emscripten'",
+                      "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+                  ],
+              ):
                   fail("the Windows CPU torch reachability marker changed")
               if record.get("source") != {"registry": TORCH_ARTIFACT["source_registry"]}:
                   fail("the Windows CPU torch source registry changed")
@@ -250,6 +265,51 @@ jobs:
               ]
               if len(matching_wheels) != 1:
                   fail("the exact approved Windows CPU torch wheel identity changed")
+
+
+          def acquire_inactive_jsfetch_wheel(
+              repository_root: Path,
+              wheel_path: Path,
+              *,
+              connection_factory: Callable[..., Any] = http.client.HTTPSConnection,
+          ) -> None:
+              lock = tomllib.loads((repository_root / "uv.lock").read_text(encoding="utf-8"))
+              records = [
+                  record for record in lock["package"] if record.get("name") == "httpx2-jsfetch"
+              ]
+              if (
+                  len(records) != 1
+                  or records[0].get("version") != "1.0"
+                  or records[0].get("source") != {"registry": "https://pypi.org/simple"}
+                  or [
+                      (wheel.get("url"), wheel.get("hash"), wheel.get("size"))
+                      for wheel in records[0].get("wheels", [])
+                  ] != [(JSFETCH_URL, "sha256:" + JSFETCH_SHA256, JSFETCH_BYTES)]
+              ):
+                  fail("JSFetch acquisition is not bound to the exact locked wheel")
+              connection = connection_factory(
+                  JSFETCH_HOST, 443, timeout=10, context=ssl.create_default_context()
+              )
+              try:
+                  connection.connect()
+                  if connection.sock is None:
+                      fail("JSFetch TLS connection did not expose a socket")
+                  connection.sock.settimeout(30)
+                  connection.request(
+                      "GET",
+                      JSFETCH_PATH,
+                      headers={"Accept-Encoding": "identity", "Connection": "close"},
+                  )
+                  response = connection.getresponse()
+                  raw = response.read(JSFETCH_BYTES + 1)
+                  status = response.status
+              finally:
+                  connection.close()
+              if status != 200 or len(raw) != JSFETCH_BYTES:
+                  fail("JSFetch wheel response is not exact HTTP 200 and bounded bytes")
+              if hashlib.sha256(raw).hexdigest() != JSFETCH_SHA256:
+                  fail("JSFetch wheel response differs from exact locked hash")
+              wheel_path.write_bytes(raw)
 
 
           def validate_osv_response(raw: bytes) -> None:
@@ -449,6 +509,10 @@ jobs:
               run_preflight(
                   arguments.repository_root.resolve(), arguments.evidence_directory.resolve()
               )
+              acquire_inactive_jsfetch_wheel(
+                  arguments.repository_root.resolve(),
+                  arguments.evidence_directory.resolve() / "inactive-httpx2-jsfetch-1.0.whl",
+              )
 
 
           if __name__ == "__main__":
@@ -474,5 +538,7 @@ jobs:
               (Join-Path $preflightEvidence "osv-torch-response.raw.json") `
             -OsvAcquisitionRecordPath `
               (Join-Path $preflightEvidence "osv-torch-acquisition-record.json") `
+            -InactiveWheelPath `
+              (Join-Path $preflightEvidence "inactive-httpx2-jsfetch-1.0.whl") `
             -LogicalBranch $env:MEDEV_EVIDENCE_BRANCH `
             -ExpectedCommit $env:MEDEV_EVIDENCE_COMMIT

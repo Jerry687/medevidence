@@ -65,6 +65,28 @@ def _normalized(schema: dict[str, object]) -> bytes:
     )
 
 
+def _legacy_projection(schema: dict[str, object]) -> dict[str, object]:
+    """Retain the exact historical M1A/M1B contract beside additive V1 routes."""
+
+    baseline = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    current_full = _schema()
+    added_components = set(current_full["components"]["schemas"]) - set(
+        baseline["components"]["schemas"]
+    )
+    projected = deepcopy(schema)
+    projected["paths"] = {
+        name: path
+        for name, path in projected["paths"].items()
+        if not name.startswith("/v1/research/runs")
+    }
+    projected["components"]["schemas"] = {
+        name: component
+        for name, component in projected["components"]["schemas"].items()
+        if name not in added_components
+    }
+    return cast(dict[str, object], projected)
+
+
 def _schema_accepts(document: dict[str, object], root: dict[str, object], value: object) -> bool:
     """Evaluate the structural JSON Schema keywords used by route parity tests."""
 
@@ -197,6 +219,11 @@ def test_openapi_exact_route_metadata_models_and_examples() -> None:
         "/v1/research/pubmed",
         "/v1/research/dailymed",
         "/v1/research/faers",
+        "/v1/research/runs",
+        "/v1/research/runs/{run_id}",
+        "/v1/research/runs/{run_id}/report",
+        "/v1/research/runs/{run_id}/review",
+        "/v1/research/runs/{run_id}/export",
     }
     path = cast(dict[str, object], paths["/v1/research/pubmed"])
     assert set(path) == {"post"}
@@ -374,7 +401,7 @@ def test_m1a_pubmed_route_and_transitive_components_are_byte_compatible() -> Non
 
 
 def test_default_m1a_openapi_is_byte_identical_and_has_no_m1b_advertisement() -> None:
-    raw = _normalized(_schema(dailymed_enabled=False, faers_enabled=False))
+    raw = _normalized(_legacy_projection(_schema(dailymed_enabled=False, faers_enabled=False)))
     assert hashlib.sha256(raw).hexdigest() == (
         "0d735acbbb1503dcc3235a37193b9d383cae08b8dc4fdb3b0e42616982ff028a"
     )
@@ -383,7 +410,7 @@ def test_default_m1a_openapi_is_byte_identical_and_has_no_m1b_advertisement() ->
 
 
 def test_dailymed_only_openapi_remains_byte_identical() -> None:
-    raw = _normalized(_schema(faers_enabled=False))
+    raw = _normalized(_legacy_projection(_schema(faers_enabled=False)))
     assert hashlib.sha256(raw).hexdigest() == (
         "b2fb6da8c1bc14daf30dc3003da54f22fbb98fbb70efb61828accf8a44ca6b36"
     )
@@ -669,4 +696,39 @@ def test_normalized_openapi_fixture_is_byte_exact() -> None:
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert b"\r" not in raw
     assert raw.endswith(b"\n") and not raw.endswith(b"\n\n")
-    assert raw == _normalized(_schema())
+    assert raw == _normalized(_legacy_projection(_schema()))
+
+
+def test_additive_research_routes_expose_closed_application_contract() -> None:
+    schema = _schema()
+    paths = cast(dict[str, object], schema["paths"])
+    submit = cast(dict[str, object], cast(dict[str, object], paths["/v1/research/runs"])["post"])
+    request = cast(dict[str, object], submit["requestBody"])
+    assert cast(dict[str, object], cast(dict[str, object], request["content"])["application/json"])[
+        "schema"
+    ] == {"$ref": "#/components/schemas/ResearchSubmission"}
+    assert "202" in cast(dict[str, object], submit["responses"])
+    review = cast(
+        dict[str, object],
+        cast(dict[str, object], paths["/v1/research/runs/{run_id}/review"])["post"],
+    )
+    review_body = cast(dict[str, object], review["requestBody"])
+    assert cast(
+        dict[str, object], cast(dict[str, object], review_body["content"])["application/json"]
+    )["schema"] == {"$ref": "#/components/schemas/ResearchReviewCommand"}
+    assert {"404", "409", "422", "503"}.issubset(cast(dict[str, object], review["responses"]))
+    export = cast(
+        dict[str, object],
+        cast(dict[str, object], paths["/v1/research/runs/{run_id}/export"])["get"],
+    )
+    parameters = cast(list[dict[str, object]], export["parameters"])
+    assert parameters[0]["name"] == "run_id" and parameters[0]["in"] == "path"
+    assert parameters[1]["name"] == "format" and parameters[1]["in"] == "query"
+    assert cast(dict[str, object], parameters[1]["schema"])["enum"] == ["json", "markdown"]
+    components = cast(dict[str, object], cast(dict[str, object], schema["components"])["schemas"])
+    for name in ("ResearchSubmission", "ResearchReviewCommand", "ResearchReportView"):
+        assert cast(dict[str, object], components[name])["additionalProperties"] is False
+    report_properties = cast(
+        dict[str, object], cast(dict[str, object], components["ResearchReportView"])["properties"]
+    )
+    assert "document" in report_properties

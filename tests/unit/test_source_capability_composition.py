@@ -18,6 +18,7 @@ from medevidence.composition import (
     create_source_evidence_collection,
 )
 from medevidence.domain import (
+    CADEC_EXTERNAL_MANIFEST_SHA256,
     AcquisitionOutcomeRef,
     AdverseEventConcept,
     ComparisonIntent,
@@ -860,7 +861,15 @@ def test_source_replay_load_rejects_reparse_leaf(tmp_path: Path) -> None:
 
 def test_cadec_wrapper_has_no_fake_port_result_or_callable_constructor_route() -> None:
     parameters = inspect.signature(CanonicalCadecEvidenceCollection).parameters
-    assert tuple(parameters) == ("archive_path", "manifest_path", "delegate")
+    assert tuple(parameters) == ("archive_path", "manifest_path", "manifest_sha256", "delegate")
+    assert parameters["manifest_sha256"].default == CADEC_EXTERNAL_MANIFEST_SHA256
+    with pytest.raises(ValueError, match="manifest"):
+        CanonicalCadecEvidenceCollection(
+            archive_path=Path("C:/approved/CADEC.v2.zip"),
+            manifest_path=Path("C:/approved/manifest.json"),
+            manifest_sha256="0" * 64,
+            delegate=SourceCapabilities(),
+        )
     with pytest.raises(TypeError, match="exact sealed three-source"):
         CanonicalCadecEvidenceCollection(
             archive_path=Path("C:/approved/CADEC.v2.zip"),

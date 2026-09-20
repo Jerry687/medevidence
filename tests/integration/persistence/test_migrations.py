@@ -10,8 +10,11 @@ import json
 import os
 import re
 import zlib
+from dataclasses import fields, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
+from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
@@ -20,12 +23,47 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from medevidence.persistence.config import DATABASE_URL_ENV
+from medevidence.persistence.models import m3_provider_attempt_events
+from medevidence.persistence.repositories import (
+    ProviderAttemptLedgerRepository,
+    _provider_event_payload,
+    canonical_provider_attempt_event_id,
+    make_provider_attempt_event,
+)
+from medevidence.tools.provider_attempt_framing import (
+    build_framing_observation,
+    normalize_approved_headers,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION_DIR = ROOT / "alembic" / "versions"
 M3_MIGRATION = MIGRATION_DIR / "20260827_01_m3_validation_receipt.py"
 M3_REVISION = "m3validationreceipt001"
 M3_DOWN_REVISION = "m1bfaers002001"
+LEDGER_MIGRATION = MIGRATION_DIR / "20260831_01_m3_provider_attempt_ledger.py"
+LEDGER_REVISION = "m3providerattempt001"
+FRAMING_MIGRATION = MIGRATION_DIR / "20260901_02_m3_provider_attempt_framing_v2.py"
+FRAMING_REVISION = "m3providerframing002"
+STAGE1_MIGRATION = MIGRATION_DIR / "20260914_01_m3_stage1_receipt_v2.py"
+STAGE1_REVISION = "m3stage1receiptv2001"
+REVIEW_EXPORT_MIGRATION = MIGRATION_DIR / "20260914_02_m3_review_export.py"
+REVIEW_EXPORT_REVISION = "m3reviewexport001"
+PROVENANCE_MIGRATION = MIGRATION_DIR / "20260914_03_m3_evidence_provenance.py"
+PROVENANCE_REVISION = "m3evidenceprov001"
+JOBS_MIGRATION = MIGRATION_DIR / "20260914_04_m3_research_jobs.py"
+JOBS_REVISION = "m3researchjob001"
+CACHE_MIGRATION = MIGRATION_DIR / "20260915_01_m3_semantic_evaluation_cache.py"
+CACHE_REVISION = "m3semanticcache001"
+CATALOG_MIGRATION = MIGRATION_DIR / "20260915_02_local_research_catalog.py"
+CATALOG_REVISION = "m3localcatalog001"
+SOURCE_LIFECYCLE_MIGRATION = MIGRATION_DIR / "20260915_03_m1b_source_lifecycle.py"
+SOURCE_LIFECYCLE_REVISION = "m3sourcelifecycle001"
+DAILYMED_V2_MIGRATION = MIGRATION_DIR / "20260916_01_m3_dailymed_v2_execution.py"
+DAILYMED_V2_REVISION = "m3dailymedv2exec001"
+DAILYMED_V2_MEMBERS_MIGRATION = MIGRATION_DIR / "20260916_02_m3_dailymed_v2_members.py"
+DAILYMED_V2_MEMBERS_REVISION = "m3dailymedv2members001"
+SOURCE_OUTCOME_OCCURRENCE_MIGRATION = MIGRATION_DIR / "20260920_01_m1b_source_outcome_occurrence.py"
+SOURCE_OUTCOME_OCCURRENCE_REVISION = "m1bsourceoutcomeocc001"
 M3_DDL_PAYLOAD_SHA256 = "9d531079f5b73a7a4c2b32f20c6b8a07a23d77756785223e4ab5b7f59fda41c3"
 RECEIPT_TABLE = "m3_validation_receipts"
 
@@ -51,6 +89,17 @@ EXPECTED_TABLE_NAMES = {
     "m1b_snapshots",
     "m1b_source_outcomes",
     RECEIPT_TABLE,
+    "m3_stage1_receipts",
+    "m3_report_documents",
+    "m3_pending_drafts",
+    "m3_review_records",
+    "m3_exports",
+    "m3_evidence_provenance",
+    "m3_research_jobs",
+    "m3_semantic_evaluation_events",
+    "m3_dailymed_v2_records",
+    "m3_dailymed_v2_members",
+    "m3_provider_attempt_events",
     "publication_version",
     "registration_observation",
     "research_report",
@@ -156,6 +205,30 @@ def test_migration_chain_imports_and_has_exact_head() -> None:
         ("20260809_01_m1b_dailymed.py", "m1bdm002001", "m1a003b0001"),
         ("20260809_02_m1b_faers.py", M3_DOWN_REVISION, "m1bdm002001"),
         (M3_MIGRATION.name, M3_REVISION, M3_DOWN_REVISION),
+        (LEDGER_MIGRATION.name, LEDGER_REVISION, M3_REVISION),
+        (FRAMING_MIGRATION.name, FRAMING_REVISION, LEDGER_REVISION),
+        (STAGE1_MIGRATION.name, STAGE1_REVISION, FRAMING_REVISION),
+        (REVIEW_EXPORT_MIGRATION.name, REVIEW_EXPORT_REVISION, STAGE1_REVISION),
+        (PROVENANCE_MIGRATION.name, PROVENANCE_REVISION, REVIEW_EXPORT_REVISION),
+        (JOBS_MIGRATION.name, JOBS_REVISION, PROVENANCE_REVISION),
+        (CACHE_MIGRATION.name, CACHE_REVISION, JOBS_REVISION),
+        (CATALOG_MIGRATION.name, CATALOG_REVISION, CACHE_REVISION),
+        (
+            SOURCE_LIFECYCLE_MIGRATION.name,
+            SOURCE_LIFECYCLE_REVISION,
+            CATALOG_REVISION,
+        ),
+        (DAILYMED_V2_MIGRATION.name, DAILYMED_V2_REVISION, SOURCE_LIFECYCLE_REVISION),
+        (
+            DAILYMED_V2_MEMBERS_MIGRATION.name,
+            DAILYMED_V2_MEMBERS_REVISION,
+            DAILYMED_V2_REVISION,
+        ),
+        (
+            SOURCE_OUTCOME_OCCURRENCE_MIGRATION.name,
+            SOURCE_OUTCOME_OCCURRENCE_REVISION,
+            DAILYMED_V2_MEMBERS_REVISION,
+        ),
     )
 
     actual_chain = []
@@ -167,8 +240,8 @@ def test_migration_chain_imports_and_has_exact_head() -> None:
 
     assert tuple(actual_chain) == expected_chain
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == [M3_REVISION]
-    assert script.get_current_head() == M3_REVISION
+    assert script.get_heads() == [SOURCE_OUTCOME_OCCURRENCE_REVISION]
+    assert script.get_current_head() == SOURCE_OUTCOME_OCCURRENCE_REVISION
 
 
 def test_m3_embedded_ddl_is_exact_and_receipt_only() -> None:
@@ -251,6 +324,449 @@ def test_m3_upgrade_and_downgrade_emit_only_exact_statements(
     )
 
 
+def test_provider_framing_upgrade_is_additive_and_never_rewrites_v1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = _load_migration(FRAMING_MIGRATION)
+    connection = _RecordingConnection()
+    monkeypatch.setattr(migration, "op", _FakeOperations(connection))
+
+    migration.upgrade()
+
+    assert tuple(connection.statements) == migration._upgrade_statements()
+    assert len(connection.statements) == len(migration._COLUMN_DDL) + 10
+    upper = "\n".join(connection.statements).upper()
+    assert not any(
+        statement.lstrip().upper().startswith(("UPDATE ", "DELETE ", "INSERT "))
+        for statement in connection.statements
+    )
+    assert upper.count("_CONTRACT_SNAPSHOT_B85") == 0
+
+
+def _provider_attempt_catalog(engine: sa.Engine) -> tuple[tuple[object, ...], dict[str, str]]:
+    with engine.connect() as connection:
+        columns = tuple(
+            tuple(row)
+            for row in connection.execute(
+                sa.text(
+                    "SELECT column_name, data_type, character_maximum_length, is_nullable "
+                    "FROM information_schema.columns WHERE table_schema='medevidence' "
+                    "AND table_name='m3_provider_attempt_events' ORDER BY ordinal_position"
+                )
+            )
+        )
+        constraints = {
+            row[0]: row[1]
+            for row in connection.execute(
+                sa.text(
+                    "SELECT c.conname, pg_get_constraintdef(c.oid, true) "
+                    "FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid "
+                    "JOIN pg_namespace n ON n.oid=t.relnamespace "
+                    "WHERE n.nspname='medevidence' AND t.relname='m3_provider_attempt_events' "
+                    "ORDER BY c.conname"
+                )
+            )
+        }
+    return columns, constraints
+
+
+def _event_values(event: object) -> dict[str, object]:
+    return {field.name: getattr(event, field.name) for field in fields(event)}
+
+
+def test_clean_database_base_to_head_preserves_exact_v1_and_admits_v2_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_url = sa.engine.make_url(_database_url())
+    database_name = f"medevidence_m3_clean_{uuid4().hex}"
+    admin_url = source_url.set(database="postgres")
+    fresh_url = source_url.set(database=database_name)
+    admin = sa.create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    fresh_engine: sa.Engine | None = None
+
+    with admin.connect() as connection:
+        connection.exec_driver_sql(f'CREATE DATABASE "{database_name}"')
+    try:
+        monkeypatch.setenv(DATABASE_URL_ENV, fresh_url.render_as_string(hide_password=False))
+        config = Config("alembic.ini")
+        command.upgrade(config, "head")
+        fresh_engine = sa.create_engine(fresh_url)
+        head_columns, head_constraints = _provider_attempt_catalog(fresh_engine)
+        assert head_constraints["uq_m3_provider_attempt_event_start_binding"] == (
+            "UNIQUE (event_id, event_kind, schema_version, provider_run_id, "
+            "case_ordinal, attempt_ordinal, configuration_hash, request_hash)"
+        )
+        assert head_constraints["fk_m3_provider_attempt_event_start"] == (
+            "FOREIGN KEY (start_event_id, start_event_kind, schema_version, "
+            "provider_run_id, case_ordinal, attempt_ordinal, configuration_hash, "
+            "request_hash) REFERENCES medevidence.m3_provider_attempt_events(event_id, "
+            "event_kind, schema_version, provider_run_id, case_ordinal, attempt_ordinal, "
+            "configuration_hash, request_hash) ON UPDATE RESTRICT ON DELETE RESTRICT"
+        )
+        assert "ck_m3_provider_attempt_events_shape" in head_constraints
+        assert (
+            "evidence_persistence_failure"
+            in head_constraints["ck_m3_provider_attempt_events_shape"]
+        )
+        assert (
+            "validation_internal_failure" in head_constraints["ck_m3_provider_attempt_events_shape"]
+        )
+
+        digest = "sha256:" + "b" * 64
+        run_id = "provider-attempt-run:sha256:" + "a" * 64
+        now = datetime(2026, 9, 1, tzinfo=UTC)
+        repository = ProviderAttemptLedgerRepository._from_engine_for_testing(fresh_engine)
+        v2_start = make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id="M3-008B-CAL-001",
+            case_ordinal=1,
+            attempt_ordinal=1,
+            event_kind="START",
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+        )
+        validation_observation = build_framing_observation(
+            disposition="validation_internal_failure",
+            http_status=200,
+            http_version="HTTP/2",
+            headers=normalize_approved_headers(
+                (("content-type", "application/json"),),
+                raw_header_field_count=1,
+            ),
+            raw_header_field_count=1,
+            body_complete=True,
+            actual_body_byte_count=2,
+            raw_body_hash=digest,
+            raw_relative_path="raw/validation-internal-failure.json",
+        )
+        v2_terminal = make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id="M3-008B-CAL-001",
+            case_ordinal=1,
+            attempt_ordinal=1,
+            event_kind="TERMINAL",
+            start_event=v2_start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=200,
+            disposition="validation_internal_failure",
+            error_code="validation_internal_failure",
+            schema_version="M3_PROVIDER_ATTEMPT_EVENT_V2",
+            framing_observation=validation_observation,
+        )
+        repository.append(v2_start)
+        repository.append(v2_terminal)
+        persisted_v2_terminal = repository.list_events(run_id)[1]
+        assert persisted_v2_terminal.disposition == "validation_internal_failure"
+        assert persisted_v2_terminal.body_hash == digest
+        assert persisted_v2_terminal.framing_status == "accepted"
+        assert persisted_v2_terminal.accepted_framing_class == "http_2_data"
+
+        for ordinal, forbidden in enumerate(
+            ("started", "interrupted_unknown_after_start", "validation_internal_failure"),
+            start=2,
+        ):
+            v1_start = make_provider_attempt_event(
+                provider_run_id=run_id,
+                case_id=f"M3-008B-CAL-{ordinal:03d}",
+                case_ordinal=ordinal,
+                attempt_ordinal=1,
+                event_kind="START",
+                configuration_hash=digest,
+                request_hash=digest,
+                started_at_utc=now,
+            )
+            repository.append(v1_start)
+            valid_terminal = make_provider_attempt_event(
+                provider_run_id=run_id,
+                case_id=f"M3-008B-CAL-{ordinal:03d}",
+                case_ordinal=ordinal,
+                attempt_ordinal=1,
+                event_kind="TERMINAL",
+                start_event=v1_start,
+                configuration_hash=digest,
+                request_hash=digest,
+                started_at_utc=now,
+                completed_at_utc=now,
+                http_status=200,
+                disposition="response_invalid",
+                error_code="response_invalid",
+            )
+            invalid = replace(
+                valid_terminal,
+                disposition=forbidden,
+                error_code=forbidden,
+            )
+            invalid = replace(
+                invalid,
+                event_id=canonical_provider_attempt_event_id(_provider_event_payload(invalid)),
+            )
+            with (
+                pytest.raises(sa.exc.IntegrityError) as failure,
+                fresh_engine.begin() as connection,
+            ):
+                connection.execute(
+                    m3_provider_attempt_events.insert().values(**_event_values(invalid))
+                )
+            assert getattr(failure.value.orig, "diag", None).constraint_name == (
+                "ck_m3_provider_attempt_events_shape"
+            )
+
+        with fresh_engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM medevidence.m3_provider_attempt_events"))
+        repository.close()
+        fresh_engine.dispose()
+        fresh_engine = None
+
+        command.downgrade(config, LEDGER_REVISION)
+        fresh_engine = sa.create_engine(fresh_url)
+        v1_columns, v1_constraints = _provider_attempt_catalog(fresh_engine)
+        assert v1_constraints["uq_m3_provider_attempt_event_start_binding"] == (
+            "UNIQUE (event_id, event_kind, provider_run_id, case_ordinal, "
+            "attempt_ordinal, configuration_hash, request_hash)"
+        )
+        assert v1_constraints["fk_m3_provider_attempt_event_start"] == (
+            "FOREIGN KEY (start_event_id, start_event_kind, provider_run_id, "
+            "case_ordinal, attempt_ordinal, configuration_hash, request_hash) "
+            "REFERENCES medevidence.m3_provider_attempt_events(event_id, event_kind, "
+            "provider_run_id, case_ordinal, attempt_ordinal, configuration_hash, "
+            "request_hash) ON UPDATE RESTRICT ON DELETE RESTRICT"
+        )
+        assert len(head_columns) == len(v1_columns) + 27
+        assert (
+            "evidence_persistence_failure" in v1_constraints["ck_m3_provider_attempt_events_shape"]
+        )
+        assert (
+            "validation_internal_failure"
+            not in v1_constraints["ck_m3_provider_attempt_events_shape"]
+        )
+        assert (
+            "M3_PROVIDER_ATTEMPT_EVENT_V2"
+            not in v1_constraints["ck_m3_provider_attempt_events_schema"]
+        )
+        downgraded_table = sa.Table(
+            "m3_provider_attempt_events",
+            sa.MetaData(),
+            schema="medevidence",
+            autoload_with=fresh_engine,
+        )
+        downgraded_start = make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id="M3-008B-CAL-005",
+            case_ordinal=5,
+            attempt_ordinal=1,
+            event_kind="START",
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+        )
+        downgraded_columns = tuple(
+            column.name for column in downgraded_table.columns if column.name != "persisted_at_utc"
+        )
+        with fresh_engine.begin() as connection:
+            connection.execute(
+                downgraded_table.insert().values(
+                    **{name: _event_values(downgraded_start)[name] for name in downgraded_columns}
+                )
+            )
+        valid_v1_terminal = make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id="M3-008B-CAL-005",
+            case_ordinal=5,
+            attempt_ordinal=1,
+            event_kind="TERMINAL",
+            start_event=downgraded_start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=200,
+            disposition="evidence_persistence_failure",
+            error_code="evidence_persistence_failure",
+        )
+        invalid_v1_terminal = replace(
+            valid_v1_terminal,
+            disposition="validation_internal_failure",
+            error_code="validation_internal_failure",
+        )
+        invalid_v1_terminal = replace(
+            invalid_v1_terminal,
+            event_id=canonical_provider_attempt_event_id(
+                _provider_event_payload(invalid_v1_terminal)
+            ),
+        )
+        with (
+            pytest.raises(sa.exc.IntegrityError) as failure,
+            fresh_engine.begin() as connection,
+        ):
+            connection.execute(
+                downgraded_table.insert().values(
+                    **{
+                        name: _event_values(invalid_v1_terminal)[name]
+                        for name in downgraded_columns
+                    }
+                )
+            )
+        assert getattr(failure.value.orig, "diag", None).constraint_name == (
+            "ck_m3_provider_attempt_events_shape"
+        )
+        with fresh_engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM medevidence.m3_provider_attempt_events"))
+        fresh_engine.dispose()
+        fresh_engine = None
+
+        command.downgrade(config, "base")
+        command.upgrade(config, LEDGER_REVISION)
+        fresh_engine = sa.create_engine(fresh_url)
+        assert _provider_attempt_catalog(fresh_engine) == (v1_columns, v1_constraints)
+        fresh_engine.dispose()
+        fresh_engine = None
+
+        command.upgrade(config, "head")
+        fresh_engine = sa.create_engine(fresh_url)
+        assert _provider_attempt_catalog(fresh_engine) == (head_columns, head_constraints)
+    finally:
+        if fresh_engine is not None:
+            fresh_engine.dispose()
+        with admin.connect() as connection:
+            connection.exec_driver_sql(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                f"WHERE datname='{database_name}' AND pid<>pg_backend_pid()"
+            )
+            connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{database_name}"')
+        admin.dispose()
+
+
+def test_baseline_v1_persistence_failure_survives_ledger_to_head_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_url = sa.engine.make_url(_database_url())
+    database_name = f"medevidence_m3_v1_roundtrip_{uuid4().hex}"
+    admin_url = source_url.set(database="postgres")
+    fresh_url = source_url.set(database=database_name)
+    admin = sa.create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    engine: sa.Engine | None = None
+
+    with admin.connect() as connection:
+        connection.exec_driver_sql(f'CREATE DATABASE "{database_name}"')
+    try:
+        monkeypatch.setenv(DATABASE_URL_ENV, fresh_url.render_as_string(hide_password=False))
+        config = Config("alembic.ini")
+        command.upgrade(config, LEDGER_REVISION)
+        engine = sa.create_engine(fresh_url)
+        digest = "sha256:" + "b" * 64
+        run_id = "provider-attempt-run:sha256:" + "a" * 64
+        now = datetime(2026, 9, 1, tzinfo=UTC)
+        start = make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id="M3-008B-CAL-001",
+            case_ordinal=1,
+            attempt_ordinal=1,
+            event_kind="START",
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+        )
+        terminal = make_provider_attempt_event(
+            provider_run_id=run_id,
+            case_id="M3-008B-CAL-001",
+            case_ordinal=1,
+            attempt_ordinal=1,
+            event_kind="TERMINAL",
+            start_event=start,
+            configuration_hash=digest,
+            request_hash=digest,
+            started_at_utc=now,
+            completed_at_utc=now,
+            http_status=200,
+            disposition="evidence_persistence_failure",
+            error_code="evidence_persistence_failure",
+        )
+        ledger_catalog = _provider_attempt_catalog(engine)
+        ledger_table = sa.Table(
+            "m3_provider_attempt_events",
+            sa.MetaData(),
+            schema="medevidence",
+            autoload_with=engine,
+        )
+        ledger_column_names = tuple(column.name for column in ledger_table.columns)
+        insert_columns = tuple(name for name in ledger_column_names if name != "persisted_at_utc")
+        with engine.begin() as connection:
+            connection.execute(
+                ledger_table.insert().values(
+                    **{name: getattr(start, name) for name in insert_columns}
+                )
+            )
+            connection.execute(
+                ledger_table.insert().values(
+                    **{name: getattr(terminal, name) for name in insert_columns}
+                )
+            )
+            ledger_rows_before = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(ledger_table).order_by(ledger_table.c.event_slot)
+                ).mappings()
+            )
+        assert tuple(row["event_id"] for row in ledger_rows_before) == (
+            start.event_id,
+            terminal.event_id,
+        )
+        engine.dispose()
+        engine = None
+
+        command.upgrade(config, "head")
+        engine = sa.create_engine(fresh_url)
+        head_catalog = _provider_attempt_catalog(engine)
+        assert len(head_catalog[0]) == len(ledger_catalog[0]) + 27
+        assert "ck_m3_provider_attempt_events_framing_v2" in head_catalog[1]
+        with engine.connect() as connection:
+            head_rows_after = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(m3_provider_attempt_events).order_by(
+                        m3_provider_attempt_events.c.event_slot
+                    )
+                ).mappings()
+            )
+        assert (
+            tuple({name: row[name] for name in ledger_column_names} for row in head_rows_after)
+            == ledger_rows_before
+        )
+        assert tuple(row["event_id"] for row in head_rows_after) == (
+            start.event_id,
+            terminal.event_id,
+        )
+        v2_column_names = set(m3_provider_attempt_events.c.keys()) - set(ledger_column_names)
+        assert v2_column_names
+        assert all(row[name] is None for row in head_rows_after for name in v2_column_names)
+        repository = ProviderAttemptLedgerRepository._from_engine_for_testing(engine)
+        try:
+            reconstructed = repository.list_events(run_id)
+        finally:
+            repository.close()
+            engine = None
+        assert reconstructed == (start, terminal)
+        assert tuple(_provider_event_payload(item) for item in reconstructed) == (
+            _provider_event_payload(start),
+            _provider_event_payload(terminal),
+        )
+    finally:
+        if engine is not None:
+            engine.dispose()
+        with admin.connect() as connection:
+            connection.exec_driver_sql(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                f"WHERE datname='{database_name}' AND pid<>pg_backend_pid()"
+            )
+            connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{database_name}"')
+        admin.dispose()
+
+
 def test_full_offline_sql_is_blocked_by_existing_faers_mock_connection_limitation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -278,6 +794,8 @@ def test_upgrade_downgrade_upgrade_and_exact_catalog() -> None:
     try:
         command.upgrade(config, "head")
         assert _receipt_exists(engine)
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM medevidence.m3_provider_attempt_events"))
         command.downgrade(config, "base")
         assert not _receipt_exists(engine)
         command.upgrade(config, "head")
@@ -382,12 +900,14 @@ def test_upgrade_downgrade_upgrade_and_exact_catalog() -> None:
                     "   WHERE n.nspname='medevidence' AND NOT g.tgisinternal) AS object_count"
                 )
             ).scalar_one()
-            raw_byte_columns = connection.scalar(
-                sa.text(
-                    "SELECT count(*) FROM information_schema.columns "
-                    "WHERE table_schema='medevidence' "
-                    "AND data_type IN ('bytea','binary','varbinary')"
-                )
+            raw_byte_columns = tuple(
+                connection.execute(
+                    sa.text(
+                        "SELECT table_name,column_name FROM information_schema.columns "
+                        "WHERE table_schema='medevidence' "
+                        "AND data_type IN ('bytea','binary','varbinary')"
+                    )
+                ).all()
             )
             longest_identifier = connection.scalar(
                 sa.text(
@@ -412,19 +932,21 @@ def test_upgrade_downgrade_upgrade_and_exact_catalog() -> None:
         engine.dispose()
 
     assert table_names == EXPECTED_TABLE_NAMES
-    assert constraint_counts == {"c": 138, "f": 56, "p": 31, "u": 64}
-    assert secondary_indexes == 12
-    assert len(fk_rows) == 56
+    assert constraint_counts == {"c": 185, "f": 70, "p": 42, "u": 78}
+    assert secondary_indexes == 13
+    assert len(fk_rows) == 70
     assert all(row["confupdtype"] == "r" and row["confdeltype"] == "r" for row in fk_rows)
     assert {row["conname"] for row in fk_rows if row["condeferrable"] or row["condeferred"]} == {
         "fk_research_run_report"
     }
     assert receipt_constraints == EXPECTED_RECEIPT_CONSTRAINTS
     assert receipt_columns == EXPECTED_RECEIPT_CATALOG_COLUMNS
-    assert version == M3_REVISION
+    assert version == SOURCE_OUTCOME_OCCURRENCE_REVISION
     assert version_schema == "public"
     assert forbidden_objects == 0
-    assert raw_byte_columns == 0
+    # Only the reviewed, bounded model-response cache may store binary bytes.
+    # Medical-source raw bytes remain outside PostgreSQL.
+    assert raw_byte_columns == (("m3_semantic_evaluation_events", "raw_body_bytes"),)
     assert longest_identifier is not None and longest_identifier <= 63
     assert faers_termination_check is not None
     assert "read_timeout" in faers_termination_check

@@ -1,5 +1,161 @@
 # Security, Medical Safety, and Trust Boundaries
 
+## Local Qwen delivery boundary (2026-09-18)
+
+The configured application reads Qwen and generation credentials only from its server
+process environment. Qwen uses the exact validated official Beijing workspace HTTPS
+endpoint, no redirects/tools/search, bounded requests/responses and a hard operation
+deadline. Durable START/raw/result/terminal records prevent ambiguous resend. Separate
+Qwen identities never masquerade as historical DeepSeek receipts. CADEC corpus text
+stays transient/local; metadata references have no claim permissions. Existing human
+export approval, public-research scope and prohibited patient-data rules remain intact.
+
+## M3-008B DeepSeek calibration closure
+
+The DeepSeek calibration path is closed as
+`M3-008B-DEEPSEEK-CALIBRATION_CLOSED_EXTERNAL_EXECUTION_NOT_ACCEPTED`.
+Attempt009 and Attempt010 remain immutable historical evidence. In both, cases1-4
+succeeded before case5 received HTTP 200 responses that did not complete within
+the unchanged shared deadline; attempt1 closed `transport_unavailable` and
+attempt2 closed `deadline_exceeded`. Implementation review remained
+`P0 0 / P1 0 / P2 0`; there is no accepted 36-case metric or artifact and no
+implementation failure.
+
+Attempt011, deadline/retry weakening, M3-009, and Holdout-20 access are not
+authorized. Retained DeepSeek code is historical, not execution authority. Any
+new provider endpoint, credential, model, or provider-specific evidence profile
+requires separate Owner authorization and the existing fail-closed controls.
+
+## M3-008B Successor-005 semantic-policy trust boundary
+
+The authoritative Successor-005 path is:
+
+```text
+canonical Stage-1 admission
+-> bounded raw observation
+-> canonical approved-header reconstruction
+-> ordered framing classification
+-> JSON media admission
+-> provider-envelope validation
+-> exact raw/projection binding
+-> semantic-only M3_STAGE2_SEMANTIC_RESULT_V2 reconstruction
+-> deterministic application review routing
+-> durable terminal decision and bound validation provenance
+```
+
+No caller-supplied framing decision is trusted. Accepted framing requires
+`body_complete=true` and the exact credential-safe raw body, count, hash, and
+relative artifact identity. Missing evidence, drift, an impossible mismatch
+tuple, unapproved-header influence, or a valid JSON body with an unapproved
+media type fails closed before success. Credential echo is screened before
+hashing/persistence; evidence-persistence failure remains a separate terminal
+path and fabricates no framing facts.
+
+PostgreSQL derives the expected framing tuple with ordered `CASE` generated from the
+same rule table and uses null-total comparisons; boolean UNKNOWN is not an
+admission mechanism. The V2 provider schema has no human-review field. An
+attempt to supply one is rejected rather than accepted as policy authority.
+Only application code derives the versioned review disposition from canonical
+semantic state and governed request metadata. Rationale codes cannot escalate
+or suppress review. Stage-1 failure has zero provider effects.
+
+The V2 durable path binds semantic contract
+`m3.stage2-semantic-result.contract.v2` and
+`sha256:9b97996233f6dc80091f196209b18c27b23e0eeb5c82c6e7e8c0f954df69a3bb`
+separately from the response schema. Result, receipt, and calibration
+provenance require exact method
+`deepseek.responses.independent_semantic_evaluation`, provider version
+`m3.semantic-evaluation.v2.deepseek-responses.v2`, and exact provider profile
+`sha256:64890c63e275c5bbce00f18e31899b4326d16220e6e7865356a3618ef4e557e9`.
+Caller-supplied evaluator identity, arbitrary evaluator implementations, and
+method/profile substitution fail closed.
+
+One immutable six-rule decision table supplies routing precedence, policy
+bytes/hash, execution, and matrix cases. No caller, rationale code, or duplicate
+branch list can alter the disposition. The semantic contract independently
+binds allowed, required-any, and forbidden rationale codes for each result
+state, preventing a semantically inconsistent code set from reaching routing.
+
+Comparability escalation requires an exact per-result participant binding:
+either the registry is exactly empty or the result names one exact matching
+comparison/conflict pair, hashes, and outcome. Unrelated conflicts are not
+ambient authority. Foreign, stale, missing, partial, or swapped participant
+data fails closed in result, receipt, resolution, and replay validation.
+
+Attempts001-006 remain byte- and row-immutable. Attempt006's first five cases
+succeeded; case006 provider output was valid under V1 but its application-policy
+binding failed. The governed classification is
+`V1_PROVIDER_OUTPUT_VALID_BUT_APPLICATION_POLICY_BINDING_FAILED`, not semantic
+model failure. No historical ledger or raw evidence is rewritten. Attempts007-
+010 are immutable failed V2 evidence. Attempt009 and Attempt010 ended with external
+provider availability/deadline non-acceptance and terminal evidence result
+`FAIL — P0 0 / P1 0 / P2 0`; neither is an implementation or semantic failure.
+The DeepSeek path is closed, partial continuation is unsupported, and
+Attempt011 is prohibited. No credential value,
+medical-source data, or Holdout content is authorized for access. Holdout-20
+remains sealed.
+
+Attempt007 is immutable under provider v1 profile
+`sha256:2798cf926eb197b746fd3c321d50047c28dea5061d2f4613adb5c81b30c80b35`.
+Its case5 evidence records valid HTTP/1.1 chunked headers, an incomplete body,
+zero-byte lower bound, no safe raw artifact, framing
+`response_body_incomplete`, and terminal `response_invalid`. No raw content or
+reasoning is surfaced. Attempt008 retries a pre-deadline stream transport error
+only as `transport_unavailable` under the same absolute deadline and three-
+attempt maximum. Each retry uses a fresh closed response and persists no
+partial raw bytes. Exact/after-deadline failures remain `deadline`; credential
+and complete-invalid-response failures remain permanent.
+
+Attempts008, 009, and 010 are immutable under that same provider v2 profile. Each
+retains exact raw success evidence for cases1-4. For each case5, attempt1
+recorded HTTP 200 with an incomplete zero-lower-bound body, no raw artifact, and
+`transport_unavailable`; attempt2 recorded `deadline_exceeded` against the same
+absolute deadline with no raw artifact, and no third attempt occurred. These
+are bounded provider-availability/deadline outcomes, not code or semantic
+defects. No raw content or reasoning is reproduced, and no quality result or
+accepted calibration artifact exists. Attempt009's exact run, projection,
+status, cases, raw identities, and ledger rows are verified only through its
+version-aware historical authority and cannot be relabeled or rewritten for
+another provider attempt.
+
+## Secure provider-attempt evidence
+
+ADR-022 detects the finite approved credential representation set entirely in
+memory before response hashing/persistence. Secret-bearing buffers are cleared;
+only safe metadata reaches the insert-only ledger. Safe raw bytes are external,
+content-addressed, and bound by terminal events after START was committed.
+
+## M3-008B DeepSeek calibration-provider boundary
+
+The immutable first live attempt failed closed at case 1 with
+`response_invalid`; its historical external evidence retained configuration and
+status only because raw bytes had not yet been journaled. That evidence remains
+incomplete and unchanged and supports no provider-output or calibration claim.
+
+ADR-021 established the dedicated DeepSeek provider adapter. ADR-023 owns the
+stable semantic-only V2 contract and application-derived routing policy. The
+retained historical calibration adapter permitted only
+`POST https://api.deepseek.com/responses`, `deepseek-v4-pro`, high reasoning,
+empty tools, disabled web search, and exact bounded structured output. It is a
+dedicated DeepSeek envelope and transport authority, not an OpenAI base-URL
+swap or runtime provider selector. The environment credential is excluded from
+request evidence, hashes, logs, errors, and persistence.
+
+DeepSeek's stateless response/conversation interface does not imply zero
+operational or privacy retention. Prompts, inputs, outputs, account, and network
+data may be processed/stored under the provider policy, with varying retention
+and possible processing/storage in the PRC. Owner acceptance is public-data V1
+only: PHI, identifiable patient information, private clinical records,
+credentials, and Holdout content are prohibited. Exact packet validation,
+explicit live authorization, absent external output, and key presence all fail
+closed before provider effects. No current DeepSeek execution is authorized.
+
+For each later HTTP-success response, credential-free request bytes and exact
+raw response bytes plus hashes, attempts, and timestamps are fsynced before any
+strict envelope parsing. A parser failure publishes this raw observation with a
+redacted stable error and no validated usage/result claim. Authorization header
+or credential material is never part of the journaled request bytes.
+
 ## FAERS-001 closed trust metadata
 
 `FAERS_M1B_CONSTRAINED_V1` is a frozen, non-weakenable design tuple, not network
@@ -717,7 +873,7 @@ contracts, and Holdout-20 remain unchanged and sealed.
 
 ## 24. M3-008A independent Stage-2 evaluator trust boundary
 
-The only approved Stage-2 provider surface is
+For the immutable M3-008A historical framework, the approved provider surface was
 `POST https://api.openai.com/v1/responses` through existing HTTPX with model
 `gpt-5.6-terra` and reasoning effort `medium`. Requests set `store=false` and
 `background=false`, provide no tools, and do not opt into extended prompt-cache
@@ -753,15 +909,23 @@ advisory, not sole ground truth: `unsupported` is removed; `uncertain`, a
 nominally supported contradiction, and governed safety/conflict material
 require human adjudication or removal.
 
-Default validation is offline and socket-disabled. Calibration may use only
-Owner-approved adjudicated Development or synthetic fixtures, never test,
-final, release, or Holdout inputs. It requires the exact current evaluator
-model and prompt/rubric/schema/configuration hashes. Raw artifacts are append-
-only and versioned; raw provider output is strictly re-parsed and cross-bound
-to parsed semantic fields, rationale, input, trace, and response identity before
-metrics. Holdout-20 remains sealed. Because no approved human semantic packet
-and no provider key are currently available, M3-008B calibration is
-`BLOCKED_EXTERNAL_INPUTS`; absence of either input cannot become a fake PASS.
+For this immutable M3-008A historical protocol, default validation was offline
+and socket-disabled. Calibration could use only Owner-approved adjudicated
+Development or synthetic fixtures, never test, final, release, or Holdout
+inputs. It required the exact evaluator model and prompt/rubric/schema/
+configuration hashes. Raw artifacts were append-only and versioned; raw
+provider output was strictly re-parsed and cross-bound to parsed semantic
+fields, rationale, input, trace, and response identity before metrics.
+Holdout-20 remains sealed. The later Project-Owner packet became frozen, and
+ADR-021 historically replaced only the then-unexecuted formal M3-008B provider
+decision.
+
+DeepSeek pre-network review and execution subsequently occurred, but Attempt009
+and Attempt010 did not complete the frozen 36-case calibration. The current
+state is `M3-008B-DEEPSEEK-CALIBRATION_CLOSED_EXTERNAL_EXECUTION_NOT_ACCEPTED`,
+not pending: there is no active provider or execution authority, no Attempt011
+or M3-009 start is authorized, and a replacement requires a new Owner decision.
+Historical credential/input failures still cannot become a fake PASS.
 
 The exact Round 5 closure-candidate hashes are prompt
 `sha256:36958196b5de6f21c73d05957564da6cb8887338686e748bbdb9db85365b5ba1`,

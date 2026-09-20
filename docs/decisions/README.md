@@ -1,5 +1,48 @@
 # Architecture Decision Records
 
+## Current local delivery
+
+See the [delivery status](../DELIVERY_STATUS.md) for active behavior and validation.
+These decisions cover the current runtime and preserve older profiles as historical evidence.
+
+- [ADR-023: M3-008B Stage-2 semantic contract V2](ADR-023-m3-008b-stage2-semantic-contract-v2.md)
+- [ADR-025: fixed Attempt011 calibration successor](ADR-025-attempt011-calibration-successor.md)
+- [ADR-026: V1 local delivery dependencies](ADR-026-v1-delivery-dependencies.md)
+- [ADR-027: paced Attempt012 with unchanged per-case semantics](ADR-027-paced-calibration-successor.md)
+- [ADR-028: additive DeepSeek generation profile](ADR-028-deepseek-generation-profile.md)
+- [ADR-029: Closed local research input and scope safety](ADR-029-local-research-input-safety.md)
+- [ADR-030: Generation V2 canonical claim and citation contract](ADR-030-generation-v2-canonical-claim-contract.md)
+- [ADR-031: Carry the named local catalog through PubMed persistence](ADR-031-local-catalog-source-binding.md)
+- [ADR-032: Durable M1B source execution lifecycle](ADR-032-m1b-source-execution-lifecycle.md)
+- [ADR-033: Explicit local source query defaults](ADR-033-local-source-query-policy.md)
+- [ADR-034: Preserve PubMed execution limits within a local research budget](ADR-034-local-pubmed-execution-bounds.md)
+- [ADR-035: Closed runtime validation V3 bindings](ADR-035-runtime-validation-v3.md)
+- [ADR-036: Durable DailyMed V2 current-label execution](ADR-036-dailymed-v2-durable-current-label.md)
+- [ADR-037: Verified local PubMed material selections](ADR-037-pubmed-material-source-verification.md)
+- [ADR-038: Source-bound local PubMed abstract material](ADR-038-local-pubmed-abstract-material.md)
+- [ADR-039: Fixed Qwen runtime semantic profile](ADR-039-qwen-runtime-semantic-profile.md)
+- [ADR-040: Local source runtime and verified material authority](ADR-040-local-source-runtime-authority.md)
+- [ADR-041: Local synthesis and final report material](ADR-041-local-synthesis-and-final-report-material.md)
+- [ADR-042: CADEC metadata-only runtime material](ADR-042-cadec-metadata-runtime-material.md)
+- [ADR-043: CADEC recovered local asset profile](ADR-043-cadec-recovered-asset-profile.md)
+- [ADR-044: Shared source content and run-bound outcome occurrences](ADR-044-content-and-occurrence-identities.md)
+
+## Historical decisions and approval records
+
+
+- [ADR-022: Secure provider-attempt evidence ledger](ADR-022-m3-008b-secure-provider-attempt-evidence.md)
+
+## Owner-accepted M3-008B DeepSeek calibration-provider record
+
+- [ADR-021: DeepSeek Responses Stage-2 evaluator](ADR-021-deepseek-responses-stage2-evaluator.md)
+
+ADR-021 replaces only the not-yet-executed formal M3-008B provider decision.
+It freezes a dedicated DeepSeek Responses adapter, model `deepseek-v4-pro`,
+high reasoning, no tools or web search, and the unchanged Project-Owner ground
+truth identity. The OpenAI implementation remains isolated historical code;
+no runtime provider selector, new SDK/dependency, Holdout access, or semantic
+change is authorized.
+
 Architecture Decision Records (ADRs) capture consequential decisions that
 affect multiple layers, evidence semantics, safety policy, public contracts, or
 production dependencies.
@@ -261,10 +304,10 @@ adjudication remains mandatory where required.
 M3-008A adds no dependency, public API/schema, persistence migration, workflow
 integration, source/evidence semantic change, retrieval/router/qrels/corpus/
 metric change, or Holdout access. The existing precommitted semantic-expectation
-composition is deferred to M3-009. No approved human semantic packet or
-provider key is currently available, so M3-008B calibration remains
-`BLOCKED_EXTERNAL_INPUTS`; no calibration or overall implementation PASS is
-claimed.
+composition is deferred to M3-009. This is immutable historical M3-008A
+evidence; the later Project-Owner packet is frozen and ADR-021 replaces only
+the unexecuted M3-008B provider decision. No DeepSeek calibration or overall
+implementation PASS is claimed here.
 
 The exact Round 1 closure-candidate bindings are prompt
 `sha256:36958196b5de6f21c73d05957564da6cb8887338686e748bbdb9db85365b5ba1`,

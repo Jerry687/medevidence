@@ -1,5 +1,72 @@
 # V1 Traceability Matrix
 
+## Current local application composition (2026-09-18)
+
+| Requirement | Implementation | Evidence boundary |
+|---|---|---|
+| Source-to-report workflow | local_runtime.py, composition.py, local_source_runtime.py, local_synthesis_runtime.py | Real PostgreSQL and mock HTTP end-to-end; live source freshness separate |
+| Independent semantic validation | Qwen exact V4 profile, durable cache, immutable raw replay | Complete Development36 and production codec parity; not Holdout |
+| Review and export | ResearchApplicationService, ReviewExportStore, configured API/UI/MCP | Public submit, restart, approve and export integration tests; no automatic approval |
+| Provenance | Source job/acquisition membership, child snapshots, runtime implementation manifest | Exact replay, substitution negatives; historical evidence unchanged |
+| CADEC auxiliary source | Metadata-only material bridge, original exact asset admission | Synthetic bridge tests; missing approved local assets remain a visible skip |
+
+## M3-008B DeepSeek calibration closure trace
+
+| Closure requirement | Bound result | Ongoing restriction |
+|---|---|---|
+| Exact classification | `M3-008B-DEEPSEEK-CALIBRATION_CLOSED_EXTERNAL_EXECUTION_NOT_ACCEPTED` | This is not an implementation failure |
+| Attempts009/010 immutable | Both succeeded on cases1-4; case5 HTTP 200 remained incomplete, then closed `transport_unavailable` and `deadline_exceeded` under the same frozen shared deadline | Preserve all ledgers, raw identities, projections, status bindings, and hashes |
+| Review and metrics truth | Implementation review remained `P0 0 / P1 0 / P2 0`; no accepted 36-case metrics or artifact exists | Framework tests and partial provider execution cannot establish calibration acceptance |
+| DeepSeek path closed | Retained implementation and evidence are historical/provider-evaluation work only | No Attempt011, deadline/retry weakening, M3-009, Holdout-20, or provider execution authority |
+
+## M3-008B Successor-005 semantic and routing trace
+
+| Frozen requirement | Successor-005 candidate authority | Required evidence before provider access |
+|---|---|---|
+| Provider decides semantic support only | Closed `M3_STAGE2_SEMANTIC_RESULT_V2` candidate has semantic state, bounded rationale codes, and bounded explanation only | Provider-authored `human_review_required`, unknown fields, wrong types, noncanonical bytes, and provenance drift fail closed |
+| Semantic family is explicit | Contract version `m3.stage2-semantic-result.contract.v2`, identity `sha256:9b97996233f6dc80091f196209b18c27b23e0eeb5c82c6e7e8c0f954df69a3bb`, is distinct from schema and prompt identities | Canonical contract-byte reconstruction and mutation tests; result/receipt/calibration exact binding |
+| Application owns review routing | One ordered declarative six-rule table drives policy bytes/hash, runtime execution, and matrix generation from semantic state, relationship, bound conflict/comparability participant, and policy-sensitive inference; rationale codes are excluded | Table completeness/precedence and exhaustive state/relationship/conflict/safety matrix; no parallel rule list; Stage-1-failure zero-effect negatives |
+| Semantic rationale mapping is closed | The semantic contract declares per-state allowed, required-any, and forbidden code sets independently from routing | Every state/code positive and forbidden cross-state combination; contract-hash mutation and reconstruction |
+| Comparability escalation is per-result | A result binds either exact empty comparability or one exact participating comparison/conflict pair with IDs, hashes, and outcome | Foreign/stale/partial/swapped participant rejects; unrelated conflicts do not escalate; receipt/resolution/replay retain the same binding |
+| Evaluator/profile binding is exact | V2 result, receipt, and calibration require method `deepseek.responses.independent_semantic_evaluation`, active provider version `m3.semantic-evaluation.v2.deepseek-responses.v2`, and profile `sha256:64890c63e275c5bbce00f18e31899b4326d16220e6e7865356a3618ef4e557e9`; neutral config remains `sha256:fd3e9bda090c92b0c83244d521cb3163f4c3e43bda74b1132efaad7ffbb7f491` | Arbitrary evaluator and method/profile/config substitutions fail closed before accepted provenance |
+| Semantic truth is independent from routing | Frozen 36-case identity `sha256:758aaccd90e2e545af2215640426a20b2c75c038d40f0d1d2b2e0cc716aaf806` supplies semantic labels only | Semantic thresholds compute from semantic state alone; routing tests and metrics are separate and cannot affect agreement/recall |
+| Reused infrastructure remains exact | Successor-004 25-path manifest `sha256:3764ce9a44294a0d2df1c7d9864747c1869fc4f6a88aded89d0567f387b19faa` is mechanically reconstructed at baseline `26c67108bf5b8de8b05bddf7e7ec5bac61261425` | Framing, ledger, credential, deadline, PostgreSQL, V1/V2 reconstruction, and projection regressions remain green; reuse is not an integration/calibration PASS claim |
+| Historical attempts are immutable | Attempts001-006 retain their original authorities; Attempt006 records five successes and case006 as `V1_PROVIDER_OUTPUT_VALID_BUT_APPLICATION_POLICY_BINDING_FAILED` | Exact historical reconstruction; no raw/ledger rewrite and no semantic-failure relabel |
+| Attempt007 immutable failure | Provider v1 profile `sha256:2798cf926eb197b746fd3c321d50047c28dea5061d2f4613adb5c81b30c80b35`; run `sha256:a8c2038480addeb7255dd71592ac40888ab6ee22d1d945c44e6110cc0e7f5ce5`; 10 events/five HTTP attempts; cases1-4 succeeded; case5 valid HTTP/1.1 chunked headers plus incomplete zero-lower-bound body/no raw and `response_invalid` | Exact verifier binds projection `sha256:67e8af93d6eda5dddd34f94ac2ac705e44af9f5fa4930d605c7ce57d98206684`, status `sha256:4983adfb94b9adc41778829134842af24fc54a6615359711d06b3987f5b7aa9c`, and config file `sha256:bb051d2244b452df3668c62b2a1694ee59d9d64711d902ed615d702d31a20376`; no quality artifact |
+| Bounded stream retry | Pre-deadline stream `TransportError` maps to retryable `transport_unavailable`; exact/after deadline maps to `deadline`; credential and complete invalid responses remain permanent | Same coordinator absolute deadline, maximum three attempts, fresh response closure per retry, and no partial raw persistence |
+| Attempt008 immutable provider outcome | Manifest `sha256:bdbc9b07a12433b082bc6d1bec62445f9e73810f2b6ed7857c700e92526b19b2`; provider v2 profile; run `sha256:0b4e918e30c511174ad12ce6b07b25312688995fb2dc46d81868e2caa40baa89`; 12 events/six HTTP attempts; cases1-4 exact raw success; case5 `transport_unavailable` then `deadline_exceeded` under one absolute deadline, both without raw, and no attempt3 | Exact verifier binds projection `sha256:936ddc9e280b9ed5bda1f2b630c675d54e75e58c2a3dbb7a67cdf35b781ecbb5` and status `sha256:ca68ddf05134464d5d1802b11b113440b63752e5f5aa809f1614a7d816448185`; provider availability/deadline outcome, no code/semantic defect or quality artifact |
+| Attempt009 immutable provider outcome | Manifest `sha256:99af376d7cbacd0eec72c4520337f4ce73a4cfaa36455a6b99a18fda1656fa13`; provider v2 profile; run `sha256:4e1d5b2cd481ae62752d1eddda33bd8acbc43679f50bada019d414c4aef6d0e6`; 12 events/six HTTP attempts; cases1-4 exact raw success; case5 `transport_unavailable` then `deadline_exceeded`, both HTTP 200 incomplete-body closures without raw | Version-aware verifier binds exact configuration, ledger, four cases/raw identities, projection `sha256:c02f71b8e928ea4076af9997c4c07ebd4cb27e7c290f64ed44dadeb3c91a1b46`, and status `sha256:3d883dfd3dd8af63abf11b05f516477e1091179ab17b57085a12ddd18bee4b22`; terminal `FAIL — P0 0 / P1 0 / P2 0`, external non-acceptance, no implementation finding or quality artifact |
+| Attempt010 immutable provider outcome | Manifest `sha256:2de9fd9eeb293bd19ae860f6a4f71dbf4f9b308bd7baa0974e7426d9021a614a`; run `sha256:e85887cb2f409bc03bf1b6964b073efe78415e83bd754b9aaa4e3795a45aaa63`; 12 events/six HTTP attempts; cases1-4 exact raw success; case5 `transport_unavailable` then `deadline_exceeded`, both HTTP 200 incomplete-body closures without raw | Historical verifier binds projection `sha256:ecc271a70ab6c482b32576432e690afec2da4f62dd09f46710076065db616694` and status `sha256:c65e2dc63e6d14cc7a10631d45b9c9af21468d2d941ee3b2af18a448b2e7ec6f`; external non-acceptance, no implementation finding or quality artifact |
+| Provider-call closure | No DeepSeek attempt remains authorized; partial continuation and Attempt011 are prohibited | Attempts009/010 remain immutable; another provider requires separate Owner authorization |
+
+Successor-005 is an implementation candidate only. Successor-004 infrastructure
+is `PROVIDER_TRANSPORT_EVIDENCE_ARCHITECTURE_ACCEPTED_FOR_SUCCESSOR_REUSE`, but
+its calibration is `FULL_M3-008B_CALIBRATION_NOT_ACCEPTED`. Holdout-20 remains
+sealed.
+
+## M3-008B secure provider-attempt evidence
+
+ADR-022 maps provider execution to an isolated START/TERMINAL/RECOVERY ledger,
+bounded credential detection, exact safe raw bindings, and ledger-recomputed
+attempt/status projections. Historical attempts remain immutable.
+
+## M3-008B DeepSeek Development calibration history
+
+ADR-021 historically froze the dedicated DeepSeek Responses profile as the sole
+formal calibration provider. It bound the unchanged 36-case Project-Owner
+resolution identity, canonical Stage-1 request bytes, exact credential-free
+request/response bytes, response identity, usage, and configuration hash. Its
+pre-network review and audit had to pass before a call, and the runner used no
+labels, tools, web search, conversation continuation, Holdout content, or
+medical-source network. Calibration acceptance would have been recomputed from
+saved raw evidence using the Owner-frozen zero-tolerance, agreement, per-state
+count, and per-state recall thresholds.
+
+This is immutable pre-closure protocol history. The path is now
+`M3-008B-DEEPSEEK-CALIBRATION_CLOSED_EXTERNAL_EXECUTION_NOT_ACCEPTED`; there is
+no active provider or execution authority. Attempt011 and M3-009 are not
+authorized, and a replacement requires a new Owner decision.
+
 ## M3-008A independent Stage-2 evaluator framework
 
 Owner Decisions L and M authorize only the isolated M3-008A framework at
@@ -31,11 +98,13 @@ schema
 and configuration
 `sha256:603e5cc567c3e0bb6ec006de6835ab5309adf39dc333912b18622cbfe6ed1934`.
 
-No Owner-approved human semantic packet and no provider key are currently
-available. M3-008A may implement and validate the offline framework;
-M3-008B calibration remains `BLOCKED_EXTERNAL_INPUTS`. This section claims no
-framework PASS, calibration PASS, provider execution, independent review,
-audit, commit, push, PR, merge, workflow integration, or Holdout access.
+This is immutable historical M3-008A configuration evidence. The later frozen
+Project-Owner packet became available and ADR-021 historically replaced only
+the then-unexecuted M3-008B provider decision. DeepSeek pre-network review and
+execution subsequently occurred, but neither Attempt009 nor Attempt010
+completed the 36-case calibration. The DeepSeek path is closed, not pending;
+this historical section makes no calibration PASS, provider-execution
+authority, workflow-integration, or Holdout claim.
 
 Review001 returned immutable `FAIL — P0 0 / P1 4 / P2 0`; Review002 returned
 immutable `FAIL — P0 0 / P1 5 / P2 1`; Review003 returned immutable

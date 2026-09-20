@@ -139,12 +139,94 @@ def _install(
         document_texts=documents,
     )
     monkeypatch.setattr(adapter_module, "_load_cadec_archive_with_text", lambda *_args: loaded)
+    monkeypatch.setattr(
+        adapter_module.CadecLocalSearchAdapter, "_verify_asset_identity", lambda _self: None
+    )
     return loaded
 
 
 def test_adapter_requires_explicit_absolute_paths() -> None:
     with pytest.raises(ValueError, match="absolute"):
         CadecLocalSearchAdapter(archive_path="relative.zip", manifest_path="manifest.json")
+
+
+def test_metadata_cache_reuses_exact_scope_without_retaining_text_and_misses_new_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(monkeypatch, (_document("DOC.1", "match PRIVATE-FIXTURE-NEVER-PERSIST"),))
+    loader = adapter_module._load_cadec_archive_with_text
+    calls = {"load": 0, "verify": 0}
+
+    def counted_load(*args: object) -> _CadecTextLoadResult:
+        calls["load"] += 1
+        return loader(*args)
+
+    def counted_verify(_self: CadecLocalSearchAdapter) -> None:
+        calls["verify"] += 1
+
+    monkeypatch.setattr(adapter_module, "_load_cadec_archive_with_text", counted_load)
+    monkeypatch.setattr(CadecLocalSearchAdapter, "_verify_asset_identity", counted_verify)
+    adapter = CadecLocalSearchAdapter(archive_path=ARCHIVE, manifest_path=MANIFEST)
+    scope = _scope()
+    plan = runtime.plan_cadec_local_search(scope)
+    first = adapter.search(plan=plan, scope=scope)
+    second = adapter.search(plan=plan, scope=scope)
+    assert first == second
+    assert calls == {"load": 1, "verify": 2}
+    assert len(adapter._cache_entries) == 1
+    assert b"PRIVATE-FIXTURE-NEVER-PERSIST" not in adapter._cache_entries[0].payload
+
+    another_scope = _scope(term="different")
+    adapter.search(plan=runtime.plan_cadec_local_search(another_scope), scope=another_scope)
+    assert calls == {"load": 2, "verify": 3}
+
+    def missing_asset(_self: CadecLocalSearchAdapter) -> None:
+        raise runtime.CadecRuntimeError(runtime.CadecRuntimeErrorCode.ASSET_INTEGRITY, "missing")
+
+    monkeypatch.setattr(CadecLocalSearchAdapter, "_verify_asset_identity", missing_asset)
+    with pytest.raises(runtime.CadecRuntimeError, match="missing"):
+        adapter.search(plan=plan, scope=scope)
+    assert calls["load"] == 2
+
+
+def test_metadata_cache_has_eight_entry_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch, (_document("DOC.1", "match"),))
+    adapter = CadecLocalSearchAdapter(archive_path=ARCHIVE, manifest_path=MANIFEST)
+    for number in range(9):
+        scope = _scope(term=f"term{number}")
+        adapter.search(plan=runtime.plan_cadec_local_search(scope), scope=scope)
+    assert len(adapter._cache_entries) == 8
+
+
+def test_cached_asset_rehashes_both_inputs_and_rejects_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = b"synthetic archive bytes"
+    manifest = b"synthetic manifest bytes"
+    manifest_sha = hashlib.sha256(manifest).hexdigest()
+    monkeypatch.setattr(adapter_module, "CADEC_ARCHIVE_SHA256", hashlib.sha256(archive).hexdigest())
+    monkeypatch.setattr(adapter_module, "ARCHIVE_BYTES", len(archive))
+    monkeypatch.setattr(adapter_module, "CADEC_EXTERNAL_MANIFEST_BYTES", len(manifest))
+    monkeypatch.setattr(adapter_module, "CADEC_EXTERNAL_MANIFEST_SHA256", manifest_sha)
+    adapter = CadecLocalSearchAdapter(
+        archive_path=(tmp_path / "archive.zip").resolve(),
+        manifest_path=(tmp_path / "manifest.json").resolve(),
+        manifest_sha256=manifest_sha,
+    )
+    seen: list[str] = []
+    payloads = {"archive": archive, "manifest": manifest}
+
+    def read(_path: Path, label: str, _maximum: int) -> bytes:
+        seen.append(label)
+        return payloads[label]
+
+    monkeypatch.setattr(adapter_module, "_read_regular_input_bytes", read)
+    adapter._verify_asset_identity()
+    assert seen == ["archive", "manifest"]
+    payloads["manifest"] = manifest + b"x"
+    with pytest.raises(runtime.CadecRuntimeError, match="identity changed"):
+        adapter._verify_asset_identity()
+    assert seen == ["archive", "manifest", "archive", "manifest"]
 
 
 def test_adapter_scores_every_nonempty_document_and_returns_payload_free_top_twenty(

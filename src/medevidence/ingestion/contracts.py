@@ -8,6 +8,7 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import Field, StringConstraints, model_validator
 
+from medevidence.domain.catalogs import CatalogVersion
 from medevidence.domain.identifiers import (
     AcquisitionIntentId,
     AcquisitionRegistrationEnvelopeId,
@@ -145,7 +146,7 @@ class RunIntent(JournalModel):
     code_revision: CodeRevision
     scope_id: ScopeId
     execution_profile_id: Literal["M1A_CONSTRAINED_V1"] = "M1A_CONSTRAINED_V1"
-    catalog_version: Literal["m1a-concepts-v1"] = "m1a-concepts-v1"
+    catalog_version: CatalogVersion = "m1a-concepts-v1"
     source: Literal["pubmed"] = "pubmed"
     drug_concept_ids: tuple[DrugConceptId, ...] = Field(min_length=1, max_length=4)
     adverse_event_concept_ids: tuple[AdverseEventConceptId, ...] = Field(

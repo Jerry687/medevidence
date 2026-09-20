@@ -62,7 +62,7 @@ def _scope(
 
 def _catalog(scope: ResearchScope) -> ResolvedConceptCatalog:
     return ResolvedConceptCatalog(
-        catalog_content_hash=f"sha256:{'a' * 64}",
+        catalog_content_hash="sha256:eaffc3ee01ecd46a134578838b0304474642bf5e4a0c6e87302825d52be7682e",
         drugs=scope.drugs,
         adverse_reactions=scope.adverse_reactions,
     )
@@ -109,7 +109,7 @@ def test_invalid_term_is_rejected_before_any_port_call(term: str) -> None:
 def test_catalog_term_case_drift_is_rejected() -> None:
     scope = _scope()
     drifted = ResolvedConceptCatalog(
-        catalog_content_hash=f"sha256:{'a' * 64}",
+        catalog_content_hash="sha256:eaffc3ee01ecd46a134578838b0304474642bf5e4a0c6e87302825d52be7682e",
         drugs=(
             DrugConcept(
                 concept_id=scope.drugs[0].concept_id,

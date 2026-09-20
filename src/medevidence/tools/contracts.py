@@ -37,6 +37,7 @@ from medevidence.domain import (
     SourceType,
     UtcDateTime,
 )
+from medevidence.domain.catalogs import CatalogVersion, validate_catalog_identity
 from medevidence.domain.identifiers import (
     AcquisitionIntentId,
     ArtifactLinkId,
@@ -286,13 +287,14 @@ class ResolvedConceptCatalog(DurableModel):
     """Exact case-sensitive catalog resolution used to construct a query."""
 
     schema_version: Literal["1.0"] = "1.0"
-    catalog_version: Literal["m1a-concepts-v1"] = "m1a-concepts-v1"
+    catalog_version: CatalogVersion = "m1a-concepts-v1"
     catalog_content_hash: Sha256Digest
     drugs: tuple[DrugConcept, ...] = Field(min_length=1, max_length=4)
     adverse_reactions: tuple[AdverseEventConcept, ...] = Field(min_length=1, max_length=4)
 
     @model_validator(mode="after")
     def validate_order(self) -> Self:
+        validate_catalog_identity(self.catalog_version, self.catalog_content_hash)
         for values in (self.drugs, self.adverse_reactions):
             ids = tuple(item.concept_id for item in values)
             if ids != tuple(sorted(ids)) or len(ids) != len(set(ids)):
@@ -417,7 +419,7 @@ class RunIntentInput(DurableModel):
     created_at_utc: UtcDateTime
     code_revision: CodeRevision
     scope_id: str
-    catalog_version: Literal["m1a-concepts-v1"] = "m1a-concepts-v1"
+    catalog_version: CatalogVersion = "m1a-concepts-v1"
     catalog_content_hash: Sha256Digest
     drug_concept_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
     adverse_event_concept_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
@@ -427,6 +429,7 @@ class RunIntentInput(DurableModel):
 
     @model_validator(mode="after")
     def validate_input(self) -> Self:
+        validate_catalog_identity(self.catalog_version, self.catalog_content_hash)
         for values in (self.drug_concept_ids, self.adverse_event_concept_ids):
             if values != tuple(sorted(set(values))):
                 raise ValueError("run concept identities must be sorted and unique")

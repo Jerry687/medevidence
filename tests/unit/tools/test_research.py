@@ -102,7 +102,7 @@ def _scope() -> ResearchScope:
 def _catalog() -> ResolvedConceptCatalog:
     scope = _scope()
     return ResolvedConceptCatalog(
-        catalog_content_hash=f"sha256:{'a' * 64}",
+        catalog_content_hash="sha256:eaffc3ee01ecd46a134578838b0304474642bf5e4a0c6e87302825d52be7682e",
         drugs=scope.drugs,
         adverse_reactions=scope.adverse_reactions,
     )

@@ -4,19 +4,28 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import final
 
 from pydantic import ValidationError
 
 from medevidence.connectors.cadec.loader import (
+    ARCHIVE_BYTES,
+    MAX_ARCHIVE_INPUT_BYTES,
+    MAX_MANIFEST_INPUT_BYTES,
     CadecLoadError,
     _CadecAdmittedDocumentText,
     _load_cadec_archive_with_text,
+    _read_regular_input_bytes,
 )
 from medevidence.domain import (
+    CADEC_ARCHIVE_SHA256,
+    CADEC_EXTERNAL_MANIFEST_BYTES,
+    CADEC_EXTERNAL_MANIFEST_SHA256,
     CADEC_MANDATORY_LIMITATIONS,
+    CADEC_RECOVERY_MANIFEST_BYTES,
+    CADEC_RECOVERY_MANIFEST_SHA256,
     CoverageStatus,
     ExecutionBounds,
     ExecutionStatus,
@@ -24,6 +33,7 @@ from medevidence.domain import (
     ResultStatus,
     SourceOutcome,
     SourceType,
+    canonical_json,
     derive_identity,
 )
 from medevidence.orchestration.contracts import (
@@ -69,25 +79,48 @@ class _FrozenSlots:
         object.__setattr__(self, "_is_frozen", True)
 
 
+@dataclass(frozen=True, slots=True)
+class _CacheEntry:
+    key: str
+    payload: bytes
+    payload_sha256: str
+
+
+_MAX_CACHE_ENTRIES = 8
+_MAX_CACHE_RESULT_BYTES = 131_072
+
+
 @final
 class CadecLocalSearchAdapter(_FrozenSlots):
     """Verify and search one explicitly configured approved local CADEC asset."""
 
-    __slots__ = ("_archive_path", "_manifest_path")
+    __slots__ = ("_archive_path", "_cache_entries", "_manifest_path", "_manifest_sha256")
     _archive_path: Path
     _manifest_path: Path
+    _manifest_sha256: str
+    _cache_entries: tuple[_CacheEntry, ...]
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del kwargs
         raise TypeError("CadecLocalSearchAdapter is a sealed infrastructure adapter")
 
-    def __init__(self, *, archive_path: str | Path, manifest_path: str | Path) -> None:
+    def __init__(
+        self,
+        *,
+        archive_path: str | Path,
+        manifest_path: str | Path,
+        manifest_sha256: str = CADEC_EXTERNAL_MANIFEST_SHA256,
+    ) -> None:
         archive = Path(archive_path)
         manifest = Path(manifest_path)
         if not archive.is_absolute() or not manifest.is_absolute():
             raise ValueError("CADEC adapter paths must be explicit absolute paths")
+        if manifest_sha256 not in (CADEC_EXTERNAL_MANIFEST_SHA256, CADEC_RECOVERY_MANIFEST_SHA256):
+            raise ValueError("CADEC adapter requires one closed manifest identity")
         object.__setattr__(self, "_archive_path", archive)
         object.__setattr__(self, "_manifest_path", manifest)
+        object.__setattr__(self, "_manifest_sha256", manifest_sha256)
+        object.__setattr__(self, "_cache_entries", ())
         _FrozenSlots._freeze(self)
 
     def search(
@@ -99,6 +132,23 @@ class CadecLocalSearchAdapter(_FrozenSlots):
         """Verify, transiently score, and discard all exact admitted corpus text."""
 
         exact_plan = reconstruct_cadec_local_search_plan(plan, scope)
+        cache_key = derive_identity("cadec-search-cache", {"plan": exact_plan, "scope": scope})
+        for entry in self._cache_entries:
+            if entry.key == cache_key:
+                self._verify_asset_identity()
+                if hashlib.sha256(entry.payload).hexdigest() != entry.payload_sha256:
+                    raise CadecRuntimeError(
+                        CadecRuntimeErrorCode.SEARCH_INTEGRITY,
+                        "CADEC cached metadata changed",
+                    )
+                try:
+                    cached = CadecSearchResult.model_validate_json(entry.payload)
+                    return reconstruct_cadec_search_result(cached, scope=scope, plan=exact_plan)
+                except (ValueError, ValidationError) as error:
+                    raise CadecRuntimeError(
+                        CadecRuntimeErrorCode.SEARCH_INTEGRITY,
+                        "CADEC cached metadata failed reconstruction",
+                    ) from error
         try:
             loaded = _load_cadec_archive_with_text(self._archive_path, self._manifest_path)
         except CadecLoadError as error:
@@ -118,6 +168,11 @@ class CadecLocalSearchAdapter(_FrozenSlots):
             verification = CadecVerifiedCorpus.model_validate(
                 asdict(loaded.admitted.verification), strict=True
             )
+            if verification.manifest_sha256 != exact_plan.manifest_sha256:
+                raise CadecRuntimeError(
+                    CadecRuntimeErrorCode.ASSET_INTEGRITY,
+                    "CADEC manifest differs from the exact plan",
+                )
             eligible = _validate_transient_documents(
                 loaded.document_texts,
                 expected_count=verification.approved_document_count,
@@ -150,7 +205,21 @@ class CadecLocalSearchAdapter(_FrozenSlots):
                 outcome=outcome,
                 limitations=tuple(CADEC_MANDATORY_LIMITATIONS),
             )
-            return reconstruct_cadec_search_result(candidate, scope=scope, plan=exact_plan)
+            result = reconstruct_cadec_search_result(candidate, scope=scope, plan=exact_plan)
+            self._verify_asset_identity()
+            payload = canonical_json(result).encode("utf-8")
+            if len(payload) > _MAX_CACHE_RESULT_BYTES:
+                raise CadecRuntimeError(
+                    CadecRuntimeErrorCode.SEARCH_INTEGRITY,
+                    "CADEC cached result exceeds finite metadata bound",
+                )
+            entry = _CacheEntry(cache_key, payload, hashlib.sha256(payload).hexdigest())
+            object.__setattr__(
+                self,
+                "_cache_entries",
+                (entry, *self._cache_entries[: _MAX_CACHE_ENTRIES - 1]),
+            )
+            return result
         except CadecRuntimeError:
             raise
         except (KeyError, TypeError, ValueError, ValidationError) as error:
@@ -158,6 +227,39 @@ class CadecLocalSearchAdapter(_FrozenSlots):
                 CadecRuntimeErrorCode.SEARCH_INTEGRITY,
                 "CADEC transient materialization or search failed closed",
             ) from error
+
+    def _verify_asset_identity(self) -> None:
+        """Boundedly rehash both exact configured inputs before metadata reuse."""
+
+        expected_manifest_bytes = (
+            CADEC_RECOVERY_MANIFEST_BYTES
+            if self._manifest_sha256 == CADEC_RECOVERY_MANIFEST_SHA256
+            else CADEC_EXTERNAL_MANIFEST_BYTES
+        )
+        try:
+            archive = _read_regular_input_bytes(
+                self._archive_path, "archive", MAX_ARCHIVE_INPUT_BYTES
+            )
+            manifest = _read_regular_input_bytes(
+                self._manifest_path, "manifest", MAX_MANIFEST_INPUT_BYTES
+            )
+        except CadecLoadError as error:
+            object.__setattr__(self, "_cache_entries", ())
+            raise CadecRuntimeError(
+                CadecRuntimeErrorCode.ASSET_INTEGRITY,
+                "CADEC cached asset is unavailable",
+            ) from error
+        if (
+            len(archive) != ARCHIVE_BYTES
+            or hashlib.sha256(archive).hexdigest() != CADEC_ARCHIVE_SHA256
+            or len(manifest) != expected_manifest_bytes
+            or hashlib.sha256(manifest).hexdigest() != self._manifest_sha256
+        ):
+            object.__setattr__(self, "_cache_entries", ())
+            raise CadecRuntimeError(
+                CadecRuntimeErrorCode.ASSET_INTEGRITY,
+                "CADEC cached asset identity changed",
+            )
 
 
 def _validate_transient_documents(
@@ -287,6 +389,7 @@ class CanonicalCadecEvidenceCollection(_FrozenSlots):
         *,
         archive_path: str | Path,
         manifest_path: str | Path,
+        manifest_sha256: str = CADEC_EXTERNAL_MANIFEST_SHA256,
         delegate: SourceCapabilities,
     ) -> None:
         if type(delegate) is not SourceCapabilities:
@@ -298,6 +401,7 @@ class CanonicalCadecEvidenceCollection(_FrozenSlots):
             CadecLocalSearchAdapter(
                 archive_path=archive_path,
                 manifest_path=manifest_path,
+                manifest_sha256=manifest_sha256,
             ),
         )
         _FrozenSlots._freeze(self)
@@ -312,7 +416,12 @@ class CanonicalCadecEvidenceCollection(_FrozenSlots):
 
         task, scope, attempt = _reconstruct_collection_inputs(task, scope, attempt)
         if task.source is SourceType.CADEC:
-            return plan_cadec_operations(task=task, scope=scope, attempt=attempt)
+            return plan_cadec_operations(
+                task=task,
+                scope=scope,
+                attempt=attempt,
+                manifest_sha256=self._search._manifest_sha256,
+            )
         return SourceCapabilities.plan_operations(self._delegate, task, scope, attempt)
 
     def collect(
@@ -330,6 +439,7 @@ class CanonicalCadecEvidenceCollection(_FrozenSlots):
                 scope=scope,
                 attempt=attempt,
                 search=self._search,
+                manifest_sha256=self._search._manifest_sha256,
             )
         return SourceCapabilities.collect(self._delegate, task, scope, attempt)
 
@@ -368,6 +478,7 @@ class CanonicalCadecEvidenceCollection(_FrozenSlots):
             scope=scope,
             attempt=attempt,
             search=self._search,
+            manifest_sha256=self._search._manifest_sha256,
         )
         expected = terminal_source_task(
             running,

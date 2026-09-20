@@ -13,6 +13,8 @@ from medevidence.domain import (
     CADEC_CANONICAL_DOCUMENT_COUNT,
     CADEC_EXTERNAL_MANIFEST_SHA256,
     CADEC_MANDATORY_LIMITATIONS,
+    CADEC_RECOVERY_MANIFEST_BYTES,
+    CADEC_RECOVERY_MANIFEST_SHA256,
     ArtifactId,
     CadecSplit,
     CorpusDocumentId,
@@ -87,6 +89,25 @@ _EXACT_CADEC_VERIFICATION: Final[tuple[tuple[str, object], ...]] = (
     ("output_locator_count", 24_478),
     ("all_validation_passed", True),
 )
+
+
+def _verification_profile(manifest_sha256: str) -> tuple[tuple[str, object], ...]:
+    if manifest_sha256 == CADEC_EXTERNAL_MANIFEST_SHA256:
+        return _EXACT_CADEC_VERIFICATION
+    if manifest_sha256 == CADEC_RECOVERY_MANIFEST_SHA256:
+        return tuple(
+            (
+                name,
+                CADEC_RECOVERY_MANIFEST_SHA256
+                if name == "manifest_sha256"
+                else CADEC_RECOVERY_MANIFEST_BYTES
+                if name == "manifest_bytes"
+                else value,
+            )
+            for name, value in _EXACT_CADEC_VERIFICATION
+        )
+    raise ValueError("CADEC manifest identity is outside the two closed admission profiles")
+
 
 type RawSha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 type PrefixedSha256 = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
@@ -163,7 +184,7 @@ class CadecVerifiedCorpus(DurableModel):
     @model_validator(mode="after")
     def validate_complete_admission(self) -> Self:
         observed = tuple((name, getattr(self, name)) for name, _value in _EXACT_CADEC_VERIFICATION)
-        if observed != _EXACT_CADEC_VERIFICATION:
+        if observed != _verification_profile(self.manifest_sha256):
             raise ValueError("CADEC verification is not the complete exact approved admission")
         return self
 
@@ -187,7 +208,8 @@ class CadecLocalSearchPlan(DurableModel):
     def validate_exact_plan(self) -> Self:
         if (
             self.archive_sha256 != CADEC_ARCHIVE_SHA256
-            or self.manifest_sha256 != CADEC_EXTERNAL_MANIFEST_SHA256
+            or self.manifest_sha256
+            not in (CADEC_EXTERNAL_MANIFEST_SHA256, CADEC_RECOVERY_MANIFEST_SHA256)
             or self.bm25_k1 != CADEC_BM25_K1
             or self.bm25_b != CADEC_BM25_B
             or self.result_limit != CADEC_RESULT_LIMIT
@@ -302,13 +324,20 @@ class CadecSearchResult(DurableModel):
         return self
 
 
-def plan_cadec_local_search(scope: ResearchScope) -> CadecLocalSearchPlan:
+def plan_cadec_local_search(
+    scope: ResearchScope,
+    *,
+    manifest_sha256: str = CADEC_EXTERNAL_MANIFEST_SHA256,
+) -> CadecLocalSearchPlan:
     """Build the exact local CADEC plan without file, search, or persistence I/O."""
 
-    return _build_plan(_validated_cadec_scope(scope))
+    _verification_profile(manifest_sha256)
+    return _build_plan(_validated_cadec_scope(scope), manifest_sha256=manifest_sha256)
 
 
-def _build_plan(scope: ResearchScope) -> CadecLocalSearchPlan:
+def _build_plan(
+    scope: ResearchScope, *, manifest_sha256: str = CADEC_EXTERNAL_MANIFEST_SHA256
+) -> CadecLocalSearchPlan:
     query = " ".join(
         (
             *(item.preferred_term for item in scope.drugs),
@@ -325,7 +354,7 @@ def _build_plan(scope: ResearchScope) -> CadecLocalSearchPlan:
         query=query,
         query_id="pending",
         archive_sha256=CADEC_ARCHIVE_SHA256,
-        manifest_sha256=CADEC_EXTERNAL_MANIFEST_SHA256,
+        manifest_sha256=manifest_sha256,
         bm25_k1=CADEC_BM25_K1,
         bm25_b=CADEC_BM25_B,
         result_limit=CADEC_RESULT_LIMIT,
@@ -335,7 +364,7 @@ def _build_plan(scope: ResearchScope) -> CadecLocalSearchPlan:
         query=query,
         query_id=_query_id_for_plan(provisional),
         archive_sha256=CADEC_ARCHIVE_SHA256,
-        manifest_sha256=CADEC_EXTERNAL_MANIFEST_SHA256,
+        manifest_sha256=manifest_sha256,
         bm25_k1=CADEC_BM25_K1,
         bm25_b=CADEC_BM25_B,
         result_limit=CADEC_RESULT_LIMIT,
@@ -368,7 +397,7 @@ def reconstruct_cadec_local_search_plan(
         copied = CadecLocalSearchPlan.model_validate(
             candidate.model_dump(mode="python"), strict=True
         )
-        expected = _build_plan(scope)
+        expected = _build_plan(scope, manifest_sha256=copied.manifest_sha256)
     except (AttributeError, TypeError, ValueError, ValidationError) as error:
         raise CadecRuntimeError(
             CadecRuntimeErrorCode.PLAN_INTEGRITY,
@@ -400,6 +429,7 @@ def reconstruct_cadec_search_result(
             copied.scope_id != validated_scope.scope_id
             or copied.query != validated_plan.query
             or copied.query_id != validated_plan.query_id
+            or copied.verification.manifest_sha256 != validated_plan.manifest_sha256
             or copied.bm25_k1 != validated_plan.bm25_k1
             or copied.bm25_b != validated_plan.bm25_b
             or copied.result_limit != validated_plan.result_limit
@@ -424,7 +454,7 @@ def cadec_verification_input_identity(plan: CadecLocalSearchPlan) -> str:
             "scope_id": plan.scope_id,
             "archive_sha256": plan.archive_sha256,
             "manifest_sha256": plan.manifest_sha256,
-            "exact_verification": _EXACT_CADEC_VERIFICATION,
+            "exact_verification": _verification_profile(plan.manifest_sha256),
         },
     )
 

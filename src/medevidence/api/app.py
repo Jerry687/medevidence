@@ -15,9 +15,15 @@ from pydantic import BaseModel
 from medevidence.domain import M1BResearchReportV1, M1BResearchRequestV1, ResearchReport
 from medevidence.tools import ResearchPubMedRequest
 from medevidence.tools.ports import FaersReportApplicationPort
+from medevidence.tools.research_application import (
+    ResearchApplicationPort,
+    ResearchReviewCommand,
+    ResearchSubmission,
+)
 
 from .contracts import ApiInclusiveDateRange, ResearchPubMedApiRequest
 from .errors import ApiErrorDetail, ApiErrorResponse
+from .research_routes import create_research_router
 from .routes import create_router
 
 _CODE_REVISION_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
@@ -43,7 +49,11 @@ class ApiDependencies:
             raise ValueError("code_revision must be an exact lowercase 40-character Git commit")
 
 
-def create_app(dependencies: ApiDependencies) -> FastAPI:
+def create_app(
+    dependencies: ApiDependencies,
+    *,
+    research_application: ResearchApplicationPort | None = None,
+) -> FastAPI:
     """Create the offline-safe M1A API from explicit injected dependencies."""
 
     dailymed_enabled = dependencies.dailymed_application is not None
@@ -82,6 +92,7 @@ def create_app(dependencies: ApiDependencies) -> FastAPI:
     )
     app.openapi_version = "3.1.0"
     app.include_router(create_router(dependencies))
+    app.include_router(create_research_router(research_application))
     _register_public_components(app, m1b_enabled=dailymed_enabled or faers_enabled)
     return app
 
@@ -95,15 +106,20 @@ def _register_public_components(app: FastAPI, *, m1b_enabled: bool) -> None:
         models: list[type[BaseModel]] = [
             ApiInclusiveDateRange,
             ResearchPubMedApiRequest,
+            ResearchSubmission,
+            ResearchReviewCommand,
             ApiErrorDetail,
             ApiErrorResponse,
         ]
         if m1b_enabled:
             models.append(M1BResearchRequestV1)
         for model in models:
-            components[model.__name__] = model.model_json_schema(
-                ref_template="#/components/schemas/{model}"
-            )
+            generated = model.model_json_schema(ref_template="#/components/schemas/{model}")
+            if model in (ResearchSubmission, ResearchReviewCommand):
+                definitions = generated.pop("$defs", {})
+                for name, definition in definitions.items():
+                    components.setdefault(name, definition)
+            components[model.__name__] = generated
         required_fields = {
             "DailyMedLocatorV1": ("schema_version", "locator_kind", "source"),
             "DailyMedSelectionRequestV1": ("schema_version",),

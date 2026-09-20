@@ -11,6 +11,18 @@ from typing import Literal, TypeVar
 
 import httpx
 
+from medevidence.domain import sha256_digest
+from medevidence.domain.dailymed_enrichment import (
+    DailyMedPackagingExecutionV2,
+    DailyMedRawParentV2,
+)
+
+from .enrichment import (
+    DailyMedDiscoveryPageV2,
+    DailyMedPackagingPageV2,
+    parse_discovery_page_v2,
+    parse_packaging_page,
+)
 from .parsing import (
     DailyMedCandidatePage,
     DailyMedHistoryPage,
@@ -37,6 +49,7 @@ from .policy import (
     validate_connector_config,
     validate_dailymed_request,
     validate_dailymed_url,
+    validate_spl_version,
 )
 
 T = TypeVar("T")
@@ -373,6 +386,55 @@ class DailyMedConnector:
             truncated=pages[-1].next_page is not None,
         )
 
+    def discover_v2(
+        self, **query: object
+    ) -> DailyMedConnectorResult[tuple[DailyMedDiscoveryPageV2, ...]]:
+        """Retain bounded official title/date without changing legacy discovery."""
+
+        try:
+            request = build_dailymed_request(DailyMedOperation.DISCOVERY, query=query)
+        except (TypeError, ValueError) as error:
+            return self._input_failure(error)
+        context = _Context(self._monotonic())
+        pages: list[DailyMedDiscoveryPageV2] = []
+        count = 0
+        for page_number in range(1, self._config.max_pages + 1):
+            current = request.with_page(page_number)
+            response, failure = self._send_with_retries(context, current, page_number)
+            if failure is not None:
+                return self._failed(context, failure)
+            assert response is not None
+            try:
+                requested_pagesize = dict(current.query).get("pagesize")
+                page = parse_discovery_page_v2(
+                    response.body,
+                    expected_page=page_number,
+                    expected_pagesize=(
+                        int(requested_pagesize) if requested_pagesize is not None else None
+                    ),
+                )
+            except DailyMedParseError as error:
+                return self._failed(context, self._parse_failure(error))
+            context.pages_completed += 1
+            pages.append(page)
+            count += len(page.records)
+            if count > self._config.max_candidates:
+                return self._failed(
+                    context,
+                    DailyMedFailure(
+                        DailyMedFailureKind.PAYLOAD_LIMIT,
+                        "DailyMed V2 discovery exceeded the 100-candidate bound.",
+                    ),
+                )
+            if page.next_page is None:
+                return self._success(context, tuple(pages))
+            if count == self._config.max_candidates or page_number == self._config.max_pages:
+                return self._success(context, tuple(pages), truncated=True)
+            next_count = min(page.pagesize, page.total - count)
+            if count + next_count > self._config.max_candidates:
+                return self._success(context, tuple(pages), truncated=True)
+        raise RuntimeError("bounded DailyMed V2 discovery loop terminated unexpectedly")
+
     def fetch_spl(
         self,
         setid: str,
@@ -438,6 +500,97 @@ class DailyMedConnector:
                 ),
             )
         return self._success(context, parsed)
+
+    def packaging(
+        self,
+        setid: str,
+        expected_spl_version: str,
+        *,
+        pagesize: int = 100,
+    ) -> DailyMedConnectorResult[tuple[DailyMedPackagingPageV2, ...]]:
+        """Retrieve bounded current packaging metadata for one frozen summary."""
+
+        try:
+            request = build_dailymed_request(
+                DailyMedOperation.PACKAGING,
+                setid=setid,
+                query={"pagesize": pagesize, "page": 1},
+            )
+            expected_spl_version = validate_spl_version(expected_spl_version)
+        except (TypeError, ValueError) as error:
+            return self._input_failure(error)
+        context = _Context(self._monotonic())
+        pages: list[DailyMedPackagingPageV2] = []
+        products = 0
+        for page_number in range(1, self._config.max_pages + 1):
+            current = request.with_page(page_number)
+            response, failure = self._send_with_retries(context, current, page_number)
+            if failure is not None:
+                return self._failed(context, failure)
+            assert response is not None
+            try:
+                page = parse_packaging_page(
+                    response.body,
+                    expected_setid=setid,
+                    expected_spl_version=expected_spl_version,
+                    expected_page=page_number,
+                )
+            except DailyMedParseError as error:
+                return self._failed(context, self._parse_failure(error))
+            pages.append(page)
+            products += len(page.products)
+            context.pages_completed += 1
+            if products > self._config.max_candidates:
+                return self._failed(
+                    context,
+                    DailyMedFailure(
+                        DailyMedFailureKind.PAYLOAD_LIMIT,
+                        "DailyMed packaging exceeded the 100-product bound.",
+                    ),
+                )
+            if page.next_page is None:
+                return self._success(context, tuple(pages))
+        return self._success(context, tuple(pages), truncated=pages[-1].next_page is not None)
+
+    @staticmethod
+    def captured_packaging_v2(
+        result: DailyMedConnectorResult[tuple[DailyMedPackagingPageV2, ...]],
+        *,
+        parent: DailyMedRawParentV2,
+        expected_setid: str,
+        expected_spl_version: str,
+    ) -> DailyMedPackagingExecutionV2:
+        """Admit only a complete single-page response bound to its retained raw parent."""
+
+        if (
+            type(result) is not DailyMedConnectorResult
+            or type(parent) is not DailyMedRawParentV2
+            or parent.kind != "packaging_json"
+            or result.failure is not None
+            or result.truncated
+            or result.pages_completed != 1
+            or result.value is None
+            or len(result.value) != 1
+            or len(result.raw_responses) != 1
+        ):
+            raise ValueError("DailyMed packaging is partial or lacks exact raw capture")
+        raw = result.raw_responses[0].body
+        if (
+            not result.raw_responses[0].body_complete
+            or result.value[0].next_page is not None
+            or len(raw) != parent.byte_size
+            or sha256_digest(raw) != parent.raw_content_hash
+        ):
+            raise ValueError("DailyMed packaging raw parent or completeness drift")
+        reparsed = parse_packaging_page(
+            raw,
+            expected_setid=expected_setid,
+            expected_spl_version=expected_spl_version,
+            expected_page=1,
+        )
+        if reparsed != result.value[0]:
+            raise ValueError("DailyMed packaging parsed result differs from raw bytes")
+        return DailyMedPackagingExecutionV2(parent=parent, products=reparsed.products)
 
     @staticmethod
     def _parse_spl_payload(

@@ -47,6 +47,10 @@ from .publications import (
 )
 from .scope import SourceType
 from .sources import (
+    CADEC_CORPUS_VERSION,
+    CADEC_RECOVERY_AUDIT_SHA256,
+    CADEC_RECOVERY_CORPUS_VERSION,
+    CADEC_TERMINAL_FREEZE_AUDIT_SHA256,
     CadecAnnotationOrigin,
     CadecCorpusAnnotationV1,
     CadecCorpusDocumentV1,
@@ -172,15 +176,9 @@ class CadecLocatorV1(DurableModel):
     locator_kind: Literal["cadec_provider_gold_annotation"] = "cadec_provider_gold_annotation"
     source: Literal[SourceType.CADEC] = SourceType.CADEC
     corpus_id: Literal["sha256:4045b926a0a5735f00f785f7ad935e5a73731d6ab607d11d88880a334be18c4a"]
-    corpus_version: Literal[
-        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
-    ]
-    release_manifest_sha256: Literal[
-        "sha256:1c475ded0e7a2e0d80fe0909f2ccf1131c746da6ffc9c52879bfd9076234abfa"
-    ]
-    terminal_freeze_audit_sha256: Literal[
-        "sha256:18928091762df33fc1fc39e9d45a55c86637a0c55c1d5cc987bc12e55a36f753"
-    ]
+    corpus_version: Sha256Digest
+    release_manifest_sha256: Sha256Digest
+    terminal_freeze_audit_sha256: Sha256Digest
     split: CadecSplit
     split_membership_sha256: Sha256Digest
     artifact_id: ArtifactId
@@ -213,6 +211,23 @@ class CadecLocatorV1(DurableModel):
 
     @model_validator(mode="after")
     def validate_locator(self) -> Self:
+        if (
+            self.corpus_version,
+            self.release_manifest_sha256,
+            self.terminal_freeze_audit_sha256,
+        ) not in (
+            (
+                CADEC_CORPUS_VERSION,
+                CADEC_CORPUS_VERSION,
+                f"sha256:{CADEC_TERMINAL_FREEZE_AUDIT_SHA256}",
+            ),
+            (
+                CADEC_RECOVERY_CORPUS_VERSION,
+                CADEC_RECOVERY_CORPUS_VERSION,
+                f"sha256:{CADEC_RECOVERY_AUDIT_SHA256}",
+            ),
+        ):
+            raise ValueError("CADEC locator must bind one exact closed release profile")
         if self.prohibited_claim_contexts != CADEC_PROHIBITED_CLAIM_CONTEXTS:
             raise ValueError("CADEC locator must retain every prohibited claim context")
         validated_spans = tuple(

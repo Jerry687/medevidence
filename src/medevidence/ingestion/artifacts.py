@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -423,12 +424,20 @@ class FaersSnapshotManifest(DurableModel):
             if not self.members:
                 raise ValueError("complete FAERS coverage requires a retained response")
             effective = self.members[-1]
+            recognized_empty_404_shape = (
+                self.source_outcome.result_status is ResultStatus.NO_MATCH
+                and self.source_outcome.valid_result_count == 0
+                and not self.buckets
+                and effective.http_status == 404
+            )
             if (
                 not effective.body_complete
                 or effective.byte_size == 0
-                or not 200 <= effective.http_status <= 299
+                or not (200 <= effective.http_status <= 299 or recognized_empty_404_shape)
             ):
-                raise ValueError("complete FAERS coverage requires nonempty complete 2xx")
+                raise ValueError(
+                    "complete FAERS coverage requires nonempty complete 2xx or exact empty 404"
+                )
         return self
 
 
@@ -973,11 +982,26 @@ def capture_faers_snapshot(
     buckets: tuple[FaersAggregateBucketV1, ...],
     observations: tuple[RawResponseObservation, ...],
     code_revision: CodeRevision,
+    recognized_empty_response: Callable[[int, bytes], bool] | None = None,
 ) -> CapturedFaersSnapshot:
     """Publish exact FAERS responses and their complete canonical manifest."""
 
     if len(observations) > 2:
         raise ValueError("FAERS capture accepts at most two response observations")
+    if (
+        observations
+        and observations[-1].http_status == 404
+        and source_outcome.coverage_status is CoverageStatus.COMPLETE
+    ):
+        effective = observations[-1]
+        if (
+            source_outcome.result_status is not ResultStatus.NO_MATCH
+            or not effective.body_complete
+            or effective.termination_reason != "complete_response"
+            or recognized_empty_response is None
+            or recognized_empty_response(404, effective.body) is not True
+        ):
+            raise SnapshotIntegrityError("FAERS complete 404 lacks exact empty-result proof")
     members = tuple(
         _faers_member(ordinal, observation) for ordinal, observation in enumerate(observations)
     )
@@ -1021,6 +1045,7 @@ def replay_faers_snapshot(
     expected_manifest_id: Sha256Digest,
     expected_query: FaersAggregateQueryV1,
     expected_members: tuple[FaersManifestMember, ...],
+    recognized_empty_response: Callable[[int, bytes], bool] | None = None,
 ) -> FaersSnapshotManifest:
     """Revalidate FAERS manifest identity, query ownership, and exact raw bytes."""
 
@@ -1040,12 +1065,39 @@ def replay_faers_snapshot(
     if manifest.members != expected_members:
         raise SnapshotIntegrityError("FAERS manifest members differ from expected")
     for member in manifest.members:
-        path = store.verify_faers(member.artifact_id)
+        path = store.root.joinpath(*PurePosixPath(member.relative_path).parts)
+        store._require_safe_path(path, allow_missing_leaf=False)
+        if not path.is_file() or not 0 <= path.stat().st_size <= RAW_RESPONSE_BYTE_CAPACITY:
+            raise SnapshotIntegrityError("FAERS manifest member file is invalid")
+        with path.open("rb") as handle:
+            member_raw = handle.read(RAW_RESPONSE_BYTE_CAPACITY + 1)
+        store._require_safe_path(path, allow_missing_leaf=False)
         if (
-            path.relative_to(store.root).as_posix() != member.relative_path
-            or path.stat().st_size != member.byte_size
+            len(member_raw) != member.byte_size
+            or len(member_raw) > RAW_RESPONSE_BYTE_CAPACITY
+            or f"sha256:{sha256(member_raw).hexdigest()}" != member.artifact_id
         ):
             raise SnapshotIntegrityError("FAERS manifest member metadata differs")
+    if (
+        manifest.source_outcome.coverage_status is CoverageStatus.COMPLETE
+        and manifest.members
+        and manifest.members[-1].http_status == 404
+    ):
+        effective = manifest.members[-1]
+        target = store.root.joinpath(*PurePosixPath(effective.relative_path).parts)
+        store._require_safe_path(target, allow_missing_leaf=False)
+        with target.open("rb") as handle:
+            effective_raw = handle.read(RAW_RESPONSE_BYTE_CAPACITY + 1)
+        store._require_safe_path(target, allow_missing_leaf=False)
+        if (
+            not effective.body_complete
+            or effective.termination_reason != "complete_response"
+            or len(effective_raw) != effective.byte_size
+            or len(effective_raw) > RAW_RESPONSE_BYTE_CAPACITY
+            or recognized_empty_response is None
+            or recognized_empty_response(404, effective_raw) is not True
+        ):
+            raise SnapshotIntegrityError("FAERS replay lacks exact empty-result proof")
     return manifest
 
 

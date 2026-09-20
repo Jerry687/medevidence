@@ -6,6 +6,7 @@ from typing import Annotated, Any, Final, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, model_validator
 
+from .catalogs import CatalogVersion, validate_catalog_identity
 from .claims import Citation, DailyMedLocatorV1, EvidenceClaim, FaersLocatorV1
 from .identifiers import (
     AcquisitionId,
@@ -188,7 +189,7 @@ class ResearchReport(DurableModel):
     schema_version: SchemaVersion = "1.0"
     report_id: ReportId
     run_id: RunId
-    catalog_version: Literal["m1a-concepts-v1"] = "m1a-concepts-v1"
+    catalog_version: CatalogVersion = "m1a-concepts-v1"
     catalog_content_hash: Sha256Digest
     run_intent_id: RunIntentId
     acquisition_snapshot_ids: tuple[Sha256Digest, ...]
@@ -219,6 +220,7 @@ class ResearchReport(DurableModel):
         *,
         run_id: RunId,
         catalog_content_hash: Sha256Digest,
+        catalog_version: CatalogVersion = "m1a-concepts-v1",
         run_intent_id: RunIntentId,
         acquisition_snapshot_ids: tuple[Sha256Digest, ...],
         acquisition_manifest_ids: tuple[Sha256Digest, ...],
@@ -278,7 +280,7 @@ class ResearchReport(DurableModel):
         payload = {
             "schema_version": "1.0",
             "run_id": run_id,
-            "catalog_version": "m1a-concepts-v1",
+            "catalog_version": catalog_version,
             "catalog_content_hash": catalog_content_hash,
             "run_intent_id": run_intent_id,
             "acquisition_snapshot_ids": acquisition_snapshot_ids,
@@ -304,6 +306,7 @@ class ResearchReport(DurableModel):
             report_id=report_id,
             run_id=run_id,
             catalog_content_hash=catalog_content_hash,
+            catalog_version=catalog_version,
             run_intent_id=run_intent_id,
             acquisition_snapshot_ids=acquisition_snapshot_ids,
             acquisition_manifest_ids=acquisition_manifest_ids,
@@ -330,6 +333,7 @@ class ResearchReport(DurableModel):
 
     @model_validator(mode="after")
     def validate_aggregate(self) -> Self:
+        validate_catalog_identity(self.catalog_version, self.catalog_content_hash)
         acquisition_count = len(self.acquisition_snapshot_ids)
         if not 1 <= acquisition_count <= 101:
             raise ValueError("report requires between one and 101 acquisition bindings")

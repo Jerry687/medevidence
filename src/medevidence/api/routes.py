@@ -44,6 +44,7 @@ from .contracts import (
     validate_raw_faers_request,
     validate_raw_json_request,
 )
+from .contracts import ResearchReport as LegacyResearchReport
 from .errors import (
     ERROR_SPECS,
     ApiErrorCode,
@@ -109,7 +110,7 @@ def create_router(dependencies: _Dependencies) -> APIRouter:
             "200 and carry their typed limitations."
         ),
         response_description="Persisted draft research report.",
-        response_model=ResearchReport,
+        response_model=LegacyResearchReport,
         responses=_documented_responses(),
         openapi_extra={
             "requestBody": {
@@ -152,7 +153,7 @@ def create_router(dependencies: _Dependencies) -> APIRouter:
                 scope=api_request.to_scope(),
             )
             returned = dependencies.application(tool_request)
-            report = ResearchReport.model_validate(
+            report = LegacyResearchReport.model_validate(
                 returned.model_dump(mode="python", warnings="error")
                 if isinstance(returned, ResearchReport)
                 else returned,

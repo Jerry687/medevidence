@@ -50,6 +50,18 @@ _EMPTY_RESULT_PROVIDER_ERRORS = frozenset(
 )
 
 
+def recognized_empty_count_response(status_code: int, body: bytes) -> bool:
+    """Recognize only the closed openFDA 404 empty-count envelope."""
+
+    if type(status_code) is not int or status_code != 404 or type(body) is not bytes:
+        return False
+    try:
+        provider_error = parse_error_envelope(body)
+    except FaersParseError:
+        return False
+    return (provider_error.code, provider_error.message) in _EMPTY_RESULT_PROVIDER_ERRORS
+
+
 def _canonical_content_length(value: str) -> int:
     if not value or not value.isascii() or not value.isdecimal():
         raise ValueError("Content-Length must be a canonical ASCII decimal")
@@ -347,11 +359,7 @@ class FaersConnector:
             or raw.termination_reason != "complete_response"
         ):
             return None
-        try:
-            provider_error = parse_error_envelope(raw.body)
-        except FaersParseError:
-            return None
-        if (provider_error.code, provider_error.message) not in _EMPTY_RESULT_PROVIDER_ERRORS:
+        if not recognized_empty_count_response(raw.status_code, raw.body):
             return None
         return FaersCountPage(
             buckets=(),

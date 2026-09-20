@@ -62,7 +62,7 @@ class Catalog:
         scope = _scope()
         assert scope_id == scope.scope_id
         return ResolvedConceptCatalog(
-            catalog_content_hash=f"sha256:{'a' * 64}",
+            catalog_content_hash="sha256:eaffc3ee01ecd46a134578838b0304474642bf5e4a0c6e87302825d52be7682e",
             drugs=scope.drugs,
             adverse_reactions=scope.adverse_reactions,
         )

@@ -26,6 +26,8 @@ from medevidence.domain import (
     CADEC_EXTERNAL_MANIFEST_BYTES,
     CADEC_EXTERNAL_MANIFEST_SHA256,
     CADEC_MALFORMED_ROW_COUNT,
+    CADEC_RECOVERY_MANIFEST_BYTES,
+    CADEC_RECOVERY_MANIFEST_SHA256,
     CADEC_TEST_MEMBERSHIP_SHA256,
     CADEC_TRAIN_MEMBERSHIP_SHA256,
     CadecControlledVocabularyLayer,
@@ -219,7 +221,11 @@ def _load_cadec_archive_bytes(
     archive_bytes = _read_regular_input_bytes(archive_path, "archive", MAX_ARCHIVE_INPUT_BYTES)
     manifest_bytes = _read_regular_input_bytes(manifest_path, "manifest", MAX_MANIFEST_INPUT_BYTES)
     manifest_size, manifest_hash = _bytes_identity(manifest_bytes)
-    if (manifest_size, manifest_hash) != (
+    recovery = (manifest_size, manifest_hash) == (
+        CADEC_RECOVERY_MANIFEST_BYTES,
+        CADEC_RECOVERY_MANIFEST_SHA256,
+    )
+    if not recovery and (manifest_size, manifest_hash) != (
         CADEC_EXTERNAL_MANIFEST_BYTES,
         CADEC_EXTERNAL_MANIFEST_SHA256,
     ):
@@ -233,8 +239,12 @@ def _load_cadec_archive_bytes(
             CadecLoadErrorCode.ARCHIVE_INTEGRITY,
             "archive size or SHA-256 differs from the exact freeze",
         )
-    policy = _read_and_validate_manifest(manifest_bytes)
-    release = CadecReleaseManifestV1.create()
+    policy = (
+        _read_and_validate_manifest(manifest_bytes, recovery=True)
+        if recovery
+        else _read_and_validate_manifest(manifest_bytes)
+    )
+    release = CadecReleaseManifestV1.create(recovery=recovery)
     document_texts: list[_CadecAdmittedDocumentText] | None = [] if retain_document_text else None
     result = _admit_archive(
         archive_bytes,
@@ -339,7 +349,7 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _read_and_validate_manifest(payload: bytes) -> _ManifestPolicy:
+def _read_and_validate_manifest(payload: bytes, *, recovery: bool = False) -> _ManifestPolicy:
     try:
         root = json.loads(
             payload.decode("utf-8", errors="strict"), object_pairs_hook=_unique_object
@@ -349,6 +359,8 @@ def _read_and_validate_manifest(payload: bytes) -> _ManifestPolicy:
             CadecLoadErrorCode.MANIFEST_INTEGRITY, "manifest must be exact UTF-8 JSON"
         ) from error
     manifest = _mapping(root, "manifest")
+    if recovery:
+        manifest = _expand_recovery_manifest(manifest)
     archive = _mapping(manifest.get("archive"), "archive")
     _require(archive, "bytes", ARCHIVE_BYTES)
     _require(archive, "sha256", CADEC_ARCHIVE_SHA256)
@@ -413,6 +425,105 @@ def _read_and_validate_manifest(payload: bytes) -> _ManifestPolicy:
         approved_sha256=_string(approved.get("sha256"), "approved digest"),
         exclusion_sha256=_membership_digest(exclusions),
     )
+
+
+def _expand_recovery_manifest(recovery: Mapping[str, object]) -> Mapping[str, object]:
+    """Translate the one pinned metadata successor into the legacy admission oracle."""
+
+    _require(recovery, "schema_version", "medevidence.cadec.recovery-manifest.v1")
+    exclusions = CADEC_EXCLUDED_DOCUMENT_IDS
+    excluded_paths = sorted(
+        f"cadec/{layer}/{document_id}{'.txt' if layer == 'text' else '.ann'}"
+        for document_id in exclusions
+        for layer in ("text", *_LAYERS)
+    )
+    limits = _mapping(recovery.get("reference_binding_limitations"), "recovery limits")
+    counts = _mapping(recovery.get("annotation_counts"), "recovery annotation counts")
+    malformed = _mapping(recovery.get("malformed_rows"), "recovery malformed ledger")
+    exception = _mapping(recovery.get("encoding_exception"), "recovery encoding exception")
+    _require(recovery, "provider_gold_only", True)
+    _require(recovery, "predicted_artifact_admitted", False)
+    _require(recovery, "vocabulary_reference_only", True)
+    return {
+        "archive": recovery.get("archive"),
+        "inventory": recovery.get("inventory"),
+        "canonical_document_inventory": recovery.get("canonical_document_inventory"),
+        "approved_subset": recovery.get("approved_subset"),
+        "exclusion_ledger": {
+            "complete_document_ids": _mapping(
+                recovery.get("exclusion_ledger"), "recovery exclusions"
+            ).get("complete_document_ids"),
+            "excluded_archive_files": [{"path": path} for path in excluded_paths],
+        },
+        "split_policy": recovery.get("split_policy"),
+        "annotation_contract": {
+            "reference_binding": {
+                "layers": {
+                    name: {
+                        "mismatch_count": _mapping(limits.get(layer), "recovery limit layer").get(
+                            "count"
+                        ),
+                        "mismatch_ledger": {
+                            "count": _mapping(limits.get(layer), "recovery limit layer").get(
+                                "count"
+                            ),
+                            "items": _mapping(limits.get(layer), "recovery limit layer").get(
+                                "items"
+                            ),
+                        },
+                    }
+                    for layer, name in _MANIFEST_LAYER_NAMES.items()
+                }
+            },
+            "approved_subset_aggregate_facts": {
+                name: {
+                    "files": CADEC_APPROVED_DOCUMENT_COUNT,
+                    "invalid_rows": 0,
+                    "out_of_bounds_segments": 0,
+                    "entity_t_rows" if layer == "original" else "normalization_tt_rows": counts.get(
+                        layer
+                    ),
+                    "span_rows": counts.get(layer),
+                }
+                for layer, name in _MANIFEST_LAYER_NAMES.items()
+            },
+        },
+        "full_invalid_row_scan": {
+            "invalid_row_count": malformed.get("count"),
+            "invalid_rows": malformed.get("items"),
+        },
+        "encoding_policy": {
+            "exact_exception": exception,
+            "strict_utf8_successful_file_members": 4_999,
+            "unexpected_strict_utf8_failures": 0,
+        },
+        "gold_predicted_provenance": {
+            "archive_predicted_layer_or_artifact_observed": False,
+            "predicted_outputs_admitted": "none",
+        },
+        "controlled_vocabulary_boundary": {
+            name: False
+            for name in (
+                "identifiers_emitted",
+                "terms_emitted",
+                "hierarchy_emitted",
+                "payload_emitted",
+            )
+        },
+        "layer_inventory_and_pair_proof": {
+            name: {
+                "file_count": CADEC_CANONICAL_DOCUMENT_COUNT,
+                "paired_exactly_with_text_identity_set": True,
+                "identity_set": {
+                    "count": CADEC_CANONICAL_DOCUMENT_COUNT,
+                    "sha256": _mapping(
+                        recovery.get("canonical_document_inventory"), "canonical inventory"
+                    ).get("sha256"),
+                },
+            }
+            for name in ("text", *_MANIFEST_LAYER_NAMES.values())
+        },
+    }
 
 
 def _validate_splits(
@@ -628,12 +739,18 @@ def _admit_archive(
                     _validate_empty_document_layers(empty_members)
                 document_artifact_id = _member_artifact_id(text_path, text_hash)
                 document_provenance = CadecProvenanceContextV1.create(
+                    corpus_version=release.corpus_version,
+                    release_manifest_sha256=f"sha256:{release.external_manifest_sha256}",
+                    terminal_freeze_audit_sha256=f"sha256:{release.terminal_freeze_audit_sha256}",
                     split=split,
                     artifact_id=document_artifact_id,
                     artifact_sha256=f"sha256:{text_hash}",
                     lineage_artifact_ids=(),
                 )
                 document = CadecCorpusDocumentV1.create(
+                    corpus_version=release.corpus_version,
+                    release_manifest_sha256=f"sha256:{release.external_manifest_sha256}",
+                    terminal_freeze_audit_sha256=f"sha256:{release.terminal_freeze_audit_sha256}",
                     split=split,
                     artifact_id=document_artifact_id,
                     artifact_sha256=f"sha256:{text_hash}",
@@ -672,6 +789,9 @@ def _admit_archive(
                         raw_out_of_order_documents.add(document_id)
                     annotation_artifact_id = _member_artifact_id(member_path, member_hash)
                     annotation_provenance = CadecProvenanceContextV1.create(
+                        corpus_version=release.corpus_version,
+                        release_manifest_sha256=f"sha256:{release.external_manifest_sha256}",
+                        terminal_freeze_audit_sha256=f"sha256:{release.terminal_freeze_audit_sha256}",
                         split=split,
                         artifact_id=annotation_artifact_id,
                         artifact_sha256=f"sha256:{member_hash}",
@@ -680,6 +800,9 @@ def _admit_archive(
                     refs = _vocabulary_refs(layer)
                     for parsed_row in parsed.annotations:
                         annotation = CadecCorpusAnnotationV1.create(
+                            corpus_version=release.corpus_version,
+                            release_manifest_sha256=f"sha256:{release.external_manifest_sha256}",
+                            terminal_freeze_audit_sha256=f"sha256:{release.terminal_freeze_audit_sha256}",
                             split=split,
                             artifact_id=annotation_artifact_id,
                             artifact_sha256=f"sha256:{member_hash}",

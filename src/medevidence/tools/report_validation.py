@@ -6,19 +6,70 @@ from __future__ import annotations
 
 import re
 import json
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import date
 from enum import StrEnum
-from typing import Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from medevidence.domain import CADEC_MANDATORY_LIMITATIONS, FAERS_MANDATORY_LIMITATIONS, AdverseEventConcept, ComparisonIntent, CoverageStatus, DrugConcept, ExecutionBounds, ExecutionStatus, InclusiveDateRange, QueryBounds, ResearchScope, ResultBounds, ResultStatus, SourceType, canonical_json, derive_identity, sha256_digest
+from .report_validation_v3 import (
+    M3_STAGE2_SEMANTIC_CONFIGURATION_HASH_V2 as M3_STAGE2_SEMANTIC_CONFIGURATION_HASH_V2,
+    M3_STAGE2_SEMANTIC_CONFIGURATION_HASH_V3 as M3_STAGE2_SEMANTIC_CONFIGURATION_HASH_V3,
+    M3_STAGE2_SEMANTIC_CONFIGURATION_HASH_V4 as M3_STAGE2_SEMANTIC_CONFIGURATION_HASH_V4,
+    M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_HASH_V2 as M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_HASH_V2,
+    M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_HASH_V3 as M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_HASH_V3,
+    M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_HASH_V4 as M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_HASH_V4,
+    M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_VERSION_V2 as M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_VERSION_V2,
+    M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_VERSION_V3 as M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_VERSION_V3,
+    M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_VERSION_V4 as M3_STAGE2_SEMANTIC_PROVIDER_CONFIGURATION_VERSION_V4,
+    M3_VALIDATION_CONFIGURATION_V2 as M3_VALIDATION_CONFIGURATION_V2,
+    M3_VALIDATION_CONFIGURATION_V3 as M3_VALIDATION_CONFIGURATION_V3,
+    M3_VALIDATION_CONFIGURATION_V4 as M3_VALIDATION_CONFIGURATION_V4,
+    M3_VALIDATION_POLICY_V2 as M3_VALIDATION_POLICY_V2,
+    M3_VALIDATION_POLICY_V3 as M3_VALIDATION_POLICY_V3,
+    M3_VALIDATION_POLICY_V4 as M3_VALIDATION_POLICY_V4,
+    DeclaredRuntimeSemanticProfileV3,
+    RuntimeSemanticProfileIdentityV3,
+    source_profile_matches_v3,
+    known_provider_pair as _known_semantic_v2_provider_pair,
+    require_port_for_validation_configuration,
+    require_v3_port_profile,
+    require_v4_port_profile,
+    provider_method_for_validation_configuration,
+    provider_method_for_pair,
+    validation_profile as _raw_validation_profile,
+    v2_receipt_policy_pair_valid as _v2_receipt_policy_pair_valid,
+)
+
+if TYPE_CHECKING:
+    from .semantic_evaluation import SemanticEvaluationRequest, SemanticEvaluationResultV2
 
 M3_VALIDATION_RECEIPT_V1 = "M3_VALIDATION_RECEIPT_V1"
 M3_VALIDATION_POLICY_V1 = "M3_VALIDATION_POLICY_V1"
 M3_VALIDATION_CONFIGURATION_V1 = "M3_VALIDATION_CONFIGURATION_V1"
+M3_VALIDATION_RECEIPT_V2 = "M3_VALIDATION_RECEIPT_V2"
+M3_STAGE2_SEMANTIC_RESULT_V2 = "M3_STAGE2_SEMANTIC_RESULT_V2"
+M3_SEMANTIC_EVALUATION_V2 = "m3.semantic-evaluation.v2"
+M3_STAGE2_SEMANTIC_CONTRACT_VERSION_V2 = "m3.stage2-semantic-result.contract.v2"
+M3_STAGE2_SEMANTIC_CONTRACT_HASH_V2 = "sha256:9b97996233f6dc80091f196209b18c27b23e0eeb5c82c6e7e8c0f954df69a3bb"
+M3_STAGE2_SEMANTIC_PROVIDER_METHOD_V2 = "deepseek.responses.independent_semantic_evaluation"
 
+
+def _semantic_v2_validation_profile(version: str) -> tuple[str, str, str, str]:
+    try:
+        return _raw_validation_profile(version)
+    except ValueError:
+        raise CanonicalValidationError("semantic_v2_validation_configuration_invalid") from None
+
+
+def _is_v2_family_configuration(version: str) -> bool:
+    return version in (M3_VALIDATION_CONFIGURATION_V2, M3_VALIDATION_CONFIGURATION_V3, M3_VALIDATION_CONFIGURATION_V4)
+
+
+M3_STAGE2_SEMANTIC_ROUTING_MATRIX_HASH_V2 = "sha256:4fdca5d8b856452f89fb07748f83521b3dee530e42613bddc859d29bd8160a77"
 class ValidationMode(StrEnum):
     ASSESS = "assess"
     VERIFY_BINDING = "verify_binding"
+    PREPARE_STAGE1 = "prepare_stage1"
 
 class ClaimClass(StrEnum):
     DESCRIPTIVE = "descriptive"
@@ -59,6 +110,11 @@ class SemanticSupport(StrEnum):
 class ResolutionAction(StrEnum):
     ADJUDICATED_TO_SUPPORTED = "adjudicated_to_supported"
     REMOVED = "removed"
+
+class ReviewRoutingDispositionInput(StrEnum):
+    FORMAL_CITATION_REJECTED = "formal_citation_rejected"
+    HUMAN_REVIEW_REQUIRED = "human_review_required"
+    NO_HUMAN_REVIEW_REQUIRED = "no_human_review_required"
 
 class ComparableFindingRelation(StrEnum):
     CONSISTENT = "consistent"
@@ -302,6 +358,39 @@ class SemanticExpectationInput:
     result: SemanticSupport
 
 @dataclass(frozen=True, slots=True)
+class PlannedStage2SemanticInputV2:
+    citation_id: str
+    input_digest: str
+    method: str
+    version: str
+    comparison_id: str | None = None
+    conflict_id: str | None = None
+
+@dataclass(frozen=True, slots=True)
+class Stage2SemanticInputV2:
+    citation_id: str; input_digest: str; semantic_contract_version: str; semantic_contract_hash: str
+    method: str; version: str; semantic_configuration_hash: str; provider_configuration_version: str; provider_configuration_hash: str; result: SemanticSupport
+    semantic_result_content_hash: str; semantic_result_hash: str
+    routing_policy_version: str; routing_policy_hash: str; routing_matrix_hash: str
+    routing_disposition: ReviewRoutingDispositionInput; human_review_required: bool; routing_disposition_content_hash: str
+    comparability_registry_empty: bool; comparison_id: str | None; comparison_hash: str | None
+    conflict_id: str | None; conflict_hash: str | None; conflict_outcome: ConflictOutcome | None
+
+@dataclass(frozen=True, slots=True)
+class Stage2SemanticResultV2:
+    semantic_request: object; semantic_result: object
+
+@dataclass(frozen=True, slots=True)
+class ResolutionSemanticBindingInput:
+    citation_id: str; input_digest: str; semantic_contract_version: str; semantic_contract_hash: str
+    method: str; semantic_configuration_hash: str; provider_configuration_version: str; provider_configuration_hash: str; result: SemanticSupport
+    semantic_result_content_hash: str; semantic_result_hash: str
+    routing_policy_version: str; routing_policy_hash: str; routing_matrix_hash: str
+    routing_disposition: ReviewRoutingDispositionInput; routing_disposition_content_hash: str
+    comparability_registry_empty: bool; comparison_id: str | None; comparison_hash: str | None
+    conflict_id: str | None; conflict_hash: str | None; conflict_outcome: ConflictOutcome | None
+
+@dataclass(frozen=True, slots=True)
 class SemanticEvaluationInput:
     run_id: str
     claim: ClaimInput
@@ -315,8 +404,30 @@ class SemanticResultInput:
     version: str
 
 class SemanticResultProvider(Protocol):
-    def evaluate(self, value: SemanticEvaluationInput) -> SemanticResultInput: ...
+    def evaluate(self, value: SemanticEvaluationInput) -> object: ...
 
+class SemanticEvaluationPortV2(Protocol):
+    def evaluate_v2(self, value: SemanticEvaluationRequest) -> SemanticEvaluationResultV2: ...
+
+
+class SemanticEvaluationPortV3(SemanticEvaluationPortV2, Protocol):
+    @property
+    def profile_identity(self) -> RuntimeSemanticProfileIdentityV3: ...
+
+
+def _require_v3_semantic_port_identity(port: SemanticEvaluationPortV2 | None) -> None:
+    try:
+        require_v3_port_profile(
+            cast(DeclaredRuntimeSemanticProfileV3, port),
+            method=M3_STAGE2_SEMANTIC_PROVIDER_METHOD_V2,
+        )
+    except ValueError as error:
+        raise CanonicalValidationError("semantic_v3_provider_identity_mismatch") from error
+
+
+def _require_v4_semantic_port_identity(port: SemanticEvaluationPortV2 | None) -> None:
+    try: require_v4_port_profile(cast(DeclaredRuntimeSemanticProfileV3, port), method=provider_method_for_validation_configuration(M3_VALIDATION_CONFIGURATION_V4))
+    except ValueError as error: raise CanonicalValidationError("semantic_v4_provider_identity_mismatch") from error
 @dataclass(frozen=True, slots=True)
 class ResolutionInput:
     claim_id: str
@@ -326,6 +437,12 @@ class ResolutionInput:
     version: str
     comparison_id: str | None = None
     conflict_id: str | None = None
+
+@dataclass(frozen=True, slots=True)
+class ResolutionInputV2:
+    claim_id: str; action: ResolutionAction; record_id: str; method: str; version: str
+    semantic_bindings: tuple[ResolutionSemanticBindingInput, ...]
+    comparison_id: str | None = None; conflict_id: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class DimensionInput:
@@ -364,11 +481,11 @@ class ValidationRegistryInput:
     claims: tuple[ClaimInput, ...]
     citations: tuple[CitationInput, ...]
     evidence: tuple[EvidenceInput, ...]
-    semantic_expectations: tuple[SemanticExpectationInput, ...]
+    semantic_expectations: tuple[SemanticExpectationInput | PlannedStage2SemanticInputV2 | Stage2SemanticInputV2, ...]
     evaluator_identity: EvaluatorIdentityInput
     comparisons: tuple[ComparisonInput, ...] = ()
     conflicts: tuple[ConflictInput, ...] = ()
-    resolutions: tuple[ResolutionInput, ...] = ()
+    resolutions: tuple[ResolutionInput | ResolutionInputV2, ...] = ()
     configuration_version: str = M3_VALIDATION_CONFIGURATION_V1
 
     def __post_init__(self) -> None:
@@ -416,6 +533,7 @@ class CitationTrace:
     version: str
     result: SemanticSupport
     relationship: CitationRelationship
+    stage2_v2: Stage2SemanticInputV2 | None = None
 
 @dataclass(frozen=True, slots=True)
 class ClaimAudit:
@@ -485,11 +603,68 @@ class ValidationReceipt:
     configuration_version: str
 
 @dataclass(frozen=True, slots=True)
+class ValidationCitationReceiptV2:
+    citation_result_id: str; citation_id: str; input_digest: str; method: str; version: str
+    semantic_contract_version: str; semantic_contract_hash: str
+    semantic_configuration_hash: str; provider_configuration_version: str; provider_configuration_hash: str
+    result: SemanticSupport; relationship: CitationRelationship
+    semantic_result_content_hash: str; semantic_result_hash: str
+    routing_policy_version: str; routing_policy_hash: str; routing_matrix_hash: str
+    routing_disposition: ReviewRoutingDispositionInput; human_review_required: bool; routing_disposition_content_hash: str
+    comparability_registry_empty: bool; comparison_id: str | None; comparison_hash: str | None
+    conflict_id: str | None; conflict_hash: str | None; conflict_outcome: ConflictOutcome | None
+
+@dataclass(frozen=True, slots=True)
+class ValidationClaimReceiptV2:
+    claim_result_id: str; claim_id: str; stage1_passed: bool
+    stage1_reason_codes: tuple[str, ...]
+    citation_results: tuple[ValidationCitationReceiptV2, ...]
+    aggregate_result: SemanticSupport | None
+    resolution_action: ResolutionAction | None; resolution_record_id: str | None
+    resolution_method: str | None; resolution_version: str | None
+    resolution_semantic_bindings: tuple[ResolutionSemanticBindingInput, ...]
+    comparison_id: str | None; conflict_id: str | None; formal_claim_accepted: bool
+
+@dataclass(frozen=True, slots=True)
+class ValidationReceiptV2:
+    marker: str; receipt_id: str; receipt_content_hash: str; run_id: str; report_id: str
+    report_content_hash: str; validation_input_hash: str; task_binding_hash: str; stage1_result_id: str
+    evaluator_method: str; evaluator_version: str
+    claim_results: tuple[ValidationClaimReceiptV2, ...]
+    structural_passed: bool; semantic_passed: bool; safety_passed: bool
+    reason_codes: tuple[str, ...]
+    policy_version: str; configuration_version: str; semantic_contract: str
+    semantic_contract_version: str; semantic_contract_hash: str
+    semantic_configuration_hash: str; provider_configuration_version: str; provider_configuration_hash: str
+    routing_policy_version: str; routing_policy_hash: str; routing_matrix_hash: str
+
+@dataclass(frozen=True, slots=True)
+class Stage1ReceiptV2:
+    marker: str
+    stage1_passed: bool
+    receipt_id: str
+    receipt_content_hash: str
+    run_id: str
+    scope_id: str
+    report_id: str
+    report_content_hash: str
+    validation_input_hash: str
+    registry_binding_hash: str
+    task_binding_hash: str
+    stage1_result_id: str
+    claim_result_ids: tuple[tuple[str, str], ...]
+    citation_ids: tuple[str, ...]
+    policy_version: str
+    configuration_version: str
+
+@dataclass(frozen=True, slots=True)
 class ReportValidationAudit:
     summary: ValidationSummary
     claims: tuple[ClaimAudit, ...]
     conflict_outcomes: tuple[tuple[str, ConflictOutcome], ...]
-    receipt: ValidationReceipt | None = None
+    receipt: ValidationReceipt | ValidationReceiptV2 | None = None
+    stage1_receipt: Stage1ReceiptV2 | None = None
+    resolved_request: CanonicalReportRequest | None = None
 
 
 _T = TypeVar("_T")
@@ -537,7 +712,6 @@ def _primitive(value: object) -> object:
 
 def _identity(prefix: str, payload: object) -> str:
     return f"{prefix}:sha256:{sha256_digest(canonical_json(payload)).removeprefix('sha256:')}"
-
 def canonical_numerical_text(value: NumericalContextInput | NumericalFactInput) -> str:
     return " | ".join(f"{name}={getattr(value, name)}" for name in _COUNT_FIELDS)
 
@@ -657,26 +831,9 @@ def _copy_outcome(value: SourceOutcomeInput) -> SourceOutcomeInput:
     return SourceOutcomeInput(source, _text(value.query_id, "outcome_query_invalid"), execution, coverage, result, bounds, value.valid_result_count, value.pages_completed, value.truncated, warnings, value.failure_id)
 
 def _copy_task(value: TerminalTaskInput) -> TerminalTaskInput:
-    _exact(value, TerminalTaskInput, "task_wrong_type")
-    if type(value.evidence_refs) is not tuple or len(value.evidence_refs) > 100:
-        raise CanonicalValidationError("task_evidence_cardinality_exceeded")
-    if type(value.terminal) is not bool or not value.terminal:
-        raise CanonicalValidationError("task_not_terminal")
-    acquisition = _exact(value.acquisition, AcquisitionInput, "acquisition_wrong_type")
-    if type(acquisition.acquisition_ordinal) is not int or not 0 <= acquisition.acquisition_ordinal <= 7 or acquisition.operation not in ("search", "fetch"):
-        raise CanonicalValidationError("acquisition_primitive_invalid")
-    intent = _text(acquisition.acquisition_intent_id, "acquisition_intent_invalid")
-    if _ACQUISITION_INTENT.fullmatch(intent) is None: raise CanonicalValidationError("acquisition_intent_invalid")
-    acquisition = AcquisitionInput(_text(acquisition.run_id, "acquisition_run_invalid"), _exact(acquisition.source, SourceType, "acquisition_source_wrong_type"), _text(acquisition.acquisition_id, "acquisition_id_invalid"), intent, acquisition.acquisition_ordinal, acquisition.operation, _text(acquisition.query_id, "acquisition_query_invalid"), _text(acquisition.source_outcome_id, "source_outcome_id_invalid"), _text(acquisition.snapshot_id, "acquisition_snapshot_invalid"))
-    outcome = _copy_outcome(value.outcome)
-    refs: list[EvidenceReferenceInput] = []
-    for raw in value.evidence_refs:
-        ref = _exact(raw, EvidenceReferenceInput, "evidence_reference_wrong_type")
-        refs.append(EvidenceReferenceInput(_text(ref.evidence_id, "evidence_reference_id_invalid"), _exact(ref.source, SourceType, "evidence_reference_source_wrong_type"), _text(ref.snapshot_id, "evidence_reference_snapshot_invalid"), _digest(ref.content_hash, "evidence_reference_hash_invalid"), _text(ref.locator_ref, "evidence_reference_locator_invalid")))
-    source = _exact(value.source, SourceType, "task_source_wrong_type")
-    if source is not acquisition.source or source is not outcome.source or acquisition.query_id != outcome.query_id or any(item.source is not source for item in refs):
-        raise CanonicalValidationError("task_source_binding_invalid")
-    return TerminalTaskInput(_text(value.task_id, "task_id_invalid"), source, True, acquisition, outcome, tuple(refs))
+    from .report_validation_source_bindings_v3 import copy_task
+
+    return copy_task(value)
 
 def _copy_fact(value: NumericalFactInput) -> NumericalFactInput:
     _exact(value, NumericalFactInput, "numerical_fact_wrong_type")
@@ -742,22 +899,127 @@ def _copy_citation(value: CitationInput) -> CitationInput:
         raise CanonicalValidationError("citation_identity_drift")
     return copied
 
+def _copy_stage2_v2(value: Stage2SemanticInputV2) -> Stage2SemanticInputV2:
+    from .report_validation_v2 import _copy_stage2_v2 as implementation
+    return implementation(value)
+
+def _validate_routing_disposition_v2(value: Stage2SemanticInputV2 | ValidationCitationReceiptV2) -> None:
+    from .report_validation_v2 import _validate_routing_disposition_v2 as implementation
+    return implementation(value)
+
+def canonical_stage2_semantic_input_v2(value: Stage2SemanticResultV2, *, report_request: CanonicalReportRequest, current_input: SemanticEvaluationInput, stage1_result_id: str, stage1_claim_result_id: str, method: str) -> Stage2SemanticInputV2:
+    from .report_validation_v2 import canonical_stage2_semantic_input_v2 as implementation
+    return implementation(value, report_request=report_request, current_input=current_input, stage1_result_id=stage1_result_id, stage1_claim_result_id=stage1_claim_result_id, method=method)
+
+def _planned_semantic_request_v2(report: CanonicalReportRequest, receipt: Stage1ReceiptV2, claim: ClaimInput, current: SemanticEvaluationInput) -> SemanticEvaluationRequest:
+    from .report_validation_v2 import _planned_semantic_request_v2 as implementation
+    return implementation(report, receipt, claim, current)
+
+def _recompute_stage2_v2_routing(value: Stage2SemanticInputV2, *, claim: ClaimInput, citation: CitationInput, comparisons: tuple[ComparisonInput, ...], conflicts: tuple[ConflictInput, ...]) -> None:
+    from .report_validation_v2 import _recompute_stage2_v2_routing as implementation
+    return implementation(value, claim=claim, citation=citation, comparisons=comparisons, conflicts=conflicts)
+
+def _copy_resolution_binding_v2(value: ResolutionSemanticBindingInput) -> ResolutionSemanticBindingInput:
+    _exact(value, ResolutionSemanticBindingInput, "resolution_v2_binding_wrong_type")
+    copied = ResolutionSemanticBindingInput(citation_id=_text(value.citation_id, "resolution_v2_citation_invalid"), input_digest=_digest(value.input_digest, "resolution_v2_input_digest_invalid"), semantic_contract_version=_text(value.semantic_contract_version, "resolution_v2_contract_version_invalid"), semantic_contract_hash=_digest(value.semantic_contract_hash, "resolution_v2_contract_hash_invalid"), method=_text(value.method, "resolution_v2_method_identity_invalid"), semantic_configuration_hash=_digest(value.semantic_configuration_hash, "resolution_v2_configuration_hash_invalid"), provider_configuration_version=_text(value.provider_configuration_version, "resolution_v2_provider_configuration_version_invalid"), provider_configuration_hash=_digest(value.provider_configuration_hash, "resolution_v2_provider_configuration_hash_invalid"), result=_exact(value.result, SemanticSupport, "resolution_v2_result_wrong_type"), semantic_result_content_hash=_digest(value.semantic_result_content_hash, "resolution_v2_result_content_hash_invalid"), semantic_result_hash=_digest(value.semantic_result_hash, "resolution_v2_result_hash_invalid"), routing_policy_version=_text(value.routing_policy_version, "resolution_v2_routing_policy_version_invalid"), routing_policy_hash=_digest(value.routing_policy_hash, "resolution_v2_routing_policy_hash_invalid"), routing_matrix_hash=_digest(value.routing_matrix_hash, "resolution_v2_routing_matrix_hash_invalid"), routing_disposition=_exact(value.routing_disposition, ReviewRoutingDispositionInput, "resolution_v2_routing_disposition_wrong_type"), routing_disposition_content_hash=_digest(value.routing_disposition_content_hash, "resolution_v2_routing_disposition_hash_invalid"), comparability_registry_empty=_exact(value.comparability_registry_empty, bool, "resolution_v2_comparability_empty_wrong_type"), comparison_id=None if value.comparison_id is None else _text(value.comparison_id, "resolution_v2_comparison_id_invalid"), comparison_hash=None if value.comparison_hash is None else _digest(value.comparison_hash, "resolution_v2_comparison_hash_invalid"), conflict_id=None if value.conflict_id is None else _text(value.conflict_id, "resolution_v2_conflict_id_invalid"), conflict_hash=None if value.conflict_hash is None else _digest(value.conflict_hash, "resolution_v2_conflict_hash_invalid"), conflict_outcome=None if value.conflict_outcome is None else _exact(value.conflict_outcome, ConflictOutcome, "resolution_v2_conflict_outcome_wrong_type"))
+    if (
+        copied.semantic_contract_version,
+        copied.semantic_contract_hash,
+        copied.method,
+        copied.routing_matrix_hash,
+    ) != (
+        M3_STAGE2_SEMANTIC_CONTRACT_VERSION_V2,
+        M3_STAGE2_SEMANTIC_CONTRACT_HASH_V2,
+        provider_method_for_pair(copied.provider_configuration_version, copied.provider_configuration_hash),
+        M3_STAGE2_SEMANTIC_ROUTING_MATRIX_HASH_V2,
+    ) or not _known_semantic_v2_provider_pair(
+        copied.semantic_configuration_hash,
+        copied.provider_configuration_version,
+        copied.provider_configuration_hash,
+    ):
+        raise CanonicalValidationError("resolution_v2_provenance_invalid")
+    participation = (copied.comparison_id, copied.comparison_hash, copied.conflict_id, copied.conflict_hash, copied.conflict_outcome)
+    if copied.comparability_registry_empty != all(item is None for item in participation) or not copied.comparability_registry_empty and any(item is None for item in participation): raise CanonicalValidationError("resolution_v2_comparability_participation_invalid")
+    return copied
+
+def _copy_resolution_v2(value: ResolutionInputV2) -> ResolutionInputV2:
+    _exact(value, ResolutionInputV2, "resolution_v2_wrong_type")
+    _bounded_tuple(value.semantic_bindings, 400, "resolution_v2_binding_cardinality_exceeded", type_code="resolution_v2_bindings_wrong_type")
+    copied = ResolutionInputV2(_text(value.claim_id, "resolution_claim_invalid"), _exact(value.action, ResolutionAction, "resolution_action_wrong_type"), _text(value.record_id, "resolution_record_invalid"), _text(value.method, "resolution_method_invalid"), _text(value.version, "resolution_version_invalid"), tuple(_copy_resolution_binding_v2(item) for item in value.semantic_bindings), None if value.comparison_id is None else _text(value.comparison_id, "resolution_comparison_invalid"), None if value.conflict_id is None else _text(value.conflict_id, "resolution_conflict_invalid"))
+    if copied.method != "human_review":
+        raise CanonicalValidationError("resolution_v2_method_invalid")
+    if copied.comparison_id is not None or copied.conflict_id is not None:
+        raise CanonicalValidationError("resolution_v2_legacy_comparability_forbidden")
+    if copied.action is ResolutionAction.REMOVED and copied.semantic_bindings:
+        raise CanonicalValidationError("resolution_v2_removed_binding_forbidden")
+    if copied.action is ResolutionAction.ADJUDICATED_TO_SUPPORTED and not copied.semantic_bindings:
+        raise CanonicalValidationError("resolution_v2_adjudication_binding_missing")
+    if len({item.citation_id for item in copied.semantic_bindings}) != len(copied.semantic_bindings):
+        raise CanonicalValidationError("resolution_v2_binding_duplicate")
+    return copied
+
 def _copy_registry(value: ValidationRegistryInput) -> ValidationRegistryInput:
     _exact(value, ValidationRegistryInput, "registry_wrong_type")
     _check_registry_cardinality(value)
     identity = _exact(value.evaluator_identity, EvaluatorIdentityInput, "evaluator_identity_wrong_type")
     identity = EvaluatorIdentityInput(_text(identity.method, "evaluator_method_invalid"), _text(identity.version, "evaluator_version_invalid"))
-    expectations: list[SemanticExpectationInput] = []
+    configuration_version = _text(value.configuration_version, "registry_configuration_version_invalid")
+    is_v2 = _is_v2_family_configuration(configuration_version)
+    expectations: list[SemanticExpectationInput | PlannedStage2SemanticInputV2 | Stage2SemanticInputV2] = []
     for expectation_raw in value.semantic_expectations:
-        expectation = _exact(expectation_raw, SemanticExpectationInput, "semantic_expectation_wrong_type")
-        expectations.append(SemanticExpectationInput(_text(expectation.citation_id, "expectation_citation_invalid"), _digest(expectation.input_digest, "expectation_digest_invalid"), _text(expectation.method, "expectation_method_invalid"), _text(expectation.version, "expectation_version_invalid"), _exact(expectation.result, SemanticSupport, "expectation_result_wrong_type")))
-    resolutions: list[ResolutionInput] = []
+        if is_v2:
+            if type(expectation_raw) is PlannedStage2SemanticInputV2:
+                planned = expectation_raw
+                expectations.append(PlannedStage2SemanticInputV2(_text(planned.citation_id, "semantic_v2_citation_invalid"), _digest(planned.input_digest, "semantic_v2_input_digest_invalid"), _text(planned.method, "semantic_v2_method_invalid"), _text(planned.version, "semantic_v2_version_invalid"), None if planned.comparison_id is None else _text(planned.comparison_id, "semantic_v2_comparison_id_invalid"), None if planned.conflict_id is None else _text(planned.conflict_id, "semantic_v2_conflict_id_invalid")))
+            else:
+                expectations.append(_copy_stage2_v2(_exact(expectation_raw, Stage2SemanticInputV2, "semantic_v2_expectation_wrong_type")))
+        else:
+            expectation = _exact(expectation_raw, SemanticExpectationInput, "semantic_expectation_wrong_type")
+            expectations.append(SemanticExpectationInput(_text(expectation.citation_id, "expectation_citation_invalid"), _digest(expectation.input_digest, "expectation_digest_invalid"), _text(expectation.method, "expectation_method_invalid"), _text(expectation.version, "expectation_version_invalid"), _exact(expectation.result, SemanticSupport, "expectation_result_wrong_type")))
+    resolutions: list[ResolutionInput | ResolutionInputV2] = []
     for resolution_raw in value.resolutions:
-        resolution = _exact(resolution_raw, ResolutionInput, "resolution_wrong_type")
-        resolutions.append(ResolutionInput(_text(resolution.claim_id, "resolution_claim_invalid"), _exact(resolution.action, ResolutionAction, "resolution_action_wrong_type"), _text(resolution.record_id, "resolution_record_invalid"), _text(resolution.method, "resolution_method_invalid"), _text(resolution.version, "resolution_version_invalid"), None if resolution.comparison_id is None else _text(resolution.comparison_id, "resolution_comparison_invalid"), None if resolution.conflict_id is None else _text(resolution.conflict_id, "resolution_conflict_invalid")))
+        if is_v2:
+            resolutions.append(_copy_resolution_v2(_exact(resolution_raw, ResolutionInputV2, "resolution_v2_wrong_type")))
+        else:
+            resolution = _exact(resolution_raw, ResolutionInput, "resolution_wrong_type")
+            resolutions.append(ResolutionInput(_text(resolution.claim_id, "resolution_claim_invalid"), _exact(resolution.action, ResolutionAction, "resolution_action_wrong_type"), _text(resolution.record_id, "resolution_record_invalid"), _text(resolution.method, "resolution_method_invalid"), _text(resolution.version, "resolution_version_invalid"), None if resolution.comparison_id is None else _text(resolution.comparison_id, "resolution_comparison_invalid"), None if resolution.conflict_id is None else _text(resolution.conflict_id, "resolution_conflict_invalid")))
     comparisons = tuple(_copy_comparison(item) for item in value.comparisons)
     conflicts = tuple(_copy_conflict(item) for item in value.conflicts)
-    return ValidationRegistryInput(_text(value.run_id, "registry_run_invalid"), _text(value.scope_id, "registry_scope_invalid"), tuple(_copy_claim(item) for item in value.claims), tuple(_copy_citation(item) for item in value.citations), tuple(_copy_evidence(item) for item in value.evidence), tuple(expectations), identity, comparisons, conflicts, tuple(resolutions), _text(value.configuration_version, "registry_configuration_version_invalid"))
+    if is_v2 and (identity.method, identity.version) != (provider_method_for_validation_configuration(configuration_version), M3_SEMANTIC_EVALUATION_V2):
+        raise CanonicalValidationError("semantic_v2_evaluator_identity_invalid")
+    if is_v2:
+        _, neutral_hash, provider_version, provider_hash = _semantic_v2_validation_profile(
+            configuration_version
+        )
+        expected_pair = neutral_hash, provider_version, provider_hash
+        completed = tuple(
+            item for item in expectations if type(item) is Stage2SemanticInputV2
+        )
+        bindings = tuple(
+            binding
+            for resolution in resolutions
+            if type(resolution) is ResolutionInputV2
+            for binding in resolution.semantic_bindings
+        )
+        completed_mismatch = any(
+            (
+                item.semantic_configuration_hash,
+                item.provider_configuration_version,
+                item.provider_configuration_hash,
+            ) != expected_pair
+            for item in completed
+        )
+        binding_mismatch = any(
+            (
+                item.semantic_configuration_hash,
+                item.provider_configuration_version,
+                item.provider_configuration_hash,
+            ) != expected_pair
+            for item in bindings
+        )
+        if completed_mismatch or binding_mismatch:
+            raise CanonicalValidationError("semantic_v2_registry_provider_profile_mismatch")
+    return ValidationRegistryInput(_text(value.run_id, "registry_run_invalid"), _text(value.scope_id, "registry_scope_invalid"), tuple(_copy_claim(item) for item in value.claims), tuple(_copy_citation(item) for item in value.citations), tuple(_copy_evidence(item) for item in value.evidence), tuple(expectations), identity, comparisons, conflicts, tuple(resolutions), configuration_version)
 
 def _copy_comparison(value: ComparisonInput) -> ComparisonInput:
     _exact(value, ComparisonInput, "comparison_wrong_type")
@@ -840,12 +1102,13 @@ def _check_nested_cardinality(value: ValidationRegistryInput) -> None:
 
 def _outer_cardinality(request: CanonicalReportRequest) -> None:
     _exact(request, CanonicalReportRequest, "request_wrong_type")
+    from .report_validation_source_bindings_v3 import TerminalTaskInputV3
     _check_scope_cardinality(_exact(request.scope, ScopeInput, "scope_wrong_type")); _selected_task_sources(request.selected_task_sources, request.scope.selected_sources)
     _bounded_tuple(request.tasks, 4, "task_cardinality_exceeded", type_code="task_collection_wrong_type")
     for task in request.tasks:
-        if type(task) is TerminalTaskInput and (type(task.evidence_refs) is not tuple or len(task.evidence_refs) > 100):
+        if type(task) in (TerminalTaskInput, TerminalTaskInputV3) and (type(task.evidence_refs) is not tuple or len(task.evidence_refs) > 100):
             raise CanonicalValidationError("task_evidence_cardinality_exceeded")
-        if type(task) is TerminalTaskInput and type(task.outcome) is SourceOutcomeInput:
+        if type(task) in (TerminalTaskInput, TerminalTaskInputV3) and type(task.outcome) is SourceOutcomeInput:
             _bounded_tuple(task.outcome.warning_codes, 100, "outcome_warning_cardinality_exceeded")
     synthesis = _exact(request.synthesis, SynthesisInput, "synthesis_wrong_type")
     checks = (
@@ -872,6 +1135,8 @@ def _copy_request(value: CanonicalReportRequest) -> CanonicalReportRequest:
     conflict_refs = tuple(ArtifactReferenceInput(_text(_exact(item, ArtifactReferenceInput, "conflict_reference_wrong_type").artifact_id, "conflict_reference_id_invalid"), _digest(item.artifact_hash, "conflict_reference_hash_invalid")) for item in synthesis.conflict_refs)
     synthesis = SynthesisInput(_digest(synthesis.report_content_hash, "report_hash_invalid"), claim_refs, citation_refs, comparison_refs, conflict_refs, _reason_tuple(synthesis.warning_codes, "synthesis_warning_invalid"))
     registry = _copy_registry(value.registry)
+    from .report_validation_source_bindings_v3 import validate_task_configuration
+    validate_task_configuration(tasks, registry.configuration_version)
     stored = value.stored_validation
     if stored is not None:
         stored = _exact(stored, StoredValidationInput, "stored_validation_wrong_type")
@@ -923,7 +1188,6 @@ def _comparison_hash(value: ComparisonInput) -> str:
 def _conflict_hash(value: ConflictInput) -> str:
     payload = {"conflict_id": value.conflict_id, "comparison_id": value.comparison_id, "outcome": value.outcome}
     return sha256_digest(canonical_json(_primitive(payload)))
-
 def _task_bindings(tasks: tuple[TerminalTaskInput, ...]) -> tuple[tuple[str, str], ...]:
     return tuple((item.task_id, sha256_digest(canonical_json(_primitive(item)))) for item in tasks)
 def canonical_report_content_hash(request: CanonicalReportRequest) -> str:
@@ -941,8 +1205,8 @@ def canonical_report_content_hash(request: CanonicalReportRequest) -> str:
         "conflict_bindings": tuple((item.artifact_id, item.artifact_hash) for item in request.synthesis.conflict_refs),
         "warning_codes": request.synthesis.warning_codes,
         "evaluator_identity": registry.evaluator_identity,
-        "semantic_expectations": registry.semantic_expectations,
-        "resolutions": registry.resolutions,
+        "semantic_expectations": () if _is_v2_family_configuration(registry.configuration_version) else registry.semantic_expectations,
+        "resolutions": () if _is_v2_family_configuration(registry.configuration_version) else registry.resolutions,
     }
     return sha256_digest(canonical_json(_primitive(payload)))
 def _aggregate_semantic_results(traces: tuple[CitationTrace, ...]) -> SemanticSupport:
@@ -957,6 +1221,17 @@ def _aggregate_semantic_results(traces: tuple[CitationTrace, ...]) -> SemanticSu
         return SemanticSupport.SUPPORTED
     return SemanticSupport.UNCERTAIN
 
+def _resolution_binding_from_stage2(value: Stage2SemanticInputV2) -> ResolutionSemanticBindingInput:
+    return ResolutionSemanticBindingInput(value.citation_id, value.input_digest, value.semantic_contract_version, value.semantic_contract_hash, value.method, value.semantic_configuration_hash, value.provider_configuration_version, value.provider_configuration_hash, value.result, value.semantic_result_content_hash, value.semantic_result_hash, value.routing_policy_version, value.routing_policy_hash, value.routing_matrix_hash, value.routing_disposition, value.routing_disposition_content_hash, value.comparability_registry_empty, value.comparison_id, value.comparison_hash, value.conflict_id, value.conflict_hash, value.conflict_outcome)
+
+def _v2_required_resolution_bindings(traces: tuple[CitationTrace, ...]) -> tuple[ResolutionSemanticBindingInput, ...]:
+    from .report_validation_v2 import _v2_required_resolution_bindings as implementation
+    return implementation(traces)
+
+def _v2_resolution_is_exact(value: ResolutionInput | ResolutionInputV2 | None, traces: tuple[CitationTrace, ...]) -> bool:
+    from .report_validation_v2 import _v2_resolution_is_exact as implementation
+    return implementation(value, traces)
+
 def _governed_resolution(value: ResolutionInput | None, registry: ValidationRegistryInput) -> bool:
     if value is None or value.comparison_id is None or value.conflict_id is None:
         return False
@@ -965,9 +1240,31 @@ def _governed_resolution(value: ResolutionInput | None, registry: ValidationRegi
     return comparison is not None and conflict is not None and conflict.comparison_id == comparison.comparison_id and conflict.outcome is ConflictOutcome.APPARENT_DIFFERENCE_SCOPE_MISMATCH
 def _validation_input_hash(request: CanonicalReportRequest) -> str:
     payload = {"run_id": request.run_id, "report_id": request.report_id, "scope": request.scope, "source_plan_id": request.source_plan_id, "selected_task_sources": request.selected_task_sources, "tasks": request.tasks, "synthesis": request.synthesis, "registry": request.registry}; return sha256_digest(canonical_json(_primitive(payload)))
+
+def _stage1_registry_v2_payload(value: ValidationRegistryInput) -> dict[str, object]:
+    return {item.name: (() if item.name in {"semantic_expectations", "resolutions"} else getattr(value, item.name)) for item in fields(ValidationRegistryInput)}
+
+def _stage1_validation_input_hash_v2(request: CanonicalReportRequest) -> str:
+    payload = {"run_id": request.run_id, "report_id": request.report_id, "scope": request.scope, "source_plan_id": request.source_plan_id, "selected_task_sources": request.selected_task_sources, "tasks": request.tasks, "synthesis": request.synthesis, "registry": _stage1_registry_v2_payload(request.registry)}
+    return sha256_digest(canonical_json(_primitive(payload)))
+
+def _build_stage1_receipt_v2(request: CanonicalReportRequest, stage1: tuple[tuple[ClaimInput, tuple[tuple[CitationInput, EvidenceInput], ...], tuple[str, ...]], ...]) -> Stage1ReceiptV2:
+    from .report_validation_v2 import _build_stage1_receipt_v2 as implementation
+    return implementation(request, stage1)
+
+def canonical_stage1_receipt_payload_v2(value: Stage1ReceiptV2) -> dict[str, object]:
+    from .report_validation_v2 import canonical_stage1_receipt_payload_v2 as implementation
+    return implementation(value)
+
+def stage1_receipt_from_payload_v2(value: object) -> Stage1ReceiptV2:
+    from .report_validation_v2 import stage1_receipt_from_payload_v2 as implementation
+    return implementation(value)
+
 def _receipt_content(value: ValidationReceipt) -> dict[str, object]:
     return {item.name: _primitive(getattr(value, item.name)) for item in fields(value) if item.name not in {"receipt_id", "receipt_content_hash"}}
-def _build_validation_receipt(request: CanonicalReportRequest, summary: ValidationSummary, audits: tuple[ClaimAudit, ...]) -> ValidationReceipt:
+def _receipt_content_v2(value: ValidationReceiptV2) -> dict[str, object]:
+    return {item.name: _primitive(getattr(value, item.name)) for item in fields(value) if item.name not in {"receipt_id", "receipt_content_hash"}}
+def _build_validation_receipt_v1(request: CanonicalReportRequest, summary: ValidationSummary, audits: tuple[ClaimAudit, ...]) -> ValidationReceipt:
     claim_results = []
     for audit in audits:
         citation_results = []
@@ -985,6 +1282,88 @@ def _build_validation_receipt(request: CanonicalReportRequest, summary: Validati
     content = _receipt_content(receipt)
     return ValidationReceipt(receipt.marker, derive_identity("validation-receipt", content), sha256_digest(canonical_json(content)), receipt.run_id, receipt.report_id, receipt.report_content_hash, receipt.validation_input_hash, receipt.task_binding_hash, receipt.stage1_result_id, receipt.evaluator_method, receipt.evaluator_version, receipt.claim_results, receipt.structural_passed, receipt.semantic_passed, receipt.safety_passed, receipt.reason_codes, receipt.policy_version, receipt.configuration_version)
 
+def _build_validation_receipt_v2(request: CanonicalReportRequest, summary: ValidationSummary, audits: tuple[ClaimAudit, ...]) -> ValidationReceiptV2:
+    claim_results: list[ValidationClaimReceiptV2] = []
+    for audit in audits:
+        citation_results: list[ValidationCitationReceiptV2] = []
+        for trace in audit.citation_traces:
+            stage2 = trace.stage2_v2
+            if stage2 is None:
+                raise CanonicalValidationError("validation_receipt_v2_trace_missing")
+            payload: dict[str, object] = {
+                "citation_id": trace.citation_id,
+                "input_digest": trace.input_digest,
+                "method": trace.method,
+                "version": trace.version,
+                "semantic_contract_version": stage2.semantic_contract_version,
+                "semantic_contract_hash": stage2.semantic_contract_hash,
+                "semantic_configuration_hash": stage2.semantic_configuration_hash,
+                "provider_configuration_version": stage2.provider_configuration_version,
+                "provider_configuration_hash": stage2.provider_configuration_hash,
+                "result": trace.result,
+                "relationship": trace.relationship,
+                "semantic_result_content_hash": stage2.semantic_result_content_hash,
+                "semantic_result_hash": stage2.semantic_result_hash,
+                "routing_policy_version": stage2.routing_policy_version,
+                "routing_policy_hash": stage2.routing_policy_hash,
+                "routing_matrix_hash": stage2.routing_matrix_hash,
+                "routing_disposition": stage2.routing_disposition,
+                "human_review_required": stage2.human_review_required,
+                "routing_disposition_content_hash": stage2.routing_disposition_content_hash,
+                "comparability_registry_empty": stage2.comparability_registry_empty,
+                "comparison_id": stage2.comparison_id,
+                "comparison_hash": stage2.comparison_hash,
+                "conflict_id": stage2.conflict_id,
+                "conflict_hash": stage2.conflict_hash,
+                "conflict_outcome": stage2.conflict_outcome,
+            }
+            citation_results.append(ValidationCitationReceiptV2(citation_result_id=derive_identity("validation-citation-result-v2", _primitive(payload)), citation_id=trace.citation_id, input_digest=trace.input_digest, method=trace.method, version=trace.version, semantic_contract_version=stage2.semantic_contract_version, semantic_contract_hash=stage2.semantic_contract_hash, semantic_configuration_hash=stage2.semantic_configuration_hash, provider_configuration_version=stage2.provider_configuration_version, provider_configuration_hash=stage2.provider_configuration_hash, result=trace.result, relationship=trace.relationship, semantic_result_content_hash=stage2.semantic_result_content_hash, semantic_result_hash=stage2.semantic_result_hash, routing_policy_version=stage2.routing_policy_version, routing_policy_hash=stage2.routing_policy_hash, routing_matrix_hash=stage2.routing_matrix_hash, routing_disposition=stage2.routing_disposition, human_review_required=stage2.human_review_required, routing_disposition_content_hash=stage2.routing_disposition_content_hash, comparability_registry_empty=stage2.comparability_registry_empty, comparison_id=stage2.comparison_id, comparison_hash=stage2.comparison_hash, conflict_id=stage2.conflict_id, conflict_hash=stage2.conflict_hash, conflict_outcome=stage2.conflict_outcome))
+        aggregate = None if audit.aggregate_result is None else _exact(audit.aggregate_result, SemanticSupport, "validation_receipt_aggregate_invalid")
+        matching_resolutions = tuple(item for item in request.registry.resolutions if item.claim_id == audit.claim_id)
+        resolution = matching_resolutions[0] if len(matching_resolutions) == 1 and type(matching_resolutions[0]) is ResolutionInputV2 else None
+        resolution_bindings = () if resolution is None else resolution.semantic_bindings
+        payload = {
+            "claim_id": audit.claim_id,
+            "stage1_passed": audit.stage1_passed,
+            "stage1_reason_codes": audit.reason_codes,
+            "citation_results": tuple(citation_results),
+            "aggregate_result": aggregate,
+            "resolution_action": None if resolution is None else resolution.action,
+            "resolution_record_id": None if resolution is None else resolution.record_id,
+            "resolution_method": None if resolution is None else resolution.method,
+            "resolution_version": None if resolution is None else resolution.version,
+            "resolution_semantic_bindings": resolution_bindings,
+            "comparison_id": None,
+            "conflict_id": None,
+            "formal_claim_accepted": audit.formal_claim_accepted,
+        }
+        claim_results.append(ValidationClaimReceiptV2(derive_identity("validation-claim-result-v2", _primitive(payload)), audit.claim_id, audit.stage1_passed, audit.reason_codes, tuple(citation_results), aggregate, None if resolution is None else resolution.action, None if resolution is None else resolution.record_id, None if resolution is None else resolution.method, None if resolution is None else resolution.version, resolution_bindings, None, None, audit.formal_claim_accepted))
+    stage1_payload = tuple((item.claim_id, item.stage1_passed, item.reason_codes) for item in audits)
+    identity = request.registry.evaluator_identity
+    routing_rows = tuple(item.stage2_v2 for audit in audits for item in audit.citation_traces if item.stage2_v2 is not None)
+    policy_versions = {item.routing_policy_version for item in routing_rows}
+    policy_hashes = {item.routing_policy_hash for item in routing_rows}
+    if len(policy_versions) > 1 or len(policy_hashes) > 1:
+        raise CanonicalValidationError("validation_receipt_v2_routing_policy_mismatch")
+    routing_policy_version = next(iter(policy_versions), "m3.semantic-review-routing.policy.v1")
+    try:
+        from .semantic_evaluation import REVIEW_ROUTING_POLICY_HASH, REVIEW_ROUTING_POLICY_VERSION
+    except (ImportError, AttributeError) as error:
+        raise CanonicalValidationError("validation_receipt_v2_routing_authority_unavailable") from error
+    routing_policy_hash = next(iter(policy_hashes), REVIEW_ROUTING_POLICY_HASH)
+    if routing_policy_version != REVIEW_ROUTING_POLICY_VERSION or routing_policy_hash != REVIEW_ROUTING_POLICY_HASH:
+        raise CanonicalValidationError("validation_receipt_v2_routing_policy_drift")
+    policy_version, neutral_hash, provider_version, provider_hash = _semantic_v2_validation_profile(
+        request.registry.configuration_version
+    )
+    receipt = ValidationReceiptV2(M3_VALIDATION_RECEIPT_V2, "", "sha256:" + "0" * 64, request.run_id, request.report_id, request.synthesis.report_content_hash, _validation_input_hash(request), sha256_digest(canonical_json(_primitive(_task_bindings(request.tasks)))), derive_identity("validation-stage1-result", _primitive(stage1_payload)), identity.method, identity.version, tuple(claim_results), summary.structural_passed, summary.semantic_passed, summary.safety_passed, summary.reason_codes, policy_version, request.registry.configuration_version, M3_STAGE2_SEMANTIC_RESULT_V2, M3_STAGE2_SEMANTIC_CONTRACT_VERSION_V2, M3_STAGE2_SEMANTIC_CONTRACT_HASH_V2, neutral_hash, provider_version, provider_hash, routing_policy_version, routing_policy_hash, M3_STAGE2_SEMANTIC_ROUTING_MATRIX_HASH_V2)
+    content = _receipt_content_v2(receipt)
+    return ValidationReceiptV2(receipt.marker, derive_identity("validation-receipt-v2", content), sha256_digest(canonical_json(content)), receipt.run_id, receipt.report_id, receipt.report_content_hash, receipt.validation_input_hash, receipt.task_binding_hash, receipt.stage1_result_id, receipt.evaluator_method, receipt.evaluator_version, receipt.claim_results, receipt.structural_passed, receipt.semantic_passed, receipt.safety_passed, receipt.reason_codes, receipt.policy_version, receipt.configuration_version, receipt.semantic_contract, receipt.semantic_contract_version, receipt.semantic_contract_hash, receipt.semantic_configuration_hash, receipt.provider_configuration_version, receipt.provider_configuration_hash, receipt.routing_policy_version, receipt.routing_policy_hash, receipt.routing_matrix_hash)
+
+def _build_validation_receipt(request: CanonicalReportRequest, summary: ValidationSummary, audits: tuple[ClaimAudit, ...]) -> ValidationReceipt | ValidationReceiptV2:
+    if _is_v2_family_configuration(request.registry.configuration_version):
+        return _build_validation_receipt_v2(request, summary, audits)
+    return _build_validation_receipt_v1(request, summary, audits)
 def _copy_validation_receipt(value: ValidationReceipt, expected: ValidationReceipt) -> ValidationReceipt:
     _exact(value, ValidationReceipt, "validation_receipt_wrong_type")
     if type(value.reason_codes) is not tuple or len(value.reason_codes) != len(expected.reason_codes):
@@ -1027,26 +1406,39 @@ def _copy_validation_receipt(value: ValidationReceipt, expected: ValidationRecei
         raise CanonicalValidationError("validation_receipt_identity_drift")
     return copied_receipt
 
-def verify_validation_receipt(receipt: ValidationReceipt, *, request: CanonicalReportRequest, audit: ReportValidationAudit) -> ValidationReceipt:
+def _copy_validation_receipt_v2(value: ValidationReceiptV2, expected: ValidationReceiptV2) -> ValidationReceiptV2:
+    from .report_validation_v2 import _copy_validation_receipt_v2 as implementation
+    return implementation(value, expected)
+
+def verify_validation_receipt(receipt: ValidationReceipt | ValidationReceiptV2, *, request: CanonicalReportRequest, audit: ReportValidationAudit) -> ValidationReceipt | ValidationReceiptV2:
     _outer_cardinality(request)
     value = _copy_request(request)
     audit = _exact(audit, ReportValidationAudit, "validation_receipt_audit_wrong_type")
     expected = _build_validation_receipt(value, audit.summary, audit.claims)
-    copied = _copy_validation_receipt(receipt, expected)
-    if copied.marker != M3_VALIDATION_RECEIPT_V1 or copied.policy_version != M3_VALIDATION_POLICY_V1:
-        raise CanonicalValidationError("validation_receipt_policy_drift")
-    if (copied.evaluator_method, copied.evaluator_version) != (expected.evaluator_method, expected.evaluator_version):
-        raise CanonicalValidationError("validation_receipt_evaluator_drift")
-    if copied != expected:
-        raise CanonicalValidationError("validation_receipt_binding_drift")
-    return copied
+    if type(expected) is ValidationReceiptV2:
+        copied_v2 = _copy_validation_receipt_v2(_exact(receipt, ValidationReceiptV2, "validation_receipt_v2_wrong_type"), expected)
+        if not _v2_receipt_policy_pair_valid(copied_v2):
+            raise CanonicalValidationError("validation_receipt_policy_drift")
+        if (copied_v2.evaluator_method, copied_v2.evaluator_version) != (expected.evaluator_method, expected.evaluator_version):
+            raise CanonicalValidationError("validation_receipt_evaluator_drift")
+        if copied_v2 != expected:
+            raise CanonicalValidationError("validation_receipt_binding_drift")
+        return copied_v2
+    else:
+        copied_v1 = _copy_validation_receipt(_exact(receipt, ValidationReceipt, "validation_receipt_wrong_type"), _exact(expected, ValidationReceipt, "validation_receipt_wrong_type"))
+        if copied_v1.marker != M3_VALIDATION_RECEIPT_V1 or copied_v1.policy_version != M3_VALIDATION_POLICY_V1:
+            raise CanonicalValidationError("validation_receipt_policy_drift")
+        if (copied_v1.evaluator_method, copied_v1.evaluator_version) != (expected.evaluator_method, expected.evaluator_version):
+            raise CanonicalValidationError("validation_receipt_evaluator_drift")
+        if copied_v1 != expected:
+            raise CanonicalValidationError("validation_receipt_binding_drift")
+        return copied_v1
 
 def _payload_object(value: object, model: type[Any], code: str) -> dict[object, object]:
     expected = {item.name for item in fields(model)}
     if type(value) is not dict or set(value) != expected:
         raise CanonicalValidationError(code)
     return value
-
 def _payload_list(value: object, maximum: int, code: str) -> list[object]:
     if type(value) is not list or len(value) > maximum:
         raise CanonicalValidationError(code)
@@ -1059,17 +1451,22 @@ def _payload_enum(value: object, expected: type[_E], code: str) -> _E:
         return expected(value)
     except ValueError as error:
         raise CanonicalValidationError(code) from error
-
-def canonical_validation_receipt_payload(receipt: ValidationReceipt) -> dict[str, object]:
-    copied = _copy_validation_receipt(receipt, receipt)
-    if copied.marker != M3_VALIDATION_RECEIPT_V1 or copied.policy_version != M3_VALIDATION_POLICY_V1:
-        raise CanonicalValidationError("validation_receipt_policy_drift")
-    payload = json.loads(canonical_json(_primitive(copied)))
+def canonical_validation_receipt_payload(receipt: ValidationReceipt | ValidationReceiptV2) -> dict[str, object]:
+    if type(receipt) is ValidationReceiptV2:
+        copied_receipt_v2 = _copy_validation_receipt_v2(receipt, receipt)
+        if not _v2_receipt_policy_pair_valid(copied_receipt_v2):
+            raise CanonicalValidationError("validation_receipt_policy_drift")
+        payload = json.loads(canonical_json(_primitive(copied_receipt_v2)))
+    else:
+        copied_receipt_v1 = _copy_validation_receipt(_exact(receipt, ValidationReceipt, "validation_receipt_wrong_type"), _exact(receipt, ValidationReceipt, "validation_receipt_wrong_type"))
+        if copied_receipt_v1.marker != M3_VALIDATION_RECEIPT_V1 or copied_receipt_v1.policy_version != M3_VALIDATION_POLICY_V1:
+            raise CanonicalValidationError("validation_receipt_policy_drift")
+        payload = json.loads(canonical_json(_primitive(copied_receipt_v1)))
     if type(payload) is not dict:
         raise CanonicalValidationError("validation_receipt_payload_invalid")
     return payload
 
-def validation_receipt_from_payload(payload: object) -> ValidationReceipt:
+def _validation_receipt_v1_from_payload(payload: object) -> ValidationReceipt:
     raw = _payload_object(payload, ValidationReceipt, "validation_receipt_payload_keys_invalid")
     raw_reasons = _payload_list(raw["reason_codes"], 100, "validation_receipt_payload_reason_cardinality_exceeded")
     raw_claims = _payload_list(raw["claim_results"], 200, "validation_receipt_payload_claim_cardinality_exceeded")
@@ -1100,11 +1497,117 @@ def validation_receipt_from_payload(payload: object) -> ValidationReceipt:
         raise CanonicalValidationError("validation_receipt_policy_drift")
     return copied
 
+def _validation_receipt_v2_from_payload(payload: object) -> ValidationReceiptV2:
+    raw = _payload_object(payload, ValidationReceiptV2, "validation_receipt_payload_keys_invalid")
+    raw_reasons = _payload_list(raw["reason_codes"], 100, "validation_receipt_payload_reason_cardinality_exceeded")
+    raw_claims = _payload_list(raw["claim_results"], 200, "validation_receipt_payload_claim_cardinality_exceeded")
+    claims: list[ValidationClaimReceiptV2] = []
+    total_citations = 0
+    for raw_claim_value in raw_claims:
+        raw_claim = _payload_object(raw_claim_value, ValidationClaimReceiptV2, "validation_receipt_payload_claim_keys_invalid")
+        claim_reasons = _payload_list(raw_claim["stage1_reason_codes"], 100, "validation_receipt_payload_claim_reason_cardinality_exceeded")
+        raw_citations = _payload_list(raw_claim["citation_results"], 300, "validation_receipt_payload_citation_cardinality_exceeded")
+        total_citations += len(raw_citations)
+        citations: list[ValidationCitationReceiptV2] = []
+        for raw_citation_value in raw_citations:
+            item = _payload_object(raw_citation_value, ValidationCitationReceiptV2, "validation_receipt_payload_citation_keys_invalid")
+            citations.append(ValidationCitationReceiptV2(
+                _text(item["citation_result_id"], "validation_receipt_citation_identity_invalid"),
+                _text(item["citation_id"], "validation_receipt_citation_id_invalid"),
+                _digest(item["input_digest"], "validation_receipt_input_digest_invalid"),
+                _text(item["method"], "validation_receipt_method_invalid"),
+                _text(item["version"], "validation_receipt_version_invalid"),
+                _text(item["semantic_contract_version"], "validation_receipt_v2_contract_version_invalid"),
+                _digest(item["semantic_contract_hash"], "validation_receipt_v2_contract_hash_invalid"),
+                _digest(item["semantic_configuration_hash"], "validation_receipt_v2_configuration_hash_invalid"),
+                _text(item["provider_configuration_version"], "validation_receipt_v2_provider_configuration_version_invalid"),
+                _digest(item["provider_configuration_hash"], "validation_receipt_v2_provider_configuration_hash_invalid"),
+                _payload_enum(item["result"], SemanticSupport, "validation_receipt_result_invalid"),
+                _payload_enum(item["relationship"], CitationRelationship, "validation_receipt_relationship_invalid"),
+                _digest(item["semantic_result_content_hash"], "validation_receipt_v2_result_content_hash_invalid"),
+                _digest(item["semantic_result_hash"], "validation_receipt_v2_result_hash_invalid"),
+                _text(item["routing_policy_version"], "validation_receipt_v2_routing_policy_version_invalid"),
+                _digest(item["routing_policy_hash"], "validation_receipt_v2_routing_policy_hash_invalid"),
+                _digest(item["routing_matrix_hash"], "validation_receipt_v2_routing_matrix_hash_invalid"),
+                _payload_enum(item["routing_disposition"], ReviewRoutingDispositionInput, "validation_receipt_v2_routing_disposition_invalid"),
+                _exact(item["human_review_required"], bool, "validation_receipt_v2_human_review_invalid"),
+                _digest(item["routing_disposition_content_hash"], "validation_receipt_v2_disposition_hash_invalid"),
+                _exact(item["comparability_registry_empty"], bool, "validation_receipt_v2_comparability_empty_wrong_type"),
+                None if item["comparison_id"] is None else _text(item["comparison_id"], "validation_receipt_v2_comparison_id_invalid"),
+                None if item["comparison_hash"] is None else _digest(item["comparison_hash"], "validation_receipt_v2_comparison_hash_invalid"),
+                None if item["conflict_id"] is None else _text(item["conflict_id"], "validation_receipt_v2_conflict_id_invalid"),
+                None if item["conflict_hash"] is None else _digest(item["conflict_hash"], "validation_receipt_v2_conflict_hash_invalid"),
+                None if item["conflict_outcome"] is None else _payload_enum(item["conflict_outcome"], ConflictOutcome, "validation_receipt_v2_conflict_outcome_wrong_type"),
+            ))
+        raw_bindings = _payload_list(raw_claim["resolution_semantic_bindings"], 400, "validation_receipt_v2_resolution_binding_cardinality_exceeded")
+        bindings: list[ResolutionSemanticBindingInput] = []
+        for raw_binding in raw_bindings:
+            item = _payload_object(raw_binding, ResolutionSemanticBindingInput, "validation_receipt_v2_resolution_binding_keys_invalid")
+            bindings.append(ResolutionSemanticBindingInput(
+                _text(item["citation_id"], "resolution_v2_citation_invalid"),
+                _digest(item["input_digest"], "resolution_v2_input_digest_invalid"),
+                _text(item["semantic_contract_version"], "resolution_v2_contract_version_invalid"),
+                _digest(item["semantic_contract_hash"], "resolution_v2_contract_hash_invalid"),
+                _text(item["method"], "resolution_v2_method_identity_invalid"),
+                _digest(item["semantic_configuration_hash"], "resolution_v2_configuration_hash_invalid"),
+                _text(item["provider_configuration_version"], "resolution_v2_provider_configuration_version_invalid"),
+                _digest(item["provider_configuration_hash"], "resolution_v2_provider_configuration_hash_invalid"),
+                _payload_enum(item["result"], SemanticSupport, "resolution_v2_result_wrong_type"),
+                _digest(item["semantic_result_content_hash"], "resolution_v2_result_content_hash_invalid"),
+                _digest(item["semantic_result_hash"], "resolution_v2_result_hash_invalid"),
+                _text(item["routing_policy_version"], "resolution_v2_routing_policy_version_invalid"),
+                _digest(item["routing_policy_hash"], "resolution_v2_routing_policy_hash_invalid"),
+                _digest(item["routing_matrix_hash"], "resolution_v2_routing_matrix_hash_invalid"),
+                _payload_enum(item["routing_disposition"], ReviewRoutingDispositionInput, "resolution_v2_routing_disposition_wrong_type"),
+                _digest(item["routing_disposition_content_hash"], "resolution_v2_routing_disposition_hash_invalid"),
+                _exact(item["comparability_registry_empty"], bool, "resolution_v2_comparability_empty_wrong_type"),
+                None if item["comparison_id"] is None else _text(item["comparison_id"], "resolution_v2_comparison_id_invalid"),
+                None if item["comparison_hash"] is None else _digest(item["comparison_hash"], "resolution_v2_comparison_hash_invalid"),
+                None if item["conflict_id"] is None else _text(item["conflict_id"], "resolution_v2_conflict_id_invalid"),
+                None if item["conflict_hash"] is None else _digest(item["conflict_hash"], "resolution_v2_conflict_hash_invalid"),
+                None if item["conflict_outcome"] is None else _payload_enum(item["conflict_outcome"], ConflictOutcome, "resolution_v2_conflict_outcome_wrong_type"),
+            ))
+        aggregate = None if raw_claim["aggregate_result"] is None else _payload_enum(raw_claim["aggregate_result"], SemanticSupport, "validation_receipt_aggregate_invalid")
+        action = None if raw_claim["resolution_action"] is None else _payload_enum(raw_claim["resolution_action"], ResolutionAction, "validation_receipt_resolution_invalid")
+        optional_text = tuple(None if raw_claim[name] is None else _text(raw_claim[name], "validation_receipt_resolution_text_invalid") for name in ("resolution_record_id", "resolution_method", "resolution_version"))
+        governed_text = tuple(None if raw_claim[name] is None else _text(raw_claim[name], "validation_receipt_governed_id_invalid") for name in ("comparison_id", "conflict_id"))
+        claims.append(ValidationClaimReceiptV2(
+            _text(raw_claim["claim_result_id"], "validation_receipt_claim_identity_invalid"),
+            _text(raw_claim["claim_id"], "validation_receipt_claim_id_invalid"),
+            _exact(raw_claim["stage1_passed"], bool, "validation_receipt_stage1_invalid"),
+            _reason_tuple(tuple(claim_reasons), "validation_receipt_reason_invalid"),
+            tuple(citations), aggregate, action, optional_text[0], optional_text[1], optional_text[2], tuple(bindings), governed_text[0], governed_text[1],
+            _exact(raw_claim["formal_claim_accepted"], bool, "validation_receipt_acceptance_invalid"),
+        ))
+    if total_citations > 400:
+        raise CanonicalValidationError("validation_receipt_payload_total_citation_cardinality_exceeded")
+    receipt = ValidationReceiptV2(
+        _text(raw["marker"], "validation_receipt_marker_invalid"), _text(raw["receipt_id"], "validation_receipt_identity_invalid"), _digest(raw["receipt_content_hash"], "validation_receipt_content_hash_invalid"), _text(raw["run_id"], "validation_receipt_run_invalid"), _text(raw["report_id"], "validation_receipt_report_invalid"), _digest(raw["report_content_hash"], "validation_receipt_report_hash_invalid"), _digest(raw["validation_input_hash"], "validation_receipt_input_hash_invalid"), _digest(raw["task_binding_hash"], "validation_receipt_task_hash_invalid"), _text(raw["stage1_result_id"], "validation_receipt_stage1_identity_invalid"), _text(raw["evaluator_method"], "validation_receipt_method_invalid"), _text(raw["evaluator_version"], "validation_receipt_version_invalid"), tuple(claims), _exact(raw["structural_passed"], bool, "validation_receipt_summary_invalid"), _exact(raw["semantic_passed"], bool, "validation_receipt_summary_invalid"), _exact(raw["safety_passed"], bool, "validation_receipt_summary_invalid"), _reason_tuple(tuple(raw_reasons), "validation_receipt_summary_reason_invalid"), _text(raw["policy_version"], "validation_receipt_policy_invalid"), _text(raw["configuration_version"], "validation_receipt_configuration_invalid"), _text(raw["semantic_contract"], "validation_receipt_v2_semantic_contract_invalid"), _text(raw["semantic_contract_version"], "validation_receipt_v2_contract_version_invalid"), _digest(raw["semantic_contract_hash"], "validation_receipt_v2_contract_hash_invalid"), _digest(raw["semantic_configuration_hash"], "validation_receipt_v2_configuration_hash_invalid"), _text(raw["provider_configuration_version"], "validation_receipt_v2_provider_configuration_version_invalid"), _digest(raw["provider_configuration_hash"], "validation_receipt_v2_provider_configuration_hash_invalid"), _text(raw["routing_policy_version"], "validation_receipt_v2_routing_policy_version_invalid"), _digest(raw["routing_policy_hash"], "validation_receipt_v2_routing_policy_hash_invalid"), _digest(raw["routing_matrix_hash"], "validation_receipt_v2_routing_matrix_hash_invalid")
+    )
+    copied = _copy_validation_receipt_v2(receipt, receipt)
+    if not _v2_receipt_policy_pair_valid(copied):
+        raise CanonicalValidationError("validation_receipt_policy_drift")
+    return copied
+
+def validation_receipt_from_payload(payload: object) -> ValidationReceipt | ValidationReceiptV2:
+    if type(payload) is not dict:
+        raise CanonicalValidationError("validation_receipt_payload_keys_invalid")
+    marker = payload.get("marker")
+    if marker == M3_VALIDATION_RECEIPT_V2:
+        return _validation_receipt_v2_from_payload(payload)
+    return _validation_receipt_v1_from_payload(payload)
+
+def stage2_projections_from_receipt_v2(value: ValidationReceiptV2) -> tuple[Stage2SemanticInputV2, ...]:
+    from .report_validation_v2 import stage2_projections_from_receipt_v2 as implementation
+    return implementation(value)
+
 def canonical_validate_report(
     request: CanonicalReportRequest,
     *,
     mode: ValidationMode,
     semantic_result_provider: SemanticResultProvider | None = None,
+    semantic_result_provider_v2: SemanticEvaluationPortV2 | None = None,
+    stage1_receipt: Stage1ReceiptV2 | None = None,
 ) -> ReportValidationAudit:
     _outer_cardinality(request)
     mode = _exact(mode, ValidationMode, "validation_mode_wrong_type")
@@ -1114,11 +1617,13 @@ def canonical_validate_report(
     if _REPORT_ID.fullmatch(value.report_id) is None or _RUN_ID.fullmatch(value.run_id) is None:
         raise CanonicalValidationError("report_id_invalid")
     if mode is ValidationMode.ASSESS and value.stored_validation is not None: raise CanonicalValidationError("stored_validation_forbidden_in_assess")
-    if mode is ValidationMode.VERIFY_BINDING and semantic_result_provider is not None: raise CanonicalValidationError("semantic_provider_forbidden_in_verify")
+    if mode is ValidationMode.VERIFY_BINDING and (semantic_result_provider is not None or semantic_result_provider_v2 is not None): raise CanonicalValidationError("semantic_provider_forbidden_in_verify")
+    if mode is ValidationMode.PREPARE_STAGE1 and (semantic_result_provider is not None or semantic_result_provider_v2 is not None or stage1_receipt is not None): raise CanonicalValidationError("semantic_provider_forbidden_in_stage1")
     structural: set[str] = set()
     safety: set[str] = set()
     semantic: set[str] = set()
     tasks = value.tasks
+    from .report_validation_source_bindings_v3 import evidence_acquisition_matches, evidence_locator_matches
     synthesis = value.synthesis
     if identity_duplicate:
         structural.add("registry_identity_duplicate")
@@ -1135,7 +1640,23 @@ def canonical_validate_report(
             structural.add("source_task_identity_drift")
         if task.acquisition.run_id != value.run_id:
             structural.add("source_not_in_authorized_run")
-        if task.outcome.configured_bounds != ExecutionBoundsInput(value.scope.max_query_characters, value.scope.max_pages, value.scope.max_records, value.scope.max_payload_bytes, value.scope.max_total_seconds): structural.add("source_bounds_scope_mismatch")
+        master_bounds = ExecutionBoundsInput(
+            value.scope.max_query_characters,
+            value.scope.max_pages,
+            value.scope.max_records,
+            value.scope.max_payload_bytes,
+            value.scope.max_total_seconds,
+        )
+        if registry.configuration_version in (M3_VALIDATION_CONFIGURATION_V3, M3_VALIDATION_CONFIGURATION_V4):
+            try:
+                if not source_profile_matches_v3(
+                    task.source, task.outcome.configured_bounds, value.scope
+                ):
+                    structural.add("source_bounds_policy_mismatch")
+            except ValueError:
+                structural.add("source_bounds_policy_invalid")
+        elif task.outcome.configured_bounds != master_bounds:
+            structural.add("source_bounds_scope_mismatch")
     references = tuple((task, ref) for task in tasks for ref in task.evidence_refs)
     if len({ref.evidence_id for _, ref in references}) != len(references):
         structural.add("duplicate_evidence_reference")
@@ -1149,9 +1670,9 @@ def canonical_validate_report(
         pair = reference_map.get(registered_evidence.evidence_id)
         if registered_evidence.authorized_run_id != value.run_id:
             structural.add("source_not_in_authorized_run")
-        if pair is None or (pair[1].source, pair[1].snapshot_id, pair[1].content_hash, (pair[1].locator_ref,)) != (registered_evidence.source, registered_evidence.snapshot_id, registered_evidence.content_hash, registered_evidence.locators):
+        if pair is None or (pair[1].source, pair[1].snapshot_id, pair[1].content_hash) != (registered_evidence.source, registered_evidence.snapshot_id, registered_evidence.content_hash) or len(registered_evidence.locators) != 1 or not evidence_locator_matches(pair[0], pair[1].locator_ref, registered_evidence.locators[0], registry.configuration_version):
             structural.add("evidence_registry_authority_drift")
-        elif pair[0].acquisition.snapshot_id != registered_evidence.snapshot_id:
+        elif not evidence_acquisition_matches(pair[0], pair[1]):
             structural.add("evidence_acquisition_snapshot_drift")
     required_warnings = {warning for task in tasks for warning in task.outcome.warning_codes}
     for task in tasks:
@@ -1180,7 +1701,14 @@ def canonical_validate_report(
     if any(item.claim_id not in claims for item in registry.resolutions):
         structural.add("resolution_claim_missing")
     if any(item.claim_id not in claims or item.evidence_id not in evidences for item in registry.citations): structural.add("registry_reference_graph_invalid")
-    if any(item.claim_id not in resolutions or resolutions[item.claim_id].action is not ResolutionAction.REMOVED for item in removed_claims):
+    is_v2 = _is_v2_family_configuration(registry.configuration_version)
+    if is_v2 and (len(registry.comparisons) > 1 or len(registry.conflicts) > 1):
+        structural.add("semantic_v2_comparability_registry_ambiguous")
+    planned_v2 = is_v2 and bool(registry.semantic_expectations) and all(type(item) is PlannedStage2SemanticInputV2 for item in registry.semantic_expectations)
+    finalized_v2 = is_v2 and all(type(item) is Stage2SemanticInputV2 for item in registry.semantic_expectations)
+    if is_v2 and not (planned_v2 or finalized_v2):
+        raise CanonicalValidationError("semantic_v2_plan_projection_mixed")
+    if any(item.claim_id not in resolutions or resolutions[item.claim_id].action is not ResolutionAction.REMOVED or is_v2 and type(resolutions[item.claim_id]) is not ResolutionInputV2 for item in removed_claims):
         structural.add("removed_candidate_requires_recorded_removal")
     stage1: list[tuple[ClaimInput, tuple[tuple[CitationInput, EvidenceInput], ...], tuple[str, ...]]] = []
     for claim in formal_claims:
@@ -1201,7 +1729,7 @@ def canonical_validate_report(
             outcome = task.outcome
             if citation.claim_id != claim.claim_id or citation.evidence_id != ref.evidence_id or ref.claim_id != claim.claim_id:
                 claim_reasons.add("claim_citation_evidence_binding_mismatch")
-            if (durable.source, durable.snapshot_id, durable.content_hash, durable.locator_ref) != (resolved_evidence.source, resolved_evidence.snapshot_id, resolved_evidence.content_hash, citation.locator_ref) or (citation.source_record_id, citation.source_version, citation.snapshot_id, citation.content_hash) != (resolved_evidence.source_record_id, resolved_evidence.source_version, resolved_evidence.snapshot_id, resolved_evidence.content_hash) or citation.locator_ref not in resolved_evidence.locators:
+            if (durable.source, durable.snapshot_id, durable.content_hash) != (resolved_evidence.source, resolved_evidence.snapshot_id, resolved_evidence.content_hash) or not evidence_locator_matches(task, durable.locator_ref, citation.locator_ref, registry.configuration_version) or (citation.source_record_id, citation.source_version, citation.snapshot_id, citation.content_hash) != (resolved_evidence.source_record_id, resolved_evidence.source_version, resolved_evidence.snapshot_id, resolved_evidence.content_hash) or citation.locator_ref not in resolved_evidence.locators:
                 claim_reasons.add("citation_evidence_lineage_drift")
             if (citation.execution_status, citation.coverage_status, citation.result_status) != (outcome.execution_status, outcome.coverage_status, outcome.result_status) or outcome.result_status is not ResultStatus.MATCHES or outcome.valid_result_count < 1:
                 claim_reasons.add("coverage_qualifier_untruthful")
@@ -1240,44 +1768,124 @@ def canonical_validate_report(
             structural.add("conflict_classification_or_hash_drift")
         else:
             conflict_outcomes.append((conflict.conflict_id, expected_conflict))
+    prepared_stage1: Stage1ReceiptV2 | None = None
+    if is_v2 and not structural and not safety:
+        prepared_stage1 = _build_stage1_receipt_v2(value, tuple(stage1))
+    if mode is ValidationMode.VERIFY_BINDING and is_v2 and planned_v2 and prepared_stage1 is not None and formal_citations:
+        raise CanonicalValidationError("semantic_v2_projection_required_in_verify")
+    if mode is ValidationMode.PREPARE_STAGE1:
+        if not is_v2 or not planned_v2:
+            raise CanonicalValidationError("stage1_prepare_requires_v2_plan")
+        return ReportValidationAudit(
+            ValidationSummary(not structural, False, not safety, tuple(sorted(structural | safety))),
+            tuple(ClaimAudit(claim.claim_id, not reasons, reasons, (), False, None) for claim, _, reasons in stage1),
+            tuple(conflict_outcomes),
+            stage1_receipt=prepared_stage1,
+        )
+    if is_v2 and planned_v2 and mode is ValidationMode.ASSESS and prepared_stage1 is not None and (stage1_receipt is None or stage1_receipt_from_payload_v2(canonical_stage1_receipt_payload_v2(stage1_receipt)) != prepared_stage1):
+        raise CanonicalValidationError("stage1_receipt_binding_drift")
+    resolved_projections: list[Stage2SemanticInputV2] = []
     audits: list[ClaimAudit] = []
     if structural or safety:
         semantic.add("stage1_failed_before_semantic_evaluation")
         audits.extend(ClaimAudit(claim.claim_id, not reasons, reasons, (), False, None) for claim, _, reasons in stage1)
     else:
+        stage1_result_id = derive_identity("validation-stage1-result", _primitive(tuple((item.claim_id, not reasons, reasons) for item, _, reasons in stage1)))
+        if mode is ValidationMode.ASSESS and is_v2 and formal_citations:
+            try:
+                require_port_for_validation_configuration(registry.configuration_version, semantic_result_provider_v2, method=provider_method_for_validation_configuration(registry.configuration_version))
+            except ValueError as error:
+                raise CanonicalValidationError("semantic_v2_provider_identity_mismatch") from error
         for claim, resolved_pairs, _ in stage1:
+            stage1_claim_result_id = derive_identity("validation-stage1-claim-result", _primitive((claim.claim_id, True, ())))
             traces: list[CitationTrace] = []
             for citation, evidence in resolved_pairs:
                 expectation = expectation_map.get(citation.citation_id)
+                stage2_v2: Stage2SemanticInputV2 | None = None
                 digest = canonical_semantic_input_digest(value.run_id, claim, citation, evidence)
                 if expectation is None or expectation.input_digest != digest or (expectation.method, expectation.version) != (registry.evaluator_identity.method, registry.evaluator_identity.version):
                     raise CanonicalValidationError("semantic_expectation_binding_drift")
                 if mode is ValidationMode.ASSESS:
-                    if semantic_result_provider is None:
-                        raise CanonicalValidationError("semantic_result_provider_missing")
-                    try:
-                        raw_result = semantic_result_provider.evaluate(SemanticEvaluationInput(value.run_id, claim, citation, evidence))
-                    except Exception as error:
-                        raise CanonicalValidationError("semantic_result_acquisition_failed") from error
-                    result = _exact(raw_result, SemanticResultInput, "semantic_result_wrong_type")
-                    result = SemanticResultInput(_exact(result.result, SemanticSupport, "semantic_result_enum_wrong_type"), _text(result.method, "semantic_result_method_invalid"), _text(result.version, "semantic_result_version_invalid"))
-                    if (result.result, result.method, result.version) != (expectation.result, expectation.method, expectation.version):
-                        raise CanonicalValidationError("semantic_result_expectation_mismatch")
+                    current_input = SemanticEvaluationInput(value.run_id, claim, citation, evidence)
+                    if is_v2 and planned_v2:
+                        if semantic_result_provider_v2 is None or prepared_stage1 is None:
+                            raise CanonicalValidationError("semantic_v2_result_provider_missing")
+                        semantic_request = _planned_semantic_request_v2(value, prepared_stage1, claim, current_input)
+                        if registry.configuration_version == M3_VALIDATION_CONFIGURATION_V3:
+                            _require_v3_semantic_port_identity(semantic_result_provider_v2)
+                        elif registry.configuration_version == M3_VALIDATION_CONFIGURATION_V4:
+                            require_v4_port_profile(cast(DeclaredRuntimeSemanticProfileV3, semantic_result_provider_v2), method=provider_method_for_validation_configuration(M3_VALIDATION_CONFIGURATION_V4))
+                        try:
+                            raw_v2_result = semantic_result_provider_v2.evaluate_v2(semantic_request)
+                        except Exception as error:
+                            raise CanonicalValidationError("semantic_result_acquisition_failed") from error
+                        stage2_v2 = canonical_stage2_semantic_input_v2(
+                            Stage2SemanticResultV2(semantic_request, raw_v2_result),
+                            report_request=value,
+                            current_input=current_input,
+                            stage1_result_id=stage1_result_id,
+                            stage1_claim_result_id=stage1_claim_result_id,
+                            method=registry.evaluator_identity.method,
+                        )
+                        resolved_projections.append(stage2_v2)
+                        result = SemanticResultInput(stage2_v2.result, stage2_v2.method, stage2_v2.version)
+                    else:
+                        if semantic_result_provider is None:
+                            raise CanonicalValidationError("semantic_result_provider_missing")
+                        try:
+                            raw_result = semantic_result_provider.evaluate(current_input)
+                        except Exception as error:
+                            raise CanonicalValidationError("semantic_result_acquisition_failed") from error
+                    if is_v2 and not planned_v2:
+                        expected_v2 = _exact(expectation, Stage2SemanticInputV2, "semantic_v2_expectation_wrong_type")
+                        stage2_v2 = canonical_stage2_semantic_input_v2(
+                            _exact(raw_result, Stage2SemanticResultV2, "semantic_v2_result_wrapper_wrong_type"),
+                            report_request=value,
+                            current_input=SemanticEvaluationInput(value.run_id, claim, citation, evidence),
+                            stage1_result_id=stage1_result_id,
+                            stage1_claim_result_id=stage1_claim_result_id,
+                            method=registry.evaluator_identity.method,
+                        )
+                        if stage2_v2 != expected_v2:
+                            raise CanonicalValidationError("semantic_v2_result_expectation_mismatch")
+                        result = SemanticResultInput(stage2_v2.result, stage2_v2.method, stage2_v2.version)
+                    elif not is_v2:
+                        result = _exact(raw_result, SemanticResultInput, "semantic_result_wrong_type")
+                        result = SemanticResultInput(_exact(result.result, SemanticSupport, "semantic_result_enum_wrong_type"), _text(result.method, "semantic_result_method_invalid"), _text(result.version, "semantic_result_version_invalid"))
+                        expected_v1 = _exact(expectation, SemanticExpectationInput, "semantic_expectation_wrong_type")
+                        if (result.result, result.method, result.version) != (expected_v1.result, expected_v1.method, expected_v1.version):
+                            raise CanonicalValidationError("semantic_result_expectation_mismatch")
                 else:
-                    result = SemanticResultInput(expectation.result, expectation.method, expectation.version)
-                traces.append(CitationTrace(citation.citation_id, digest, result.method, result.version, result.result, citation.relationship))
+                    if is_v2:
+                        stage2_v2 = _copy_stage2_v2(_exact(expectation, Stage2SemanticInputV2, "semantic_v2_expectation_wrong_type"))
+                        result = SemanticResultInput(stage2_v2.result, stage2_v2.method, stage2_v2.version)
+                    else:
+                        expected_v1 = _exact(expectation, SemanticExpectationInput, "semantic_expectation_wrong_type")
+                        result = SemanticResultInput(expected_v1.result, expected_v1.method, expected_v1.version)
+                if stage2_v2 is not None:
+                    _recompute_stage2_v2_routing(stage2_v2, claim=claim, citation=citation, comparisons=registry.comparisons, conflicts=registry.conflicts)
+                traces.append(CitationTrace(citation.citation_id, digest, result.method, result.version, result.result, citation.relationship, stage2_v2 if is_v2 else None))
             combined = _aggregate_semantic_results(tuple(traces))
             resolution = resolutions.get(claim.claim_id)
-            confirmed_contradiction = any(item.relationship is CitationRelationship.CONTRADICTS and item.result is SemanticSupport.SUPPORTED for item in traces)
-            no_governed_binding = resolution is not None and resolution.comparison_id is None and resolution.conflict_id is None
-            adjudicated = resolution is not None and resolution.action is ResolutionAction.ADJUDICATED_TO_SUPPORTED and (confirmed_contradiction and _governed_resolution(resolution, registry) or not confirmed_contradiction and no_governed_binding)
-            accepted = combined is SemanticSupport.SUPPORTED and resolution is None or combined is SemanticSupport.UNCERTAIN and adjudicated
+            if is_v2:
+                any_rejected = any(item.stage2_v2 is not None and item.stage2_v2.routing_disposition is ReviewRoutingDispositionInput.FORMAL_CITATION_REJECTED for item in traces)
+                required_review = _v2_required_resolution_bindings(tuple(traces))
+                adjudicated = _v2_resolution_is_exact(resolution, tuple(traces))
+                accepted = not any_rejected and combined in (SemanticSupport.SUPPORTED, SemanticSupport.UNCERTAIN) and (not required_review and resolution is None or bool(required_review) and adjudicated)
+            else:
+                confirmed_contradiction = any(item.relationship is CitationRelationship.CONTRADICTS and item.result is SemanticSupport.SUPPORTED for item in traces)
+                old_resolution = resolution if type(resolution) is ResolutionInput else None
+                no_governed_binding = old_resolution is not None and old_resolution.comparison_id is None and old_resolution.conflict_id is None
+                adjudicated = old_resolution is not None and old_resolution.action is ResolutionAction.ADJUDICATED_TO_SUPPORTED and (confirmed_contradiction and _governed_resolution(old_resolution, registry) or not confirmed_contradiction and no_governed_binding)
+                accepted = combined is SemanticSupport.SUPPORTED and resolution is None or combined is SemanticSupport.UNCERTAIN and adjudicated
             if not accepted:
                 semantic.add("material_claim_not_accepted")
             audits.append(ClaimAudit(claim.claim_id, True, (), tuple(traces), accepted, combined))
     all_reasons = tuple(sorted(structural | safety | semantic))
     summary = ValidationSummary(not structural, not semantic, not safety, all_reasons)
-    receipt = _build_validation_receipt(value, summary, tuple(audits)) if mode is ValidationMode.ASSESS else None
+    resolved_request = replace(value, registry=replace(registry, semantic_expectations=tuple(resolved_projections))) if mode is ValidationMode.ASSESS and is_v2 and planned_v2 and not structural and not safety else None
+    receipt_request = resolved_request if resolved_request is not None else value
+    receipt = _build_validation_receipt(receipt_request, summary, tuple(audits)) if mode is ValidationMode.ASSESS else None
     if mode is ValidationMode.VERIFY_BINDING:
         stored = value.stored_validation
         if stored is not None and type(stored.reason_codes) is not tuple:
@@ -1289,4 +1897,4 @@ def canonical_validate_report(
             structural.add("stored_validation_binding_mismatch")
             all_reasons = tuple(sorted(structural | safety | semantic))
             summary = ValidationSummary(False, not semantic, not safety, all_reasons)
-    return ReportValidationAudit(summary, tuple(audits), tuple(conflict_outcomes), receipt)
+    return ReportValidationAudit(summary, tuple(audits), tuple(conflict_outcomes), receipt, prepared_stage1, resolved_request)

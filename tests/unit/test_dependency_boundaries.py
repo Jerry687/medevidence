@@ -5,10 +5,13 @@ from __future__ import annotations
 import ast
 import copy
 import hashlib
+import importlib.metadata as distribution_metadata
+import io
 import json
 import sys
 import textwrap
 import tomllib
+import zipfile
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,6 +41,12 @@ PROHIBITED_TOKENS = {
 }
 APPROVED_CONNECTOR_THIRD_PARTY_ROOTS = {"defusedxml", "httpx"}
 APPROVED_PERSISTENCE_THIRD_PARTY_ROOTS = {"sqlalchemy"}
+PROVIDER_FRAMING_CONTRACT = "medevidence.tools.provider_attempt_framing"
+APPROVED_PERSISTENCE_FRAMING_CONSUMERS = {
+    Path("src/medevidence/persistence/models.py"),
+    Path("src/medevidence/persistence/repositories.py"),
+}
+APPROVED_DEEPSEEK_GENERATION_CONSUMER = Path("src/medevidence/tools/deepseek_generation.py")
 
 
 def _load_dependency_helper() -> dict[str, object]:
@@ -93,6 +102,10 @@ PACKAGE_SETS_FROM_LOCK = cast(
     Callable[[Path], tuple[Any, Any, Any, dict[str, str]]],
     DEPENDENCY_HELPER["package_sets_from_lock"],
 )
+LOCKED_JSFETCH_LICENSE_METADATA = cast(
+    Callable[[Path], tuple[str | None, tuple[str, ...]]],
+    DEPENDENCY_HELPER["locked_jsfetch_license_metadata"],
+)
 PACKAGES_FROM_AUDIT = cast(
     Callable[
         [Path, str, Path, Path, dict[str, str]],
@@ -117,6 +130,9 @@ CI_RUN_PREFLIGHT = cast(
 CI_ACQUIRE_OSV = cast(Callable[..., None], CI_ADVISORY_PREFLIGHT["acquire_osv"])
 CI_VALIDATE_INSTALLED_TORCH = cast(
     Callable[[Path], None], CI_ADVISORY_PREFLIGHT["validate_installed_torch"]
+)
+CI_ACQUIRE_JSFETCH_WHEEL = cast(
+    Callable[..., None], CI_ADVISORY_PREFLIGHT["acquire_inactive_jsfetch_wheel"]
 )
 
 TORCH_BINDING = {
@@ -189,6 +205,17 @@ def _is_approved_connector_import(module: str) -> bool:
         or root in APPROVED_CONNECTOR_THIRD_PARTY_ROOTS
         or module == "medevidence.domain"
         or module.startswith("medevidence.domain.")
+    )
+
+
+def _is_approved_persistence_import(path: Path, module: str) -> bool:
+    root = module.split(".", maxsplit=1)[0]
+    return (
+        root in sys.stdlib_module_names
+        or root in APPROVED_PERSISTENCE_THIRD_PARTY_ROOTS
+        or module == "medevidence.domain"
+        or module.startswith("medevidence.domain.")
+        or (path in APPROVED_PERSISTENCE_FRAMING_CONSUMERS and module == PROVIDER_FRAMING_CONTRACT)
     )
 
 
@@ -286,14 +313,59 @@ def test_persistence_imports_only_approved_inward_layers_and_sqlalchemy() -> Non
             else:
                 continue
             for module in modules:
-                root = module.split(".", maxsplit=1)[0]
-                if (
-                    root not in sys.stdlib_module_names
-                    and root not in APPROVED_PERSISTENCE_THIRD_PARTY_ROOTS
-                    and module != "medevidence.domain"
-                    and not module.startswith("medevidence.domain.")
-                ):
+                if not _is_approved_persistence_import(path, module):
                     violations.append(f"{path}:{node.lineno}:{module}")
+
+    assert violations == []
+
+
+def test_only_exact_persistence_consumers_may_import_exact_framing_contract() -> None:
+    for path in APPROVED_PERSISTENCE_FRAMING_CONSUMERS:
+        assert _is_approved_persistence_import(path, PROVIDER_FRAMING_CONTRACT)
+
+
+@pytest.mark.parametrize(
+    ("path", "module"),
+    [
+        ("src/medevidence/persistence/base.py", PROVIDER_FRAMING_CONTRACT),
+        (
+            "src/medevidence/infrastructure/deepseek_semantic_evaluator.py",
+            PROVIDER_FRAMING_CONTRACT,
+        ),
+        ("src/medevidence/persistence/models.py", "medevidence.tools"),
+        (
+            "src/medevidence/persistence/models.py",
+            "medevidence.tools.provider_attempt_framing.submodule",
+        ),
+        (
+            "src/medevidence/persistence/repositories.py",
+            "medevidence.tools.provider_attempt_framing_helpers",
+        ),
+        ("src/medevidence/persistence/repositories.py", "medevidence.tools.reports"),
+    ],
+)
+def test_persistence_framing_exception_rejects_every_other_import(path: str, module: str) -> None:
+    assert not _is_approved_persistence_import(Path(path), module)
+
+
+def test_provider_attempt_framing_contract_imports_only_standard_library() -> None:
+    path = Path("src/medevidence/tools/provider_attempt_framing.py")
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > 0:
+                violations.append(f"{path}:{node.lineno}:relative-import-level-{node.level}")
+                continue
+            modules = {node.module or ""}
+        else:
+            continue
+        for module in modules:
+            if module.split(".", maxsplit=1)[0] not in sys.stdlib_module_names:
+                violations.append(f"{path}:{node.lineno}:{module}")
 
     assert violations == []
 
@@ -318,6 +390,10 @@ def test_tools_import_only_domain_and_consumer_owned_tool_modules() -> None:
                     and root != "pydantic"
                     and module != "medevidence.domain"
                     and not module.startswith("medevidence.domain.")
+                    and not (
+                        path == APPROVED_DEEPSEEK_GENERATION_CONSUMER
+                        and module == "medevidence.tools.generation"
+                    )
                 ):
                     violations.append(f"{path}:{node.lineno}:{module}")
 
@@ -373,9 +449,12 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
         "httpx==0.28.1",
         "langgraph==1.2.11",
         "langgraph-checkpoint-postgres==3.1.2",
+        "mcp==2.2.0",
         "psycopg[binary]==3.3.4",
         "pydantic==2.13.4",
         "SQLAlchemy==2.0.51",
+        "streamlit==1.63.0",
+        "uvicorn==0.52.4",
     ]
     assert set(project["dependency-groups"]["dev"]) == {
         "coverage==7.15.2",
@@ -411,7 +490,7 @@ def test_only_owner_approved_direct_dependencies_are_present() -> None:
         }
     ]
     lock_text = Path("uv.lock").read_text(encoding="utf-8").casefold()
-    assert 'name = "uvicorn"' not in lock_text
+    assert 'name = "uvicorn"' in lock_text
     assert not any(item.startswith("fastapi[") for item in project["project"]["dependencies"])
 
 
@@ -438,7 +517,15 @@ def test_lock_binds_exact_windows_cpu_torch_and_has_no_accelerator_closure() -> 
         (record["version"], tuple(record["resolution-markers"])) for record in torch_records
     } == {
         ("2.13.0", ("sys_platform == 'darwin'",)),
-        ("2.13.0+cpu", ("sys_platform != 'darwin'",)),
+        (
+            "2.13.0+cpu",
+            (
+                "sys_platform == 'win32'",
+                "sys_platform == 'emscripten'",
+                "sys_platform != 'darwin' and sys_platform != 'emscripten' "
+                "and sys_platform != 'win32'",
+            ),
+        ),
     }
     active = next(record for record in torch_records if record["version"] == "2.13.0+cpu")
     assert active["source"] == {"registry": "https://download.pytorch.org/whl/cpu"}
@@ -462,6 +549,199 @@ def test_lock_binds_exact_windows_cpu_torch_and_has_no_accelerator_closure() -> 
     normalized_names = {record["name"].replace("_", "-").casefold() for record in packages}
     assert "triton" not in normalized_names
     assert not any(name.startswith(("nvidia-", "cuda-")) for name in normalized_names)
+
+
+def test_windows_lock_graph_partitions_full_universal_set_without_wasm_dependency() -> None:
+    full, active, inactive, binding = PACKAGE_SETS_FROM_LOCK(Path("uv.lock"))
+    lock = tomllib.loads(Path("uv.lock").read_text(encoding="utf-8"))
+    external_records = [record for record in lock["package"] if record["name"] != "medevidence"]
+
+    assert full.count == len(external_records)
+    assert active.count == full.count - inactive.count
+    assert inactive.items == ("httpx2-jsfetch==1.0", "torch==2.13.0")
+    assert set(active.items).isdisjoint(inactive.items)
+    assert set(active.items) | set(inactive.items) == set(full.items)
+    assert {"mcp==2.2.0", "streamlit==1.63.0", "uvicorn==0.52.4"} <= set(active.items)
+    assert {"cryptography==50.0.1", "filelock==3.32.0", "psycopg-binary==3.3.4"} <= set(
+        active.items
+    )
+    assert "torch==2.13.0+cpu" in active.items
+    assert binding["wheel_sha256"] == TORCH_BINDING["wheel_sha256"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "malformed_package_marker",
+        "ambiguous_package_marker",
+        "unknown_edge_marker",
+        "unreachable_gpu",
+        "ambiguous_active_version",
+        "jsfetch_hash_drift",
+    ),
+)
+def test_windows_lock_graph_rejects_bad_markers_and_unreachable_injected_packages(
+    tmp_path: Path, mutation: str
+) -> None:
+    text = Path("uv.lock").read_text(encoding="utf-8")
+    if mutation in {"malformed_package_marker", "ambiguous_package_marker"}:
+        prefix, separator, cpu = text.partition('name = "torch"\nversion = "2.13.0+cpu"')
+        assert separator
+        target = "\"sys_platform == 'emscripten'\","
+        replacement = (
+            "\"sys_platform = 'emscripten'\","
+            if mutation == "malformed_package_marker"
+            else "\"sys_platform == 'win32'\","
+        )
+        assert target in cpu
+        text = prefix + separator + cpu.replace(target, replacement, 1)
+    elif mutation == "unknown_edge_marker":
+        target = '{ name = "httpx2-jsfetch", marker = "sys_platform == \'emscripten\'" }'
+        assert target in text
+        text = text.replace(target, target.replace("sys_platform", "unknown_marker"), 1)
+    elif mutation == "unreachable_gpu":
+        text += (
+            '\n[[package]]\nname = "nvidia-cuda-runtime-cu12"\nversion = "1.0"\n'
+            'source = { registry = "https://pypi.org/simple" }\n'
+        )
+    elif mutation == "ambiguous_active_version":
+        text += (
+            '\n[[package]]\nname = "alembic"\nversion = "1.18.6"\n'
+            'source = { registry = "https://pypi.org/simple" }\n'
+        )
+    else:
+        original_hash = cast(str, DEPENDENCY_HELPER["INACTIVE_JSFETCH_WHEEL_SHA256"])
+        assert text.count(original_hash) == 1
+        text = text.replace(original_hash, "sha256:" + "0" * 64, 1)
+    path = tmp_path / "uv.lock"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError):
+        PACKAGE_SETS_FROM_LOCK(path)
+
+
+def _write_synthetic_jsfetch_wheel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_bytes: bytes,
+    *,
+    extra_members: tuple[tuple[str, bytes], ...] = (),
+) -> Path:
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("httpx2_jsfetch-1.0.dist-info/METADATA", metadata_bytes)
+        for name, payload in extra_members:
+            archive.writestr(name, payload)
+    wheel = tmp_path / "inactive-httpx2-jsfetch-1.0.whl"
+    wheel.write_bytes(raw.getvalue())
+    monkeypatch.setitem(DEPENDENCY_HELPER, "INACTIVE_JSFETCH_WHEEL_BYTES", len(raw.getvalue()))
+    monkeypatch.setitem(
+        DEPENDENCY_HELPER,
+        "INACTIVE_JSFETCH_WHEEL_SHA256",
+        "sha256:" + hashlib.sha256(raw.getvalue()).hexdigest(),
+    )
+    return wheel
+
+
+def test_inactive_wheel_license_is_recomputed_from_preserved_exact_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metadata = (
+        b"Metadata-Version: 2.4\nName: httpx2-jsfetch\nVersion: 1.0\n"
+        b"License-Expression: BSD-3-Clause\n"
+        b"Classifier: License :: OSI Approved :: BSD License\n\n"
+    )
+    wheel = _write_synthetic_jsfetch_wheel(tmp_path, monkeypatch, metadata)
+    assert LOCKED_JSFETCH_LICENSE_METADATA(wheel) == (
+        "BSD-3-Clause",
+        ("License :: OSI Approved :: BSD License",),
+    )
+    record = {
+        "name": "httpx2-jsfetch",
+        "version": "1.0",
+        "source_registry": "https://pypi.org/simple",
+        "reachability": "windows_inactive",
+        "metadata_source": "locked_registry_wheel",
+        "source_wheel_url": DEPENDENCY_HELPER["INACTIVE_JSFETCH_WHEEL_URL"],
+        "source_wheel_sha256": DEPENDENCY_HELPER["INACTIVE_JSFETCH_WHEEL_SHA256"],
+        "license_expression": "BSD-3-Clause",
+        "license_classifiers": ["License :: OSI Approved :: BSD License"],
+        "license_evidence_sha256": None,
+        "review_status": "declared",
+    }
+    path = tmp_path / "licenses.json"
+    path.write_text(json.dumps({"packages": [record]}), encoding="utf-8")
+    packages, counts = PACKAGES_FROM_LICENSES(path)
+    assert packages.items == ("httpx2-jsfetch==1.0",)
+    assert counts["declared"] == 1
+    record["license_expression"] = "MIT"
+    path.write_text(json.dumps({"packages": [record]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="preserved wheel metadata"):
+        PACKAGES_FROM_LICENSES(path)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "extra_members"),
+    (
+        (b"Name: other\nVersion: 1.0\nLicense-Expression: BSD-3-Clause\n\n", ()),
+        (b"Name: httpx2-jsfetch\nVersion: 2.0\nLicense-Expression: BSD-3-Clause\n\n", ()),
+        (b"VALID", (("../escape", b"x"),)),
+        (b"VALID", (("other.dist-info/METADATA", b"x"),)),
+        (b"OVERSIZE", ()),
+    ),
+)
+def test_inactive_wheel_rejects_wrong_identity_unsafe_zip_and_unbounded_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata: bytes,
+    extra_members: tuple[tuple[str, bytes], ...],
+) -> None:
+    oversize = metadata == b"OVERSIZE"
+    if metadata in {b"VALID", b"OVERSIZE"}:
+        metadata = b"Name: httpx2-jsfetch\nVersion: 1.0\nLicense-Expression: BSD-3-Clause\n\n"
+        if oversize:
+            metadata += b"a" * 131_073
+    wheel = _write_synthetic_jsfetch_wheel(
+        tmp_path, monkeypatch, metadata, extra_members=extra_members
+    )
+    with pytest.raises(ValueError):
+        LOCKED_JSFETCH_LICENSE_METADATA(wheel)
+
+
+@pytest.mark.parametrize("package", ("protobuf", "pydeck"))
+@pytest.mark.parametrize("mutation", ("license_file", "metadata_file", "version"))
+def test_exact_installed_license_fallback_rejects_file_metadata_and_version_drift(
+    tmp_path: Path, package: str, mutation: str
+) -> None:
+    original = distribution_metadata.distribution(package)
+    approved = cast(
+        dict[tuple[str, str], tuple[object, ...]],
+        DEPENDENCY_HELPER["EXACT_INSTALLED_LICENSE_FALLBACKS"],
+    )
+    version = original.version
+    license_relative = cast(str, approved[(package, version)][0])
+    target_relative = (
+        license_relative
+        if mutation == "license_file"
+        else f"{package}-{version}.dist-info/METADATA"
+    )
+    replacement = tmp_path / "mutated-evidence.bin"
+    if mutation != "version":
+        member = next(
+            item for item in original.files or [] if str(item).replace("\\", "/") == target_relative
+        )
+        replacement.write_bytes(Path(original.locate_file(member)).read_bytes() + b" ")
+    proxy = SimpleNamespace(
+        metadata=original.metadata,
+        version="0" if mutation == "version" else version,
+        files=original.files,
+        locate_file=lambda item: (
+            replacement
+            if mutation != "version" and str(item).replace("\\", "/") == target_relative
+            else original.locate_file(item)
+        ),
+    )
+    with pytest.raises(ValueError, match=r"identity drift|file bytes differ"):
+        DEPENDENCY_HELPER["exact_installed_license_fallback"](proxy, package, version)
 
 
 def test_numpy_2_5_1_spdx_expression_is_accepted_exactly() -> None:
@@ -918,7 +1198,7 @@ def _active_pip_records() -> tuple[Any, Any, Any, dict[str, str], list[dict[str,
     return lock, active, inactive, binding, records
 
 
-def test_audit_reconciliation_accounts_for_exact_105_plus_1_plus_1(
+def test_audit_reconciliation_accounts_for_active_fallback_and_full_inactive_set(
     tmp_path: Path,
 ) -> None:
     lock, active, inactive, binding, records = _active_pip_records()
@@ -936,11 +1216,12 @@ def test_audit_reconciliation_accounts_for_exact_105_plus_1_plus_1(
     assert vulnerability_count == 0
     assert skipped_count == 0
     assert counts == {
-        "pip_audit_pass": 105,
+        "pip_audit_pass": active.count - 1,
         "audited_via_exact_public_version_fallback": 1,
-        "marker_inactive_target_not_executable": 1,
+        "marker_inactive_target_not_executable": inactive.count,
     }
-    assert len(finalized) == 107
+    assert len(finalized) == lock.count
+    assert {f"{item['name']}=={item['version']}" for item in finalized} == set(lock.items)
     assert {
         (item["version"], item["disposition"]) for item in finalized if item["name"] == "torch"
     } == {
@@ -949,7 +1230,7 @@ def test_audit_reconciliation_accounts_for_exact_105_plus_1_plus_1(
     }
 
 
-def test_audit_reconciliation_without_fallback_accounts_for_exact_106_plus_1(
+def test_audit_reconciliation_without_fallback_accounts_for_full_lock(
     tmp_path: Path,
 ) -> None:
     lock, active, inactive, binding = PACKAGE_SETS_FROM_LOCK(Path("uv.lock"))
@@ -975,10 +1256,10 @@ def test_audit_reconciliation_without_fallback_accounts_for_exact_106_plus_1(
     assert skipped_count == 0
     assert fallback is None
     assert counts == {
-        "pip_audit_pass": 106,
-        "marker_inactive_target_not_executable": 1,
+        "pip_audit_pass": active.count,
+        "marker_inactive_target_not_executable": inactive.count,
     }
-    assert len(finalized) == 107
+    assert len(finalized) == lock.count
 
 
 @pytest.mark.parametrize("second_skip_name", ["torch", "alembic"])
@@ -1064,7 +1345,7 @@ class _FakeHttpsConnection:
         method: str,
         path: str,
         *,
-        body: bytes,
+        body: bytes = b"",
         headers: dict[str, str],
     ) -> None:
         self.requests.append((method, path, body, headers))
@@ -1140,6 +1421,65 @@ def test_hosted_ci_runs_one_exact_pip_audit_and_one_exact_osv_post(tmp_path: Pat
 
 def test_hosted_ci_preflight_proves_current_installed_cpu_torch_binding() -> None:
     CI_VALIDATE_INSTALLED_TORCH(Path.cwd())
+
+
+@pytest.mark.parametrize("mutation", ("marker", "wheel_hash"))
+def test_hosted_ci_torch_preflight_rejects_marker_or_cpu_wheel_drift(
+    tmp_path: Path, mutation: str
+) -> None:
+    text = Path("uv.lock").read_text(encoding="utf-8")
+    if mutation == "marker":
+        original = "\"sys_platform == 'emscripten'\","
+        prefix, separator, cpu = text.partition('name = "torch"\nversion = "2.13.0+cpu"')
+        assert separator and original in cpu
+        text = prefix + separator + cpu.replace(original, "\"sys_platform == 'win32'\",", 1)
+    else:
+        original = TORCH_BINDING["wheel_sha256"]
+        assert text.count(original) == 1
+        text = text.replace(original, "sha256:" + "0" * 64, 1)
+    (tmp_path / "uv.lock").write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError):
+        CI_VALIDATE_INSTALLED_TORCH(tmp_path)
+
+
+@pytest.mark.parametrize("response", (b"exact", b"wrong"))
+def test_hosted_ci_jsfetch_acquisition_is_one_bounded_hash_checked_get(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, response: bytes
+) -> None:
+    expected = b"exact"
+    original_hash = cast(str, CI_ADVISORY_PREFLIGHT["JSFETCH_SHA256"])
+    synthetic_hash = hashlib.sha256(expected).hexdigest()
+    lock_text = Path("uv.lock").read_text(encoding="utf-8")
+    assert lock_text.count(original_hash) == 1
+    lock_text = lock_text.replace(original_hash, synthetic_hash, 1)
+    assert lock_text.count("size = 6382") == 1
+    lock_text = lock_text.replace("size = 6382", f"size = {len(expected)}", 1)
+    (tmp_path / "uv.lock").write_text(lock_text, encoding="utf-8")
+    monkeypatch.setitem(CI_ADVISORY_PREFLIGHT, "JSFETCH_SHA256", synthetic_hash)
+    monkeypatch.setitem(CI_ADVISORY_PREFLIGHT, "JSFETCH_BYTES", len(expected))
+    connection = _FakeHttpsConnection(body=response)
+    wheel = tmp_path / "inactive-httpx2-jsfetch-1.0.whl"
+    if response == expected:
+        CI_ACQUIRE_JSFETCH_WHEEL(
+            tmp_path, wheel, connection_factory=lambda *args, **kwargs: connection
+        )
+        assert wheel.read_bytes() == expected
+    else:
+        with pytest.raises(ValueError, match="exact locked hash"):
+            CI_ACQUIRE_JSFETCH_WHEEL(
+                tmp_path, wheel, connection_factory=lambda *args, **kwargs: connection
+            )
+        assert not wheel.exists()
+    assert connection.connect_count == connection.close_count == 1
+    assert connection.sock.timeout == 30
+    assert connection.requests == [
+        (
+            "GET",
+            cast(str, CI_ADVISORY_PREFLIGHT["JSFETCH_PATH"]),
+            b"",
+            {"Accept-Encoding": "identity", "Connection": "close"},
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1245,7 +1585,9 @@ def test_dependency_workflow_binds_exact_fallback_for_pr_and_post_merge() -> Non
     ):
         assert workflow.count(parameter) == 1
     assert source.count('"pip-audit",') == 1
-    assert source.count("connection.request(") == 1
+    assert source.count("connection.request(") == 2
+    assert source.count('"POST",\n            OSV_PATH,') == 1
+    assert source.count('"GET",\n            JSFETCH_PATH,') == 1
     assert "urllib" not in source
     assert "retry" not in source.casefold().replace('"retry_count": 0', "")
     assert CI_ADVISORY_PREFLIGHT["OSV_URL"] == "https://api.osv.dev/v1/query"
@@ -1266,6 +1608,13 @@ def test_dependency_workflow_binds_exact_fallback_for_pr_and_post_merge() -> Non
 def test_unapproved_spdx_identifier_fails_closed() -> None:
     with pytest.raises(ValueError, match="outside the approved SPDX-expression grammar"):
         LICENSE_VALIDATOR("GPL-3.0-only")
+
+
+def test_exact_new_installed_spdx_declarations_are_allowed_without_open_ended_acceptance() -> None:
+    assert LICENSE_VALIDATOR("MIT-0") == "MIT-0"
+    assert LICENSE_VALIDATOR("MIT-CMU") == "MIT-CMU"
+    with pytest.raises(ValueError, match="outside the approved SPDX-expression grammar"):
+        LICENSE_VALIDATOR("MIT-CMU-rogue")
 
 
 def test_unapproved_spdx_identifier_in_and_expression_fails_closed() -> None:

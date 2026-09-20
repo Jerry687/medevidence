@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime
 from hashlib import sha256
 from typing import Protocol, TypedDict, cast
 from uuid import UUID
@@ -32,6 +33,36 @@ from medevidence.domain import (
     SourceOutcome,
     SourceType,
     canonical_json,
+    derive_identity,
+    sha256_digest,
+)
+from medevidence.domain.provenance import EvidenceProvenanceEnvelopeV1
+from medevidence.tools.provider_attempt_framing import (
+    PERSISTED_AUTHORITY_FIELDS,
+    V2_ONLY_LEDGER_COLUMNS,
+    ContentEncodingState,
+    ContentLengthState,
+    ContentTypeState,
+    FramingObservation,
+    HeaderOccurrence,
+    HeaderSurfaceState,
+    HttpVersionState,
+    NormalizedHeaderFacts,
+    Observation,
+    RawEvidenceState,
+    TransferEncodingState,
+    UnavailableObservation,
+    build_framing_observation,
+    build_unavailable_observation,
+    canonical_fact_free_v2_event_projection,
+    canonical_observation_projection,
+    fact_free_v2_event_matches,
+    framing_contract_identity,
+    legacy_v2_raw_projection,
+    projection_matches,
+    provider_raw_relative_path_is_canonical,
+    reconstruct_normalized_headers,
+    v2_event_metadata_matches,
 )
 
 from . import models
@@ -43,6 +74,9 @@ logger = logging.getLogger(__name__)
 PUBLICATION_BYTE_CAPACITY = 31_457_280
 _VALIDATION_RECEIPT_MARKER = "M3_VALIDATION_RECEIPT_V1"
 _VALIDATION_RECEIPT_ID = re.compile(r"validation-receipt:sha256:[0-9a-f]{64}")
+_VALIDATION_RECEIPT_V2_ID = re.compile(r"validation-receipt-v2:sha256:[0-9a-f]{64}")
+_VALIDATION_STAGE1_RECEIPT_ID = re.compile(r"validation-stage1-receipt-v2:sha256:[0-9a-f]{64}")
+_VALIDATION_SCOPE_ID = re.compile(r"scope:sha256:[0-9a-f]{64}")
 _VALIDATION_STAGE1_ID = re.compile(r"validation-stage1-result:sha256:[0-9a-f]{64}")
 _VALIDATION_RUN_ID = re.compile(
     r"run:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -67,6 +101,39 @@ _VALIDATION_RECEIPT_KEYS = frozenset(
         "semantic_passed",
         "safety_passed",
         "reason_codes",
+        "policy_version",
+        "configuration_version",
+    }
+)
+_VALIDATION_RECEIPT_V2_KEYS = _VALIDATION_RECEIPT_KEYS | frozenset(
+    {
+        "semantic_contract",
+        "semantic_contract_version",
+        "semantic_contract_hash",
+        "semantic_configuration_hash",
+        "provider_configuration_version",
+        "provider_configuration_hash",
+        "routing_policy_version",
+        "routing_policy_hash",
+        "routing_matrix_hash",
+    }
+)
+_VALIDATION_STAGE1_RECEIPT_KEYS = frozenset(
+    {
+        "marker",
+        "stage1_passed",
+        "receipt_id",
+        "receipt_content_hash",
+        "run_id",
+        "scope_id",
+        "report_id",
+        "report_content_hash",
+        "validation_input_hash",
+        "registry_binding_hash",
+        "task_binding_hash",
+        "stage1_result_id",
+        "claim_result_ids",
+        "citation_ids",
         "policy_version",
         "configuration_version",
     }
@@ -316,6 +383,38 @@ class RegistrationObservationRow(RegistrationObservationInput):
 
 
 @dataclass(frozen=True, slots=True)
+class M1BRunLifecycle:
+    """Exact monotonic M1B run row used before source execution."""
+
+    run_id: str
+    request_id: str
+    scope_id: str
+    status: str
+    created_at_utc: datetime
+    completed_at_utc: datetime | None
+    schema_version: str = "m1b.run.v1"
+
+
+@dataclass(frozen=True, slots=True)
+class M1BAcquisitionLifecycle:
+    """Exact M1B acquisition intent row with one nullable completion time."""
+
+    acquisition_intent_id: str
+    acquisition_ordinal: int
+    attempt_id: str
+    run_id: str
+    acquisition_id: str
+    source: str
+    operation: str
+    request_identity: str
+    query_id: str
+    execution_profile_id: str
+    started_at_utc: datetime
+    completed_at_utc: datetime | None
+    schema_version: str
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedManifestFile:
     """One canonical manifest file entry validated before persistence."""
 
@@ -492,6 +591,64 @@ class PersistenceIntegrityError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class M1BSourceParentBinding:
+    artifact_id: str
+    content_hash: str
+    byte_size: int
+    relative_path: str
+    artifact_kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class DailyMedEvidenceBinding:
+    run_id: str
+    acquisition_id: str
+    acquisition_intent_id: str
+    attempt_id: str
+    query_id: str
+    source_outcome_id: str
+    snapshot_id: str
+    retrieved_at_utc: datetime
+    connector_version: str
+    manifest: M1BSourceParentBinding
+    raw: M1BSourceParentBinding
+    stable_spl: M1BSourceParentBinding
+    setid: str
+    spl_version: int
+    label_version_id: str
+    section_id: str
+    section_code: str
+    xml_path: str
+    text_start: int
+    text_end: int
+    text_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class FaersEvidenceBinding:
+    run_id: str
+    acquisition_id: str
+    acquisition_intent_id: str
+    attempt_id: str
+    query_id: str
+    source_outcome_id: str
+    snapshot_id: str
+    retrieved_at_utc: datetime
+    connector_version: str
+    manifest: M1BSourceParentBinding
+    raw: M1BSourceParentBinding
+    execution_profile_id: str
+    ast_schema_version: str
+    serializer_version: str
+    bucket_ordinal: int
+    reaction_pt: str
+    report_count: int
+    statistical_unit: str
+    identity_stratum: str
+    role_policy: str
+
+
+@dataclass(frozen=True, slots=True)
 class _TableSpec:
     table: Table
     identity_columns: tuple[str, ...]
@@ -620,6 +777,36 @@ _SPECS = {
             exclude=frozenset({"persisted_at_utc"}),
         ),
         1_000,
+    ),
+    "m3_stage1_receipts": _TableSpec(
+        models.m3_stage1_receipts,
+        ("receipt_id",),
+        _columns(models.m3_stage1_receipts, exclude=frozenset({"persisted_at_utc"})),
+        1_000,
+    ),
+    "m3_report_documents": _TableSpec(
+        models.m3_report_documents,
+        ("document_id",),
+        _columns(models.m3_report_documents, exclude=frozenset({"persisted_at_utc"})),
+        1_000,
+    ),
+    "m3_pending_drafts": _TableSpec(
+        models.m3_pending_drafts,
+        ("persistence_id",),
+        _columns(models.m3_pending_drafts, exclude=frozenset({"persisted_at_utc"})),
+        1_000,
+    ),
+    "m3_review_records": _TableSpec(
+        models.m3_review_records,
+        ("review_id",),
+        _columns(models.m3_review_records, exclude=frozenset({"persisted_at_utc"})),
+        1_000,
+    ),
+    "m3_evidence_provenance": _TableSpec(
+        models.m3_evidence_provenance,
+        ("run_id", "evidence_id"),
+        _columns(models.m3_evidence_provenance, exclude=frozenset({"persisted_at_utc"})),
+        2_000,
     ),
 }
 
@@ -790,7 +977,8 @@ class PersistenceRepository:
         receipt_payload: Mapping[str, object],
     ) -> dict[str, object]:
         source = dict(receipt_payload)
-        if set(source) != _VALIDATION_RECEIPT_KEYS:
+        is_v2 = source.get("marker") == "M3_VALIDATION_RECEIPT_V2"
+        if set(source) != (_VALIDATION_RECEIPT_V2_KEYS if is_v2 else _VALIDATION_RECEIPT_KEYS):
             raise ValueError("validation receipt payload must contain the exact top-level keys")
         budget = [_VALIDATION_RECEIPT_MAX_JSON_NODES]
 
@@ -823,9 +1011,12 @@ class PersistenceRepository:
                 raise ValueError(f"validation receipt {name} is invalid")
             return value
 
-        if copied["marker"] != _VALIDATION_RECEIPT_MARKER:
+        if copied["marker"] not in (
+            _VALIDATION_RECEIPT_MARKER,
+            "M3_VALIDATION_RECEIPT_V2",
+        ):
             raise ValueError("validation receipt marker is unsupported")
-        text("receipt_id", _VALIDATION_RECEIPT_ID)
+        text("receipt_id", _VALIDATION_RECEIPT_V2_ID if is_v2 else _VALIDATION_RECEIPT_ID)
         text("receipt_content_hash", _SHA256_DIGEST)
         text("run_id", _VALIDATION_RUN_ID)
         text("report_id", _VALIDATION_REPORT_ID)
@@ -854,6 +1045,16 @@ class PersistenceRepository:
             raise ValueError("validation receipt claim cardinality exceeds 200")
         if len(canonical_json(copied).encode("utf-8")) > _VALIDATION_RECEIPT_MAX_CANONICAL_BYTES:
             raise ValueError("validation receipt payload exceeds 4,194,304 canonical bytes")
+        if is_v2:
+            content = {
+                name: value
+                for name, value in copied.items()
+                if name not in ("receipt_id", "receipt_content_hash")
+            }
+            if copied["receipt_content_hash"] != sha256_digest(canonical_json(content)):
+                raise ValueError("validation receipt V2 content hash is invalid")
+            if copied["receipt_id"] != derive_identity("validation-receipt-v2", content):
+                raise ValueError("validation receipt V2 identity is invalid")
         return copied
 
     @staticmethod
@@ -915,7 +1116,10 @@ class PersistenceRepository:
     def load_receipt(self, receipt_id: str) -> dict[str, object] | None:
         """Load one bounded immutable M3 validation receipt payload."""
 
-        if type(receipt_id) is not str or _VALIDATION_RECEIPT_ID.fullmatch(receipt_id) is None:
+        if type(receipt_id) is not str or not (
+            _VALIDATION_RECEIPT_ID.fullmatch(receipt_id)
+            or _VALIDATION_RECEIPT_V2_ID.fullmatch(receipt_id)
+        ):
             raise ValueError("receipt_id must be an exact validation-receipt identity")
         with self._engine.connect() as connection:
             row = (
@@ -930,6 +1134,665 @@ class PersistenceRepository:
         if row is None:
             return None
         return self._receipt_payload_from_persisted_row(dict(row))
+
+    def insert_or_verify_evidence_provenance(
+        self, envelope: EvidenceProvenanceEnvelopeV1
+    ) -> dict[str, object]:
+        """Anchor one exact published envelope without permitting identity replacement."""
+
+        if type(envelope) is not EvidenceProvenanceEnvelopeV1:
+            raise TypeError("evidence provenance requires an exact envelope")
+        copied = EvidenceProvenanceEnvelopeV1.from_canonical_bytes(envelope.canonical_bytes())
+        if copied != envelope:
+            raise ValueError("evidence provenance envelope identity differs")
+        digest = copied.envelope_hash.removeprefix("sha256:")
+        values: dict[str, object] = {
+            "run_id": copied.run_id,
+            "evidence_id": copied.evidence_id,
+            "source": copied.source.value,
+            "snapshot_id": copied.snapshot_id,
+            "envelope_id": copied.envelope_id,
+            "envelope_hash": copied.envelope_hash,
+            "relative_path": f"m3/evidence-provenance/{digest[:2]}/{digest}.json",
+            "byte_size": len(copied.canonical_bytes()),
+        }
+        with self._engine.begin() as connection:
+            stored = self._insert_or_verify(
+                connection,
+                _SPECS["m3_evidence_provenance"],
+                values,
+                method="insert_or_verify_evidence_provenance",
+            )
+        return {name: stored[name] for name in values}
+
+    def get_evidence_provenance_anchor(
+        self, *, run_id: str, evidence_id: str
+    ) -> dict[str, object] | None:
+        """Read one bounded insert-only anchor by its exact run/evidence key."""
+
+        if (
+            re.fullmatch(
+                r"run:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                run_id,
+            )
+            is None
+            or re.fullmatch(r"evidence:sha256:[0-9a-f]{64}", evidence_id) is None
+        ):
+            raise ValueError("invalid evidence provenance lookup identity")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m3_evidence_provenance).where(
+                        models.m3_evidence_provenance.c.run_id == run_id,
+                        models.m3_evidence_provenance.c.evidence_id == evidence_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return None if row is None else dict(row)
+
+    @staticmethod
+    def _m1b_parent_from_rows(
+        artifact: Mapping[str, object], member: Mapping[str, object] | None = None
+    ) -> M1BSourceParentBinding:
+        try:
+            if member is not None and (
+                member["artifact_id"] != artifact["artifact_id"]
+                or member["content_hash"] != artifact["content_hash"]
+                or member["artifact_kind"] != artifact["artifact_kind"]
+                or member["body_complete"] is not True
+                or member["termination_reason"] != "complete_response"
+            ):
+                raise ValueError("source artifact membership drift")
+            result = M1BSourceParentBinding(
+                artifact_id=cast(str, artifact["content_hash"]),
+                content_hash=cast(str, artifact["content_hash"]),
+                byte_size=cast(int, artifact["byte_size"]),
+                relative_path=cast(str, artifact["relative_storage_label"]),
+                artifact_kind=cast(str, artifact["artifact_kind"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise PersistenceIntegrityError("stored source parent binding is invalid") from error
+        if (
+            _SHA256_DIGEST.fullmatch(result.content_hash) is None
+            or not 1 <= result.byte_size <= 5_242_880
+            or not result.relative_path
+        ):
+            raise PersistenceIntegrityError("stored source parent identity is invalid")
+        return result
+
+    def get_dailymed_evidence_binding(
+        self,
+        *,
+        run_id: str,
+        acquisition_id: str,
+        query_id: str,
+        source_outcome_id: str,
+        snapshot_id: str,
+        label_version_id: str,
+        section_id: str,
+    ) -> DailyMedEvidenceBinding | None:
+        """Read one exact DailyMed section and its immutable source parents."""
+
+        for value in (
+            run_id,
+            acquisition_id,
+            query_id,
+            source_outcome_id,
+            snapshot_id,
+            label_version_id,
+            section_id,
+        ):
+            if type(value) is not str or not 1 <= len(value) <= 160:
+                raise ValueError("DailyMed evidence lookup identity is invalid")
+
+        with self._engine.connect() as connection:
+            acquisition = (
+                connection.execute(
+                    sa.select(models.m1b_acquisitions).where(
+                        models.m1b_acquisitions.c.run_id == run_id,
+                        models.m1b_acquisitions.c.source == "dailymed",
+                        models.m1b_acquisitions.c.operation == "fetch",
+                        models.m1b_acquisitions.c.acquisition_id == acquisition_id,
+                        models.m1b_acquisitions.c.query_id == query_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            snapshot = (
+                connection.execute(
+                    sa.select(models.m1b_snapshots).where(
+                        models.m1b_snapshots.c.run_id == run_id,
+                        models.m1b_snapshots.c.source == "dailymed",
+                        models.m1b_snapshots.c.acquisition_id == acquisition_id,
+                        models.m1b_snapshots.c.query_id == query_id,
+                        models.m1b_snapshots.c.snapshot_id == snapshot_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if acquisition is None or snapshot is None:
+                return None
+            outcome = (
+                connection.execute(
+                    sa.select(models.m1b_source_outcomes).where(
+                        models.m1b_source_outcomes.c.run_id == run_id,
+                        models.m1b_source_outcomes.c.source == "dailymed",
+                        models.m1b_source_outcomes.c.acquisition_id == acquisition_id,
+                        models.m1b_source_outcomes.c.query_id == query_id,
+                        models.m1b_source_outcomes.c.source_outcome_id == source_outcome_id,
+                        models.m1b_source_outcomes.c.snapshot_id == snapshot_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if outcome is None:
+                return None
+            section = (
+                connection.execute(
+                    sa.select(models.m1b_dailymed_sections).where(
+                        models.m1b_dailymed_sections.c.source == "dailymed",
+                        models.m1b_dailymed_sections.c.label_version_id == label_version_id,
+                        models.m1b_dailymed_sections.c.section_id == section_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if section is None:
+                return None
+            version = (
+                connection.execute(
+                    sa.select(models.m1b_dailymed_label_versions).where(
+                        models.m1b_dailymed_label_versions.c.source == "dailymed",
+                        models.m1b_dailymed_label_versions.c.setid == section["setid"],
+                        models.m1b_dailymed_label_versions.c.label_version_id == label_version_id,
+                        models.m1b_dailymed_label_versions.c.spl_version == section["spl_version"],
+                        models.m1b_dailymed_label_versions.c.spl_artifact_id
+                        == section["spl_artifact_id"],
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            members = (
+                connection.execute(
+                    sa.select(models.m1b_snapshot_artifacts).where(
+                        models.m1b_snapshot_artifacts.c.run_id == run_id,
+                        models.m1b_snapshot_artifacts.c.source == "dailymed",
+                        models.m1b_snapshot_artifacts.c.acquisition_id == acquisition_id,
+                        models.m1b_snapshot_artifacts.c.snapshot_id == snapshot_id,
+                        models.m1b_snapshot_artifacts.c.artifact_kind == "dailymed_http_response",
+                        models.m1b_snapshot_artifacts.c.body_complete.is_(True),
+                        models.m1b_snapshot_artifacts.c.termination_reason == "complete_response",
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if version is None or len(members) != 1:
+                raise PersistenceIntegrityError("DailyMed source parent graph is incomplete")
+            raw_artifact = (
+                connection.execute(
+                    sa.select(models.m1b_artifacts).where(
+                        models.m1b_artifacts.c.artifact_id == members[0]["artifact_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            manifest_artifact = (
+                connection.execute(
+                    sa.select(models.m1b_artifacts).where(
+                        models.m1b_artifacts.c.artifact_id == snapshot["manifest_artifact_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            spl_artifact = (
+                connection.execute(
+                    sa.select(models.m1b_artifacts).where(
+                        models.m1b_artifacts.c.artifact_id == version["spl_artifact_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if raw_artifact is None or manifest_artifact is None or spl_artifact is None:
+            raise PersistenceIntegrityError("DailyMed artifact graph is incomplete")
+        manifest_parent = self._m1b_parent_from_rows(dict(manifest_artifact))
+        raw_parent = self._m1b_parent_from_rows(dict(raw_artifact), dict(members[0]))
+        stable_parent = self._m1b_parent_from_rows(dict(spl_artifact))
+        if (
+            "manifest" not in manifest_parent.artifact_kind
+            or raw_parent.artifact_kind != "dailymed_http_response"
+            or stable_parent.artifact_kind != "dailymed_spl_xml"
+        ):
+            raise PersistenceIntegrityError("DailyMed artifact kind graph is invalid")
+        return DailyMedEvidenceBinding(
+            run_id=run_id,
+            acquisition_id=acquisition_id,
+            acquisition_intent_id=cast(str, acquisition["acquisition_intent_id"]),
+            attempt_id=cast(str, acquisition["attempt_id"]),
+            query_id=query_id,
+            source_outcome_id=source_outcome_id,
+            snapshot_id=snapshot_id,
+            retrieved_at_utc=cast(datetime, snapshot["retrieved_at_utc"]),
+            connector_version=cast(str, snapshot["connector_version"]),
+            manifest=manifest_parent,
+            raw=raw_parent,
+            stable_spl=stable_parent,
+            setid=str(section["setid"]),
+            spl_version=cast(int, section["spl_version"]),
+            label_version_id=label_version_id,
+            section_id=section_id,
+            section_code=cast(str, section["section_code"]),
+            xml_path=cast(str, section["xml_path"]),
+            text_start=cast(int, section["text_start"]),
+            text_end=cast(int, section["text_end"]),
+            text_hash=cast(str, section["text_hash"]),
+        )
+
+    def get_faers_evidence_binding(
+        self,
+        *,
+        run_id: str,
+        acquisition_id: str,
+        query_id: str,
+        source_outcome_id: str,
+        snapshot_id: str,
+        bucket_ordinal: int,
+    ) -> FaersEvidenceBinding | None:
+        """Read one exact FAERS bucket and its immutable source parents."""
+
+        for value in (run_id, acquisition_id, query_id, source_outcome_id, snapshot_id):
+            if type(value) is not str or not 1 <= len(value) <= 160:
+                raise ValueError("FAERS evidence lookup identity is invalid")
+        if type(bucket_ordinal) is not int or not 0 <= bucket_ordinal < 100:
+            raise ValueError("FAERS evidence bucket ordinal is invalid")
+
+        with self._engine.connect() as connection:
+            acquisition = (
+                connection.execute(
+                    sa.select(models.m1b_acquisitions).where(
+                        models.m1b_acquisitions.c.run_id == run_id,
+                        models.m1b_acquisitions.c.source == "faers",
+                        models.m1b_acquisitions.c.acquisition_id == acquisition_id,
+                        models.m1b_acquisitions.c.query_id == query_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            snapshot = (
+                connection.execute(
+                    sa.select(models.m1b_snapshots).where(
+                        models.m1b_snapshots.c.run_id == run_id,
+                        models.m1b_snapshots.c.source == "faers",
+                        models.m1b_snapshots.c.acquisition_id == acquisition_id,
+                        models.m1b_snapshots.c.query_id == query_id,
+                        models.m1b_snapshots.c.snapshot_id == snapshot_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            query = (
+                connection.execute(
+                    sa.select(models.m1b_faers_queries).where(
+                        models.m1b_faers_queries.c.run_id == run_id,
+                        models.m1b_faers_queries.c.acquisition_id == acquisition_id,
+                        models.m1b_faers_queries.c.query_id == query_id,
+                        models.m1b_faers_queries.c.snapshot_id == snapshot_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            outcome = (
+                connection.execute(
+                    sa.select(models.m1b_source_outcomes).where(
+                        models.m1b_source_outcomes.c.run_id == run_id,
+                        models.m1b_source_outcomes.c.source == "faers",
+                        models.m1b_source_outcomes.c.acquisition_id == acquisition_id,
+                        models.m1b_source_outcomes.c.query_id == query_id,
+                        models.m1b_source_outcomes.c.source_outcome_id == source_outcome_id,
+                        models.m1b_source_outcomes.c.snapshot_id == snapshot_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            bucket = (
+                connection.execute(
+                    sa.select(models.m1b_faers_buckets).where(
+                        models.m1b_faers_buckets.c.run_id == run_id,
+                        models.m1b_faers_buckets.c.acquisition_id == acquisition_id,
+                        models.m1b_faers_buckets.c.query_id == query_id,
+                        models.m1b_faers_buckets.c.bucket_ordinal == bucket_ordinal,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                acquisition is None
+                or snapshot is None
+                or query is None
+                or outcome is None
+                or bucket is None
+            ):
+                return None
+            members = (
+                connection.execute(
+                    sa.select(models.m1b_snapshot_artifacts).where(
+                        models.m1b_snapshot_artifacts.c.run_id == run_id,
+                        models.m1b_snapshot_artifacts.c.source == "faers",
+                        models.m1b_snapshot_artifacts.c.acquisition_id == acquisition_id,
+                        models.m1b_snapshot_artifacts.c.snapshot_id == snapshot_id,
+                        models.m1b_snapshot_artifacts.c.artifact_kind == "faers_http_response",
+                        models.m1b_snapshot_artifacts.c.body_complete.is_(True),
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if len(members) != 1:
+                raise PersistenceIntegrityError("FAERS source parent graph is incomplete")
+            raw_artifact = (
+                connection.execute(
+                    sa.select(models.m1b_artifacts).where(
+                        models.m1b_artifacts.c.artifact_id == members[0]["artifact_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            manifest_artifact = (
+                connection.execute(
+                    sa.select(models.m1b_artifacts).where(
+                        models.m1b_artifacts.c.artifact_id == snapshot["manifest_artifact_id"]
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if raw_artifact is None or manifest_artifact is None:
+            raise PersistenceIntegrityError("FAERS artifact graph is incomplete")
+        manifest_parent = self._m1b_parent_from_rows(dict(manifest_artifact))
+        raw_parent = self._m1b_parent_from_rows(dict(raw_artifact), dict(members[0]))
+        if (
+            "manifest" not in manifest_parent.artifact_kind
+            or raw_parent.artifact_kind != "faers_http_response"
+        ):
+            raise PersistenceIntegrityError("FAERS artifact kind graph is invalid")
+        return FaersEvidenceBinding(
+            run_id=run_id,
+            acquisition_id=acquisition_id,
+            acquisition_intent_id=cast(str, acquisition["acquisition_intent_id"]),
+            attempt_id=cast(str, acquisition["attempt_id"]),
+            query_id=query_id,
+            source_outcome_id=source_outcome_id,
+            snapshot_id=snapshot_id,
+            retrieved_at_utc=cast(datetime, query["retrieved_at_utc"]),
+            connector_version=cast(str, snapshot["connector_version"]),
+            manifest=manifest_parent,
+            raw=raw_parent,
+            execution_profile_id=cast(str, query["execution_profile_id"]),
+            ast_schema_version=cast(str, query["ast_schema_version"]),
+            serializer_version=cast(str, query["serializer_version"]),
+            bucket_ordinal=bucket_ordinal,
+            reaction_pt=cast(str, bucket["reaction_pt"]),
+            report_count=cast(int, bucket["report_count"]),
+            statistical_unit=cast(str, bucket["statistical_unit"]),
+            identity_stratum=cast(str, bucket["identity_stratum"]),
+            role_policy=cast(str, bucket["role_policy"]),
+        )
+
+    def load_m1b_faers_terminal_rows(
+        self,
+        *,
+        run_id: str,
+        acquisition_id: str,
+        query_id: str,
+        snapshot_id: str,
+        source_outcome_id: str,
+    ) -> dict[str, object] | None:
+        """Read bounded exact FAERS terminal rows, including zero-bucket outcomes."""
+
+        for value in (run_id, acquisition_id, query_id, snapshot_id, source_outcome_id):
+            if type(value) is not str or not 1 <= len(value) <= 160:
+                raise ValueError("FAERS terminal lookup identity is invalid")
+        with self._engine.connect() as connection:
+            acquisition = (
+                connection.execute(
+                    sa.select(models.m1b_acquisitions).where(
+                        models.m1b_acquisitions.c.run_id == run_id,
+                        models.m1b_acquisitions.c.source == "faers",
+                        models.m1b_acquisitions.c.acquisition_id == acquisition_id,
+                        models.m1b_acquisitions.c.query_id == query_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            snapshot = (
+                connection.execute(
+                    sa.select(models.m1b_snapshots).where(
+                        models.m1b_snapshots.c.run_id == run_id,
+                        models.m1b_snapshots.c.source == "faers",
+                        models.m1b_snapshots.c.acquisition_id == acquisition_id,
+                        models.m1b_snapshots.c.query_id == query_id,
+                        models.m1b_snapshots.c.snapshot_id == snapshot_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            outcome = (
+                connection.execute(
+                    sa.select(models.m1b_source_outcomes).where(
+                        models.m1b_source_outcomes.c.run_id == run_id,
+                        models.m1b_source_outcomes.c.source == "faers",
+                        models.m1b_source_outcomes.c.acquisition_id == acquisition_id,
+                        models.m1b_source_outcomes.c.query_id == query_id,
+                        models.m1b_source_outcomes.c.snapshot_id == snapshot_id,
+                        models.m1b_source_outcomes.c.source_outcome_id == source_outcome_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            query = (
+                connection.execute(
+                    sa.select(models.m1b_faers_queries).where(
+                        models.m1b_faers_queries.c.run_id == run_id,
+                        models.m1b_faers_queries.c.acquisition_id == acquisition_id,
+                        models.m1b_faers_queries.c.query_id == query_id,
+                        models.m1b_faers_queries.c.snapshot_id == snapshot_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            members = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(models.m1b_snapshot_artifacts)
+                    .where(
+                        models.m1b_snapshot_artifacts.c.run_id == run_id,
+                        models.m1b_snapshot_artifacts.c.source == "faers",
+                        models.m1b_snapshot_artifacts.c.acquisition_id == acquisition_id,
+                        models.m1b_snapshot_artifacts.c.snapshot_id == snapshot_id,
+                    )
+                    .order_by(models.m1b_snapshot_artifacts.c.ordinal)
+                    .limit(3)
+                ).mappings()
+            )
+            buckets = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(models.m1b_faers_buckets)
+                    .where(
+                        models.m1b_faers_buckets.c.run_id == run_id,
+                        models.m1b_faers_buckets.c.acquisition_id == acquisition_id,
+                        models.m1b_faers_buckets.c.query_id == query_id,
+                    )
+                    .order_by(models.m1b_faers_buckets.c.bucket_ordinal)
+                    .limit(101)
+                ).mappings()
+            )
+        if acquisition is None or snapshot is None or outcome is None or query is None:
+            return None
+        if len(members) > 2 or len(buckets) > 100:
+            raise PersistenceIntegrityError("FAERS terminal rows exceed the closed bounds")
+        return {
+            "acquisition": dict(acquisition),
+            "snapshot": dict(snapshot),
+            "outcome": dict(outcome),
+            "query": dict(query),
+            "members": members,
+            "buckets": buckets,
+        }
+
+    @staticmethod
+    def _stage1_receipt_values(receipt_payload: Mapping[str, object]) -> dict[str, object]:
+        """Bound and project Stage-1 JSON; outer adapters own canonical parsing."""
+
+        if (
+            type(receipt_payload) is not dict
+            or set(receipt_payload) != _VALIDATION_STAGE1_RECEIPT_KEYS
+        ):
+            raise ValueError("stage1 receipt payload must have exact keys")
+        payload = dict(receipt_payload)
+        for name in _VALIDATION_STAGE1_RECEIPT_KEYS - {
+            "stage1_passed",
+            "claim_result_ids",
+            "citation_ids",
+        }:
+            value = payload[name]
+            if type(value) is not str or not value.strip() or len(value) > 512:
+                raise ValueError(f"stage1 receipt {name} is invalid")
+        if payload["marker"] != "M3_STAGE1_VALIDATION_RECEIPT_V2":
+            raise ValueError("stage1 receipt marker is invalid")
+        if type(payload["stage1_passed"]) is not bool or payload["stage1_passed"] is not True:
+            raise ValueError("stage1 receipt requires a passing Stage-1 result")
+        claims, citations = payload["claim_result_ids"], payload["citation_ids"]
+        if type(claims) not in (tuple, list) or len(claims) > 200:
+            raise ValueError("stage1 receipt claims are invalid")
+        if type(citations) not in (tuple, list) or len(citations) > 400:
+            raise ValueError("stage1 receipt citations are invalid")
+        for item in claims:
+            if (
+                type(item) not in (tuple, list)
+                or len(item) != 2
+                or any(type(part) is not str or not part or len(part) > 512 for part in item)
+            ):
+                raise ValueError("stage1 receipt claim binding is invalid")
+        if any(type(item) is not str or not item or len(item) > 512 for item in citations):
+            raise ValueError("stage1 receipt citation binding is invalid")
+        payload = json.loads(canonical_json(payload))
+        if len(canonical_json(payload).encode("utf-8")) > _VALIDATION_RECEIPT_MAX_CANONICAL_BYTES:
+            raise ValueError("stage1 receipt payload exceeds 4,194,304 canonical bytes")
+        if (
+            _VALIDATION_STAGE1_RECEIPT_ID.fullmatch(payload["receipt_id"]) is None
+            or _VALIDATION_RUN_ID.fullmatch(payload["run_id"]) is None
+            or _VALIDATION_SCOPE_ID.fullmatch(payload["scope_id"]) is None
+            or _VALIDATION_REPORT_ID.fullmatch(payload["report_id"]) is None
+            or _VALIDATION_STAGE1_ID.fullmatch(payload["stage1_result_id"]) is None
+        ):
+            raise ValueError("stage1 receipt projected identity is invalid")
+        for name in (
+            "receipt_content_hash",
+            "report_content_hash",
+            "validation_input_hash",
+            "registry_binding_hash",
+            "task_binding_hash",
+        ):
+            if _SHA256_DIGEST.fullmatch(payload[name]) is None:
+                raise ValueError(f"stage1 receipt {name} is invalid")
+        content = {
+            name: value
+            for name, value in payload.items()
+            if name not in ("receipt_id", "receipt_content_hash")
+        }
+        if payload["receipt_content_hash"] != sha256_digest(canonical_json(content)) or payload[
+            "receipt_id"
+        ] != derive_identity("validation-stage1-receipt-v2", content):
+            raise ValueError("stage1 receipt content identity is invalid")
+        return {
+            "receipt_id": payload["receipt_id"],
+            "schema_version": payload["marker"],
+            "receipt_content_hash": payload["receipt_content_hash"],
+            "run_id": payload["run_id"],
+            "scope_id": payload["scope_id"],
+            "report_id": payload["report_id"],
+            "report_content_hash": payload["report_content_hash"],
+            "validation_input_hash": payload["validation_input_hash"],
+            "registry_binding_hash": payload["registry_binding_hash"],
+            "task_binding_hash": payload["task_binding_hash"],
+            "stage1_result_id": payload["stage1_result_id"],
+            "policy_version": payload["policy_version"],
+            "configuration_version": payload["configuration_version"],
+            "receipt_payload": payload,
+        }
+
+    @staticmethod
+    def _stage1_payload_from_persisted_row(row: Mapping[str, object]) -> dict[str, object]:
+        try:
+            raw = row["receipt_payload"]
+            if type(raw) is not dict:
+                raise ValueError("stored stage1 receipt payload is not a JSON object")
+            expected = PersistenceRepository._stage1_receipt_values(raw)
+        except (KeyError, TypeError, ValueError) as error:
+            raise PersistenceIntegrityError(
+                "stored stage1 receipt violates canonical contract"
+            ) from error
+        if not all(
+            _normalize(row.get(name)) == _normalize(value) for name, value in expected.items()
+        ):
+            raise PersistenceIntegrityError("stored stage1 receipt projections differ from payload")
+        return cast(dict[str, object], expected["receipt_payload"])
+
+    def save_stage1_receipt(self, receipt_payload: Mapping[str, object]) -> dict[str, object]:
+        """Insert a Stage-1 receipt or verify an exact immutable replay."""
+
+        values = self._stage1_receipt_values(receipt_payload)
+        with self._engine.begin() as connection:
+            stored = self._insert_or_verify(
+                connection,
+                _SPECS["m3_stage1_receipts"],
+                values,
+                method="save_stage1_receipt",
+            )
+        return self._stage1_payload_from_persisted_row(stored)
+
+    def load_stage1_receipt(self, receipt_id: str) -> dict[str, object] | None:
+        """Reload and verify a durable Stage-1 receipt by exact identity."""
+
+        if (
+            type(receipt_id) is not str
+            or _VALIDATION_STAGE1_RECEIPT_ID.fullmatch(receipt_id) is None
+        ):
+            raise ValueError("receipt_id must be an exact stage1-receipt identity")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m3_stage1_receipts).where(
+                        models.m3_stage1_receipts.c.receipt_id == receipt_id
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return None
+        return self._stage1_payload_from_persisted_row(dict(row))
 
     def insert_or_verify_artifact(self, artifact: ArtifactRow) -> ArtifactRow:
         """Insert immutable artifact metadata or verify an identical replay."""
@@ -964,6 +1827,292 @@ class PersistenceRepository:
         self._validate_m1b_row(table_name, values)
         with self._engine.begin() as connection:
             return self._insert_or_verify_m1b_connection(connection, table_name, table, values)
+
+    @staticmethod
+    def _exact_lifecycle_time(value: datetime, name: str) -> None:
+        if (
+            type(value) is not datetime
+            or value.tzinfo is None
+            or value.utcoffset() != UTC.utcoffset(value)
+        ):
+            raise ValueError(f"{name} must be an exact timezone-aware UTC datetime")
+
+    @staticmethod
+    def _run_lifecycle_values(value: M1BRunLifecycle) -> dict[str, object]:
+        if type(value) is not M1BRunLifecycle:
+            raise TypeError("M1B run lifecycle requires the exact DTO")
+        if (
+            not all(
+                type(item) is str and 1 <= len(item) <= 512
+                for item in (
+                    value.run_id,
+                    value.request_id,
+                    value.scope_id,
+                )
+            )
+            or value.schema_version != "m1b.run.v1"
+            or value.status not in {"running", "completed", "degraded", "failed"}
+            or (value.status == "running" and value.completed_at_utc is not None)
+        ):
+            raise ValueError("M1B run lifecycle fields are invalid")
+        PersistenceRepository._exact_lifecycle_time(value.created_at_utc, "created_at_utc")
+        if value.completed_at_utc is not None:
+            PersistenceRepository._exact_lifecycle_time(value.completed_at_utc, "completed_at_utc")
+            if value.completed_at_utc < value.created_at_utc:
+                raise ValueError("M1B run completion precedes creation")
+        return {
+            "run_id": value.run_id,
+            "request_id": value.request_id,
+            "scope_id": value.scope_id,
+            "status": value.status,
+            "created_at_utc": value.created_at_utc,
+            "completed_at_utc": value.completed_at_utc,
+            "schema_version": value.schema_version,
+        }
+
+    @staticmethod
+    def _run_lifecycle_from_row(row: Mapping[str, object]) -> M1BRunLifecycle:
+        return M1BRunLifecycle(
+            run_id=cast(str, row["run_id"]),
+            request_id=cast(str, row["request_id"]),
+            scope_id=cast(str, row["scope_id"]),
+            status=cast(str, row["status"]),
+            created_at_utc=cast(datetime, row["created_at_utc"]),
+            completed_at_utc=cast(datetime | None, row["completed_at_utc"]),
+            schema_version=cast(str, row["schema_version"]),
+        )
+
+    def begin_m1b_run(self, value: M1BRunLifecycle) -> tuple[M1BRunLifecycle, bool]:
+        """Insert a running run or verify its immutable identity without reopening it."""
+
+        values = self._run_lifecycle_values(value)
+        if value.status != "running":
+            raise ValueError("begin_m1b_run requires running status")
+        table = models.m1b_runs
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(sa.select(table).where(table.c.run_id == value.run_id))
+                .mappings()
+                .one_or_none()
+            )
+            if existing is None:
+                connection.execute(table.insert().values(**values))
+                stored = values
+                created = True
+            else:
+                stored = dict(existing)
+                created = False
+                if any(
+                    _normalize(stored[name]) != _normalize(values[name])
+                    for name in (
+                        "run_id",
+                        "request_id",
+                        "scope_id",
+                        "created_at_utc",
+                        "schema_version",
+                    )
+                ):
+                    raise PersistenceConflict("m1b_runs", "pk_m1b_runs")
+        return self._run_lifecycle_from_row(stored), created
+
+    def get_m1b_run_lifecycle(self, run_id: str) -> M1BRunLifecycle | None:
+        """Load one exact run row without changing its lifecycle state."""
+
+        if type(run_id) is not str or not 1 <= len(run_id) <= 512:
+            raise ValueError("M1B run_id is invalid")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m1b_runs).where(models.m1b_runs.c.run_id == run_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return None
+        result = self._run_lifecycle_from_row(dict(row))
+        self._run_lifecycle_values(result)
+        return result
+
+    def finalize_m1b_run(self, value: M1BRunLifecycle) -> M1BRunLifecycle:
+        """CAS one running run to its exact terminal row; terminal rows are immutable."""
+
+        values = self._run_lifecycle_values(value)
+        if (
+            value.status not in {"completed", "degraded", "failed"}
+            or value.completed_at_utc is None
+        ):
+            raise ValueError("finalize_m1b_run requires an exact terminal row")
+        table = models.m1b_runs
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    sa.select(table).where(table.c.run_id == value.run_id).with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is None:
+                raise PersistenceIntegrityError("M1B run start is missing")
+            stored = dict(existing)
+            if all(_normalize(stored[name]) == _normalize(values[name]) for name in values):
+                return self._run_lifecycle_from_row(stored)
+            if stored["status"] != "running" or any(
+                _normalize(stored[name]) != _normalize(values[name])
+                for name in ("run_id", "request_id", "scope_id", "created_at_utc", "schema_version")
+            ):
+                raise PersistenceConflict("m1b_runs", "pk_m1b_runs")
+            connection.execute(
+                table.update()
+                .where(table.c.run_id == value.run_id)
+                .values(
+                    status=value.status,
+                    completed_at_utc=value.completed_at_utc,
+                )
+            )
+        return value
+
+    @staticmethod
+    def _acquisition_lifecycle_values(
+        value: M1BAcquisitionLifecycle,
+    ) -> dict[str, object]:
+        if type(value) is not M1BAcquisitionLifecycle:
+            raise TypeError("M1B acquisition lifecycle requires the exact DTO")
+        texts = (
+            value.acquisition_intent_id,
+            value.attempt_id,
+            value.run_id,
+            value.acquisition_id,
+            value.source,
+            value.operation,
+            value.request_identity,
+            value.query_id,
+            value.execution_profile_id,
+            value.schema_version,
+        )
+        if (
+            any(type(item) is not str or not 1 <= len(item) <= 1024 for item in texts)
+            or type(value.acquisition_ordinal) is not int
+            or not 0 <= value.acquisition_ordinal <= 100
+            or value.source not in {"dailymed", "faers"}
+            or value.operation not in {"search", "fetch", "packaging"}
+            or (value.operation == "packaging" and value.source != "dailymed")
+        ):
+            raise ValueError("M1B acquisition lifecycle fields are invalid")
+        PersistenceRepository._exact_lifecycle_time(value.started_at_utc, "started_at_utc")
+        if value.completed_at_utc is not None:
+            PersistenceRepository._exact_lifecycle_time(value.completed_at_utc, "completed_at_utc")
+            if value.completed_at_utc < value.started_at_utc:
+                raise ValueError("M1B acquisition completion precedes start")
+        return {name: getattr(value, name) for name in value.__dataclass_fields__}
+
+    @staticmethod
+    def _acquisition_lifecycle_from_row(
+        row: Mapping[str, object],
+    ) -> M1BAcquisitionLifecycle:
+        return M1BAcquisitionLifecycle(
+            acquisition_intent_id=cast(str, row["acquisition_intent_id"]),
+            acquisition_ordinal=cast(int, row["acquisition_ordinal"]),
+            attempt_id=cast(str, row["attempt_id"]),
+            run_id=cast(str, row["run_id"]),
+            acquisition_id=cast(str, row["acquisition_id"]),
+            source=cast(str, row["source"]),
+            operation=cast(str, row["operation"]),
+            request_identity=cast(str, row["request_identity"]),
+            query_id=cast(str, row["query_id"]),
+            execution_profile_id=cast(str, row["execution_profile_id"]),
+            started_at_utc=cast(datetime, row["started_at_utc"]),
+            completed_at_utc=cast(datetime | None, row["completed_at_utc"]),
+            schema_version=cast(str, row["schema_version"]),
+        )
+
+    def begin_m1b_acquisition(
+        self, value: M1BAcquisitionLifecycle
+    ) -> tuple[M1BAcquisitionLifecycle, bool]:
+        """Persist an exact source START row before the external operation."""
+
+        values = self._acquisition_lifecycle_values(value)
+        if value.completed_at_utc is not None:
+            raise ValueError("begin_m1b_acquisition requires an incomplete row")
+        table = models.m1b_acquisitions
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    sa.select(table).where(table.c.acquisition_id == value.acquisition_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is None:
+                connection.execute(table.insert().values(**values))
+                stored = values
+                created = True
+            else:
+                stored = dict(existing)
+                created = False
+                if any(
+                    _normalize(stored[name]) != _normalize(values[name])
+                    for name in values
+                    if name not in {"started_at_utc", "completed_at_utc"}
+                ):
+                    raise PersistenceConflict("m1b_acquisitions", "pk_m1b_acquisitions")
+        return self._acquisition_lifecycle_from_row(stored), created
+
+    def get_m1b_acquisition_lifecycle(self, acquisition_id: str) -> M1BAcquisitionLifecycle | None:
+        """Load one exact acquisition lifecycle row for safe resume decisions."""
+
+        if type(acquisition_id) is not str or not 1 <= len(acquisition_id) <= 512:
+            raise ValueError("M1B acquisition_id is invalid")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m1b_acquisitions).where(
+                        models.m1b_acquisitions.c.acquisition_id == acquisition_id
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return None
+        result = self._acquisition_lifecycle_from_row(dict(row))
+        self._acquisition_lifecycle_values(result)
+        return result
+
+    def finalize_m1b_acquisition(self, value: M1BAcquisitionLifecycle) -> M1BAcquisitionLifecycle:
+        """CAS one exact START row to its immutable completion timestamp."""
+
+        values = self._acquisition_lifecycle_values(value)
+        if value.completed_at_utc is None:
+            raise ValueError("finalize_m1b_acquisition requires completed_at_utc")
+        table = models.m1b_acquisitions
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    sa.select(table)
+                    .where(table.c.acquisition_id == value.acquisition_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is None:
+                raise PersistenceIntegrityError("M1B acquisition START row is missing")
+            stored = dict(existing)
+            if all(_normalize(stored[name]) == _normalize(values[name]) for name in values):
+                return self._acquisition_lifecycle_from_row(stored)
+            if stored["completed_at_utc"] is not None or any(
+                _normalize(stored[name]) != _normalize(values[name])
+                for name in values
+                if name != "completed_at_utc"
+            ):
+                raise PersistenceConflict("m1b_acquisitions", "pk_m1b_acquisitions")
+            connection.execute(
+                table.update()
+                .where(table.c.acquisition_id == value.acquisition_id)
+                .values(completed_at_utc=value.completed_at_utc)
+            )
+        return value
 
     @staticmethod
     def _insert_or_verify_m1b_connection(
@@ -1078,9 +2227,50 @@ class PersistenceRepository:
             raise ValueError("DailyMed supersession cannot be a self edge")
 
     def insert_or_verify_m1b_artifact(self, row: Mapping[str, object]) -> dict[str, object]:
-        """Persist exact M1B artifact metadata without raw bytes."""
+        """Persist immutable content metadata while retaining its first-seen time."""
 
-        return self.insert_or_verify_m1b("m1b_artifacts", row)
+        table_name = "m1b_artifacts"
+        table = models.m1b_artifacts
+        expected_columns = tuple(column.name for column in table.columns)
+        if set(row) != set(expected_columns):
+            raise ValueError("m1b_artifacts input must contain every persisted column exactly")
+        values = dict(row)
+        self._validate_m1b_row(table_name, values)
+        created_at = values["created_at_utc"]
+        if type(created_at) is not datetime:
+            raise ValueError("M1B artifact created_at_utc must be an exact datetime")
+        self._exact_lifecycle_time(created_at, "M1B artifact created_at_utc")
+
+        def verify(existing: Mapping[str, object]) -> dict[str, object]:
+            stored = dict(existing)
+            if all(
+                _normalize(stored[name]) == _normalize(values[name])
+                for name in expected_columns
+                if name != "created_at_utc"
+            ):
+                return stored
+            raise PersistenceConflict(table_name, "pk_m1b_artifacts")
+
+        predicate = table.c.artifact_id == values["artifact_id"]
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(sa.select(table).where(predicate)).mappings().one_or_none()
+            )
+            if existing is not None:
+                return verify(dict(existing))
+            try:
+                with connection.begin_nested():
+                    connection.execute(table.insert().values(**values))
+            except IntegrityError as error:
+                if not _is_unique_violation(error):
+                    raise
+                existing = (
+                    connection.execute(sa.select(table).where(predicate)).mappings().one_or_none()
+                )
+                if existing is None:
+                    raise PersistenceConflict(table_name, _constraint_name(error)) from None
+                return verify(dict(existing))
+        return values
 
     @staticmethod
     def _require_exact_domain_row(
@@ -2620,3 +3810,1208 @@ class PersistenceRepository:
                     "verified publication payload differs from stored identity"
                 ) from error
         return ReplaySnapshot(metadata=metadata, replay=replay)
+
+
+class ProviderAttemptLedgerError(RuntimeError):
+    """Stable failure for the authoritative insert-only provider-attempt ledger."""
+
+
+class ProviderAttemptLedgerConflict(ProviderAttemptLedgerError):
+    """A unique attempt/event slot already exists and must never be resent."""
+
+
+@dataclass(slots=True)
+class ProviderAttemptRunLease:
+    connection: Connection
+    provider_run_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAttemptEvent:
+    event_id: str
+    schema_version: str
+    provider_run_id: str
+    case_id: str
+    case_ordinal: int
+    attempt_ordinal: int
+    event_kind: str
+    event_slot: int
+    start_event_id: str | None
+    start_event_kind: str | None
+    provider: str
+    endpoint: str
+    model: str
+    configuration_hash: str
+    request_hash: str
+    started_at_utc: datetime
+    completed_at_utc: datetime | None
+    http_status: int | None
+    disposition: str
+    error_code: str | None
+    credential_echo: bool
+    body_complete: bool | None
+    body_byte_count: int | None
+    body_hash: str | None
+    body_relative_path: str | None
+    observed_body_bytes_lower_bound: int | None
+    approved_header_names: tuple[str, ...]
+    approved_header_names_identity: str | None = None
+    normalized_header_names: tuple[str, ...] | None = None
+    normalized_content_encoding_values: tuple[str, ...] | None = None
+    normalized_content_length_values: tuple[str, ...] | None = None
+    normalized_content_type_values: tuple[str, ...] | None = None
+    normalized_transfer_encoding_values: tuple[str, ...] | None = None
+    normalized_x_request_id_values: tuple[str, ...] | None = None
+    normalized_header_facts_identity: str | None = None
+    raw_header_field_count: int | None = None
+    framing_contract_identity: str | None = None
+    framing_input_identity: str | None = None
+    http_version_state: str | None = None
+    observed_http_version: str | None = None
+    header_surface_state: str | None = None
+    content_length_state: str | None = None
+    content_length_value: int | None = None
+    transfer_encoding_state: str | None = None
+    content_encoding_state: str | None = None
+    content_type_state: str | None = None
+    actual_body_byte_count: int | None = None
+    raw_evidence_state: str | None = None
+    raw_body_hash: str | None = None
+    raw_relative_path: str | None = None
+    raw_artifact_identity: str | None = None
+    framing_status: str | None = None
+    accepted_framing_class: str | None = None
+    framing_rejection_code: str | None = None
+
+
+_PROVIDER_EVENT_FIELDS = tuple(ProviderAttemptEvent.__dataclass_fields__)
+_PROVIDER_AUTHORITY_FIELDS = PERSISTED_AUTHORITY_FIELDS
+_PROVIDER_AUTHORITY_FIELD_SET = frozenset(_PROVIDER_AUTHORITY_FIELDS)
+_PROVIDER_RUN_ID = re.compile(r"provider-attempt-run:sha256:[0-9a-f]{64}")
+_PROVIDER_CASE_ID = re.compile(r"M3-008B-CAL-[0-9]{3}")
+_PROVIDER_EVENT_ID = re.compile(r"provider-attempt-event:sha256:[0-9a-f]{64}")
+_PROVIDER_V1_TERMINAL_DISPOSITIONS = frozenset(models.PROVIDER_V1_TERMINAL_DISPOSITIONS)
+_PROVIDER_V2_TERMINAL_DISPOSITIONS = frozenset(models.PROVIDER_V2_TERMINAL_DISPOSITIONS)
+_PROVIDER_HEADERS = frozenset(
+    {
+        "content-type",
+        "content-length",
+        "transfer-encoding",
+        "content-encoding",
+        "x-request-id",
+    }
+)
+
+
+_PROVIDER_V2_FIELDS = frozenset(V2_ONLY_LEDGER_COLUMNS)
+
+_PROVIDER_REQUIRED_STR_FIELDS = (
+    "event_id",
+    "schema_version",
+    "provider_run_id",
+    "case_id",
+    "event_kind",
+    "provider",
+    "endpoint",
+    "model",
+    "configuration_hash",
+    "request_hash",
+    "disposition",
+)
+_PROVIDER_OPTIONAL_STR_FIELDS = (
+    "start_event_id",
+    "start_event_kind",
+    "error_code",
+    "body_hash",
+    "body_relative_path",
+    "approved_header_names_identity",
+    "normalized_header_facts_identity",
+    "framing_contract_identity",
+    "framing_input_identity",
+    "http_version_state",
+    "observed_http_version",
+    "header_surface_state",
+    "content_length_state",
+    "transfer_encoding_state",
+    "content_encoding_state",
+    "content_type_state",
+    "raw_evidence_state",
+    "raw_body_hash",
+    "raw_relative_path",
+    "raw_artifact_identity",
+    "framing_status",
+    "accepted_framing_class",
+    "framing_rejection_code",
+)
+_PROVIDER_REQUIRED_INT_FIELDS = ("case_ordinal", "attempt_ordinal", "event_slot")
+_PROVIDER_OPTIONAL_INT_FIELDS = (
+    "http_status",
+    "body_byte_count",
+    "observed_body_bytes_lower_bound",
+    "raw_header_field_count",
+    "content_length_value",
+    "actual_body_byte_count",
+)
+_PROVIDER_OPTIONAL_STR_TUPLE_FIELDS = (
+    "normalized_header_names",
+    "normalized_content_encoding_values",
+    "normalized_content_length_values",
+    "normalized_content_type_values",
+    "normalized_transfer_encoding_values",
+    "normalized_x_request_id_values",
+)
+
+
+def _provider_attempt_values_have_exact_primitive_types(
+    *,
+    required_strings: tuple[object, ...] = (),
+    optional_strings: tuple[object, ...] = (),
+    required_integers: tuple[object, ...] = (),
+    optional_integers: tuple[object, ...] = (),
+    required_booleans: tuple[object, ...] = (),
+    optional_booleans: tuple[object, ...] = (),
+    string_tuples: tuple[object, ...] = (),
+    optional_string_tuples: tuple[object, ...] = (),
+    required_datetimes: tuple[object, ...] = (),
+    optional_datetimes: tuple[object, ...] = (),
+) -> bool:
+    """Return whether every supplied primitive has its exact built-in type."""
+
+    return (
+        all(type(value) is str for value in required_strings)
+        and all(value is None or type(value) is str for value in optional_strings)
+        and all(type(value) is int for value in required_integers)
+        and all(value is None or type(value) is int for value in optional_integers)
+        and all(type(value) is bool for value in required_booleans)
+        and all(value is None or type(value) is bool for value in optional_booleans)
+        and all(
+            type(value) is tuple and all(type(item) is str for item in value)
+            for value in string_tuples
+        )
+        and all(
+            value is None or (type(value) is tuple and all(type(item) is str for item in value))
+            for value in optional_string_tuples
+        )
+        and all(type(value) is datetime for value in required_datetimes)
+        and all(value is None or type(value) is datetime for value in optional_datetimes)
+    )
+
+
+def _provider_attempt_event_primitives_are_exact(event: ProviderAttemptEvent) -> bool:
+    return _provider_attempt_values_have_exact_primitive_types(
+        required_strings=tuple(getattr(event, name) for name in _PROVIDER_REQUIRED_STR_FIELDS),
+        optional_strings=tuple(getattr(event, name) for name in _PROVIDER_OPTIONAL_STR_FIELDS),
+        required_integers=tuple(getattr(event, name) for name in _PROVIDER_REQUIRED_INT_FIELDS),
+        optional_integers=tuple(getattr(event, name) for name in _PROVIDER_OPTIONAL_INT_FIELDS),
+        required_booleans=(event.credential_echo,),
+        optional_booleans=(event.body_complete,),
+        string_tuples=(event.approved_header_names,),
+        optional_string_tuples=tuple(
+            getattr(event, name) for name in _PROVIDER_OPTIONAL_STR_TUPLE_FIELDS
+        ),
+        required_datetimes=(event.started_at_utc,),
+        optional_datetimes=(event.completed_at_utc,),
+    )
+
+
+def _provider_attempt_observation_primitives_are_exact(value: object) -> bool:
+    if type(value) is UnavailableObservation:
+        unavailable = value
+        return _provider_attempt_values_have_exact_primitive_types(
+            required_strings=(unavailable.disposition, unavailable.input_identity),
+            optional_integers=(unavailable.http_status,),
+        )
+    if type(value) is not FramingObservation:
+        return False
+    observation = value
+    headers = observation.headers
+    if (
+        type(headers) is not NormalizedHeaderFacts
+        or type(headers.occurrences) is not tuple
+        or any(
+            type(item) is not HeaderOccurrence
+            or type(item.name) is not str
+            or type(item.value) is not str
+            for item in headers.occurrences
+        )
+        or type(headers.surface_state) is not HeaderSurfaceState
+        or type(observation.http_version_state) is not HttpVersionState
+        or type(observation.content_length_state) is not ContentLengthState
+        or type(observation.transfer_encoding_state) is not TransferEncodingState
+        or type(observation.content_encoding_state) is not ContentEncodingState
+        or type(observation.content_type_state) is not ContentTypeState
+        or type(observation.raw_evidence_state) is not RawEvidenceState
+    ):
+        return False
+    return _provider_attempt_values_have_exact_primitive_types(
+        required_strings=(
+            observation.disposition,
+            observation.input_identity,
+            headers.approved_header_names_identity,
+            headers.facts_identity,
+        ),
+        optional_strings=(
+            observation.observed_http_version,
+            observation.raw_body_hash,
+            observation.raw_relative_path,
+            observation.raw_artifact_identity,
+        ),
+        required_integers=(
+            observation.http_status,
+            observation.raw_header_field_count,
+            observation.observed_body_bytes_lower_bound,
+            headers.raw_header_field_count,
+        ),
+        optional_integers=(
+            observation.content_length_value,
+            observation.actual_body_byte_count,
+        ),
+        required_booleans=(observation.body_complete,),
+        string_tuples=(headers.approved_header_names, headers.observed_names),
+    )
+
+
+def _validate_provider_attempt_event_primitives(event: ProviderAttemptEvent) -> None:
+    """Reject coercible primitives before identity, reconstruction, or persistence."""
+
+    if not _provider_attempt_event_primitives_are_exact(event):
+        raise ValueError("provider attempt event primitive type is invalid")
+    if event.started_at_utc.utcoffset() is None or (
+        event.completed_at_utc is not None and event.completed_at_utc.utcoffset() is None
+    ):
+        raise ValueError("provider attempt event primitive type is invalid")
+
+
+def _provider_attempt_disposition_matches_version(
+    *, schema_version: str, event_kind: str, disposition: str
+) -> bool:
+    if event_kind == "START":
+        return disposition == "started"
+    if event_kind == "RECOVERY":
+        return disposition == "interrupted_unknown_after_start"
+    if event_kind != "TERMINAL":
+        return False
+    if schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V1":
+        return disposition in _PROVIDER_V1_TERMINAL_DISPOSITIONS
+    if schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V2":
+        return disposition in _PROVIDER_V2_TERMINAL_DISPOSITIONS
+    return False
+
+
+def _validate_make_provider_attempt_event_primitives(
+    *,
+    provider_run_id: object,
+    case_id: object,
+    case_ordinal: object,
+    attempt_ordinal: object,
+    event_kind: object,
+    start_event: object,
+    configuration_hash: object,
+    request_hash: object,
+    started_at_utc: object,
+    completed_at_utc: object,
+    http_status: object,
+    disposition: object,
+    error_code: object,
+    credential_echo: object,
+    body_complete: object,
+    body_byte_count: object,
+    body_hash: object,
+    body_relative_path: object,
+    observed_body_bytes_lower_bound: object,
+    approved_header_names: object,
+    schema_version: object,
+    framing_observation: object,
+) -> None:
+    """Reject every non-exact caller primitive before any behavioral operation."""
+
+    exact = _provider_attempt_values_have_exact_primitive_types(
+        required_strings=(
+            provider_run_id,
+            case_id,
+            event_kind,
+            configuration_hash,
+            request_hash,
+            disposition,
+            schema_version,
+        ),
+        optional_strings=(error_code, body_hash, body_relative_path),
+        required_integers=(case_ordinal, attempt_ordinal),
+        optional_integers=(http_status, body_byte_count, observed_body_bytes_lower_bound),
+        required_booleans=(credential_echo,),
+        optional_booleans=(body_complete,),
+        string_tuples=(approved_header_names,),
+        required_datetimes=(started_at_utc,),
+        optional_datetimes=(completed_at_utc,),
+    )
+    if (
+        not exact
+        or (start_event is not None and type(start_event) is not ProviderAttemptEvent)
+        or (
+            type(start_event) is ProviderAttemptEvent
+            and not _provider_attempt_event_primitives_are_exact(start_event)
+        )
+        or (
+            framing_observation is not None
+            and not _provider_attempt_observation_primitives_are_exact(framing_observation)
+        )
+    ):
+        raise ValueError("provider attempt event primitive type is invalid")
+    if cast(datetime, started_at_utc).utcoffset() is None or (
+        cast(datetime | None, completed_at_utc) is not None
+        and cast(datetime, completed_at_utc).utcoffset() is None
+    ):
+        raise ValueError("provider attempt event primitive type is invalid")
+    if type(start_event) is ProviderAttemptEvent:
+        _validate_provider_attempt_event_primitives(start_event)
+
+
+def _provider_event_payload(event: ProviderAttemptEvent) -> dict[str, object]:
+    excluded = {"event_id"}
+    if event.schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V1":
+        excluded.update(_PROVIDER_V2_FIELDS)
+    authority = {name: getattr(event, name) for name in _PROVIDER_AUTHORITY_FIELDS}
+    return {
+        name: authority[name] if name in _PROVIDER_AUTHORITY_FIELD_SET else getattr(event, name)
+        for name in _PROVIDER_EVENT_FIELDS
+        if name not in excluded
+    }
+
+
+def _provider_storage_payload(event: ProviderAttemptEvent) -> dict[str, object]:
+    authority = {name: getattr(event, name) for name in _PROVIDER_AUTHORITY_FIELDS}
+    return {
+        name: authority[name] if name in _PROVIDER_AUTHORITY_FIELD_SET else getattr(event, name)
+        for name in _PROVIDER_EVENT_FIELDS
+        if name != "event_id"
+    }
+
+
+def canonical_provider_attempt_event_id(payload: Mapping[str, object]) -> str:
+    """Return the deterministic identity of one exact event projection."""
+
+    return (
+        "provider-attempt-event:sha256:"
+        + sha256(canonical_json(dict(payload)).encode("utf-8")).hexdigest()
+    )
+
+
+def _provider_v2_fields_are_null(event: ProviderAttemptEvent) -> bool:
+    return all(getattr(event, name) is None for name in _PROVIDER_V2_FIELDS)
+
+
+def _provider_fact_free_projection(event: ProviderAttemptEvent) -> dict[str, object]:
+    return {
+        "schema_version": event.schema_version,
+        "event_kind": event.event_kind,
+        **{name: getattr(event, name) for name in _PROVIDER_AUTHORITY_FIELDS},
+    }
+
+
+def _provider_v2_observation(event: ProviderAttemptEvent) -> Observation | None:
+    """Rebuild the exact contract input; stored decisions never authorize themselves."""
+
+    if event.schema_version != "M3_PROVIDER_ATTEMPT_EVENT_V2":
+        return None
+    if not v2_event_metadata_matches(
+        {
+            "event_kind": event.event_kind,
+            "disposition": event.disposition,
+            "credential_echo": event.credential_echo,
+            "error_code": event.error_code,
+        }
+    ):
+        raise ValueError("V2 event metadata differs from canonical topology")
+    if fact_free_v2_event_matches(_provider_fact_free_projection(event)):
+        return None
+    if _provider_v2_fields_are_null(event):
+        raise ValueError("V2 fact-free event differs from canonical topology")
+    if event.framing_contract_identity != framing_contract_identity():
+        raise ValueError("V2 framing contract identity drift")
+    if event.disposition in {"credential_echo", "evidence_persistence_failure"}:
+        if event.http_status is None:
+            raise ValueError("V2 unavailable response terminal requires HTTP status")
+        observation: Observation = build_unavailable_observation(
+            disposition=event.disposition,
+            http_status=event.http_status,
+        )
+    else:
+        if (
+            event.normalized_header_names is None
+            or event.approved_header_names_identity is None
+            or event.normalized_header_facts_identity is None
+            or event.raw_header_field_count is None
+            or event.header_surface_state is None
+        ):
+            raise ValueError("V2 normalized header provenance is incomplete")
+        value_fields = (
+            ("content-encoding", event.normalized_content_encoding_values),
+            ("content-length", event.normalized_content_length_values),
+            ("content-type", event.normalized_content_type_values),
+            ("transfer-encoding", event.normalized_transfer_encoding_values),
+            ("x-request-id", event.normalized_x_request_id_values),
+        )
+        if any(values is None for _, values in value_fields):
+            raise ValueError("V2 normalized header value provenance is incomplete")
+        occurrences = tuple(
+            (name, value)
+            for name, values in value_fields
+            for value in cast(tuple[str, ...], values)
+        )
+        headers = reconstruct_normalized_headers(
+            approved_header_names=event.approved_header_names,
+            approved_header_names_identity=event.approved_header_names_identity,
+            occurrences=occurrences,
+            observed_names=event.normalized_header_names,
+            raw_header_field_count=event.raw_header_field_count,
+            surface_state=event.header_surface_state,
+            facts_identity=event.normalized_header_facts_identity,
+        )
+        if event.http_status is None or event.body_complete is None:
+            raise ValueError("V2 response observation is incomplete")
+        observation = build_framing_observation(
+            disposition=event.disposition,
+            http_status=event.http_status,
+            http_version=event.observed_http_version,
+            headers=headers,
+            raw_header_field_count=event.raw_header_field_count,
+            body_complete=event.body_complete,
+            actual_body_byte_count=event.actual_body_byte_count,
+            raw_body_hash=event.raw_body_hash,
+            raw_relative_path=event.raw_relative_path,
+            observed_body_bytes_lower_bound=event.observed_body_bytes_lower_bound,
+        )
+    projection = canonical_observation_projection(observation)
+    if event.approved_header_names != projection["approved_header_names"]:
+        raise ValueError("V2 canonical framing projection drift: approved_header_names")
+    for name in _PROVIDER_V2_FIELDS:
+        if name in projection and getattr(event, name) != projection[name]:
+            raise ValueError(f"V2 canonical framing projection drift: {name}")
+    if type(observation) is UnavailableObservation and any(
+        getattr(event, name) is not None
+        for name in (
+            "normalized_content_encoding_values",
+            "normalized_content_length_values",
+            "normalized_content_type_values",
+            "normalized_transfer_encoding_values",
+            "normalized_x_request_id_values",
+        )
+    ):
+        raise ValueError("V2 unavailable terminal fabricated normalized header facts")
+    if not projection_matches(
+        observation,
+        framing_status=cast(str, event.framing_status),
+        accepted_framing_class=event.accepted_framing_class,
+        framing_rejection_code=event.framing_rejection_code,
+        framing_input_identity=cast(str, event.framing_input_identity),
+    ):
+        raise ValueError("V2 stored framing decision differs from recomputation")
+    legacy_v2_raw_projection(
+        observation,
+        {
+            "body_byte_count": event.body_byte_count,
+            "body_hash": event.body_hash,
+            "body_relative_path": event.body_relative_path,
+            "observed_body_bytes_lower_bound": event.observed_body_bytes_lower_bound,
+        },
+    )
+    if type(observation) is UnavailableObservation and event.body_complete is not None:
+        raise ValueError("V2 unavailable terminal fabricated response facts")
+    return observation
+
+
+def validate_provider_attempt_event(event: ProviderAttemptEvent) -> ProviderAttemptEvent:
+    if type(event) is not ProviderAttemptEvent:
+        raise ValueError("provider attempt event type is invalid")
+    _validate_provider_attempt_event_primitives(event)
+    if event.body_relative_path is not None and not provider_raw_relative_path_is_canonical(
+        event.body_relative_path
+    ):
+        raise ValueError("provider attempt body relative path is noncanonical")
+    if not _provider_attempt_disposition_matches_version(
+        schema_version=event.schema_version,
+        event_kind=event.event_kind,
+        disposition=event.disposition,
+    ):
+        raise ValueError("provider attempt disposition is invalid for schema version")
+    if event.schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V2" and (
+        not v2_event_metadata_matches(
+            {
+                "event_kind": event.event_kind,
+                "disposition": event.disposition,
+                "credential_echo": event.credential_echo,
+                "error_code": event.error_code,
+            }
+        )
+    ):
+        raise ValueError("V2 event metadata differs from canonical topology")
+    payload = _provider_event_payload(event)
+    v1_start_shape = (
+        event.event_kind == "START"
+        and event.start_event_id is None
+        and event.start_event_kind is None
+        and event.disposition == "started"
+        and event.completed_at_utc is None
+        and event.http_status is None
+        and event.error_code is None
+        and not event.credential_echo
+        and event.body_complete is None
+        and event.body_hash is None
+        and event.body_relative_path is None
+    )
+    v1_recovery_shape = (
+        event.event_kind == "RECOVERY"
+        and event.start_event_id is not None
+        and event.start_event_kind == "START"
+        and event.disposition == "interrupted_unknown_after_start"
+        and event.error_code == "interrupted_unknown_after_start"
+        and event.completed_at_utc is not None
+        and event.http_status is None
+        and event.body_hash is None
+        and event.body_relative_path is None
+    )
+    v1_terminal_shape = (
+        event.event_kind == "TERMINAL"
+        and event.start_event_id is not None
+        and event.start_event_kind == "START"
+        and event.completed_at_utc is not None
+        and (
+            (event.disposition == "success" and event.error_code is None)
+            or (event.disposition != "success" and event.error_code == event.disposition)
+        )
+        and (
+            event.disposition != "success"
+            or (
+                event.body_complete is True
+                and event.body_hash is not None
+                and event.body_relative_path is not None
+                and event.body_byte_count is not None
+            )
+        )
+        and (
+            (
+                event.credential_echo
+                and event.disposition == "credential_echo"
+                and event.body_hash is None
+                and event.body_relative_path is None
+            )
+            or (
+                not event.credential_echo
+                and (
+                    (
+                        event.body_hash is not None
+                        and event.body_relative_path is not None
+                        and event.body_complete is True
+                        and event.body_byte_count is not None
+                        and event.observed_body_bytes_lower_bound == event.body_byte_count
+                    )
+                    or (event.body_hash is None and event.body_relative_path is None)
+                )
+            )
+        )
+    )
+    v2_shape = (
+        (
+            event.event_kind == "START"
+            and event.start_event_id is None
+            and event.start_event_kind is None
+            and event.completed_at_utc is None
+        )
+        or (
+            event.event_kind == "RECOVERY"
+            and event.start_event_id is not None
+            and event.start_event_kind == "START"
+            and event.completed_at_utc is not None
+        )
+        or (
+            event.event_kind == "TERMINAL"
+            and event.start_event_id is not None
+            and event.start_event_kind == "START"
+            and event.completed_at_utc is not None
+        )
+    )
+    if (
+        _PROVIDER_EVENT_ID.fullmatch(event.event_id) is None
+        or event.event_id != canonical_provider_attempt_event_id(payload)
+        or event.schema_version
+        not in {"M3_PROVIDER_ATTEMPT_EVENT_V1", "M3_PROVIDER_ATTEMPT_EVENT_V2"}
+        or _PROVIDER_RUN_ID.fullmatch(event.provider_run_id) is None
+        or _PROVIDER_CASE_ID.fullmatch(event.case_id) is None
+        or event.case_id != f"M3-008B-CAL-{event.case_ordinal:03d}"
+        or not 1 <= event.case_ordinal <= 36
+        or not 1 <= event.attempt_ordinal <= 3
+        or (event.event_kind, event.event_slot)
+        not in {("START", 0), ("TERMINAL", 1), ("RECOVERY", 1)}
+        or event.provider != "DeepSeek API"
+        or event.endpoint != "https://api.deepseek.com/responses"
+        or event.model != "deepseek-v4-pro"
+        or _SHA256_DIGEST.fullmatch(event.configuration_hash) is None
+        or _SHA256_DIGEST.fullmatch(event.request_hash) is None
+        or not (
+            (
+                event.schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V1"
+                and (v1_start_shape or v1_recovery_shape or v1_terminal_shape)
+            )
+            or (event.schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V2" and v2_shape)
+        )
+        or tuple(sorted(set(event.approved_header_names))) != event.approved_header_names
+        or any(name not in _PROVIDER_HEADERS for name in event.approved_header_names)
+        or event.started_at_utc.tzinfo is None
+        or (
+            event.completed_at_utc is not None
+            and (
+                event.completed_at_utc.tzinfo is None
+                or event.completed_at_utc < event.started_at_utc
+            )
+        )
+    ):
+        raise ValueError("provider attempt event violates the closed contract")
+    if event.schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V1":
+        if not _provider_v2_fields_are_null(event):
+            raise ValueError("V1 provider attempt event cannot contain V2 framing facts")
+    else:
+        _provider_v2_observation(event)
+    return event
+
+
+class ProviderAttemptLedgerRepository:
+    """Dedicated insert/list/recovery API; deliberately exposes no update or delete."""
+
+    def __init__(self, settings: PersistenceSettings) -> None:
+        self._engine = _create_engine(settings)
+
+    @classmethod
+    def _from_engine_for_testing(cls, engine: Engine) -> ProviderAttemptLedgerRepository:
+        value = cls.__new__(cls)
+        value._engine = engine
+        return value
+
+    def close(self) -> None:
+        self._engine.dispose()
+
+    def acquire_run_lease(self, provider_run_id: str) -> ProviderAttemptRunLease:
+        if _PROVIDER_RUN_ID.fullmatch(provider_run_id) is None:
+            raise ValueError("provider_run_id is invalid")
+        connection = self._engine.connect()
+        acquired = connection.scalar(
+            sa.text("SELECT pg_try_advisory_lock(hashtextextended(:run_id, 0))"),
+            {"run_id": provider_run_id},
+        )
+        if acquired is not True:
+            connection.close()
+            raise ProviderAttemptLedgerConflict("provider run lease is already held")
+        return ProviderAttemptRunLease(connection, provider_run_id)
+
+    def release_run_lease(self, lease: ProviderAttemptRunLease) -> None:
+        if type(lease) is not ProviderAttemptRunLease:
+            raise ValueError("provider run lease type is invalid")
+        try:
+            lease.connection.scalar(
+                sa.text("SELECT pg_advisory_unlock(hashtextextended(:run_id, 0))"),
+                {"run_id": lease.provider_run_id},
+            )
+        finally:
+            lease.connection.close()
+
+    def append(self, event: ProviderAttemptEvent) -> ProviderAttemptEvent:
+        value = validate_provider_attempt_event(event)
+        values = _provider_storage_payload(value)
+        values["event_id"] = value.event_id
+        try:
+            with self._engine.begin() as connection:
+                if value.event_kind != "START":
+                    start_row = (
+                        connection.execute(
+                            sa.select(models.m3_provider_attempt_events).where(
+                                models.m3_provider_attempt_events.c.event_id == value.start_event_id
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if start_row is None:
+                        raise ProviderAttemptLedgerConflict(
+                            "closure requires the exact persisted START"
+                        )
+                    start = _provider_event_from_row(dict(start_row))
+                    if (
+                        start.event_id != value.start_event_id
+                        or start.event_kind != "START"
+                        or start.schema_version != value.schema_version
+                        or start.provider_run_id != value.provider_run_id
+                        or start.case_id != value.case_id
+                        or start.case_ordinal != value.case_ordinal
+                        or start.attempt_ordinal != value.attempt_ordinal
+                        or start.configuration_hash != value.configuration_hash
+                        or start.request_hash != value.request_hash
+                    ):
+                        raise ProviderAttemptLedgerConflict(
+                            "closure requires the exact persisted START"
+                        )
+                connection.execute(models.m3_provider_attempt_events.insert().values(**values))
+        except ProviderAttemptLedgerConflict:
+            raise
+        except IntegrityError as error:
+            if _is_unique_violation(error):
+                raise ProviderAttemptLedgerConflict(
+                    "provider attempt event slot already exists"
+                ) from None
+            raise ProviderAttemptLedgerError("provider attempt event insert failed") from error
+        return value
+
+    def list_events(self, provider_run_id: str) -> tuple[ProviderAttemptEvent, ...]:
+        if _PROVIDER_RUN_ID.fullmatch(provider_run_id) is None:
+            raise ValueError("provider_run_id is invalid")
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    sa.select(models.m3_provider_attempt_events)
+                    .where(models.m3_provider_attempt_events.c.provider_run_id == provider_run_id)
+                    .order_by(
+                        models.m3_provider_attempt_events.c.case_ordinal,
+                        models.m3_provider_attempt_events.c.attempt_ordinal,
+                        models.m3_provider_attempt_events.c.event_slot,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(_provider_event_from_row(dict(row)) for row in rows)
+
+    def reconcile_orphan_starts(
+        self, provider_run_id: str, *, recovered_at_utc: datetime
+    ) -> tuple[ProviderAttemptEvent, ...]:
+        if _PROVIDER_RUN_ID.fullmatch(provider_run_id) is None:
+            raise ValueError("provider_run_id is invalid")
+        if recovered_at_utc.tzinfo is None:
+            raise ValueError("recovery timestamp must be timezone-aware")
+        inserted: list[ProviderAttemptEvent] = []
+        with self._engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    'LOCK TABLE "medevidence"."m3_provider_attempt_events" '
+                    "IN SHARE ROW EXCLUSIVE MODE"
+                )
+            )
+            rows = (
+                connection.execute(
+                    sa.select(models.m3_provider_attempt_events)
+                    .where(models.m3_provider_attempt_events.c.provider_run_id == provider_run_id)
+                    .order_by(
+                        models.m3_provider_attempt_events.c.case_ordinal,
+                        models.m3_provider_attempt_events.c.attempt_ordinal,
+                        models.m3_provider_attempt_events.c.event_slot,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            grouped: dict[tuple[int, int], list[dict[str, object]]] = {}
+            for row in rows:
+                item = dict(row)
+                grouped.setdefault(
+                    (cast(int, item["case_ordinal"]), cast(int, item["attempt_ordinal"])), []
+                ).append(item)
+            for events in grouped.values():
+                kinds = {cast(str, item["event_kind"]) for item in events}
+                if "START" not in kinds or kinds & {"TERMINAL", "RECOVERY"}:
+                    continue
+                start = _provider_event_from_row(events[0])
+                recovery = make_provider_attempt_event(
+                    provider_run_id=start.provider_run_id,
+                    case_id=start.case_id,
+                    case_ordinal=start.case_ordinal,
+                    attempt_ordinal=start.attempt_ordinal,
+                    event_kind="RECOVERY",
+                    start_event=start,
+                    configuration_hash=start.configuration_hash,
+                    request_hash=start.request_hash,
+                    started_at_utc=start.started_at_utc,
+                    completed_at_utc=recovered_at_utc,
+                    disposition="interrupted_unknown_after_start",
+                    error_code="interrupted_unknown_after_start",
+                    schema_version=start.schema_version,
+                )
+                values = _provider_storage_payload(recovery)
+                values["event_id"] = recovery.event_id
+                connection.execute(models.m3_provider_attempt_events.insert().values(**values))
+                inserted.append(recovery)
+        return tuple(inserted)
+
+
+def make_provider_attempt_event(
+    *,
+    provider_run_id: str,
+    case_id: str,
+    case_ordinal: int,
+    attempt_ordinal: int,
+    event_kind: str,
+    start_event: ProviderAttemptEvent | None = None,
+    configuration_hash: str,
+    request_hash: str,
+    started_at_utc: datetime,
+    completed_at_utc: datetime | None = None,
+    http_status: int | None = None,
+    disposition: str = "started",
+    error_code: str | None = None,
+    credential_echo: bool = False,
+    body_complete: bool | None = None,
+    body_byte_count: int | None = None,
+    body_hash: str | None = None,
+    body_relative_path: str | None = None,
+    observed_body_bytes_lower_bound: int | None = None,
+    approved_header_names: tuple[str, ...] = (),
+    schema_version: str = "M3_PROVIDER_ATTEMPT_EVENT_V1",
+    framing_observation: Observation | None = None,
+) -> ProviderAttemptEvent:
+    _validate_make_provider_attempt_event_primitives(
+        provider_run_id=provider_run_id,
+        case_id=case_id,
+        case_ordinal=case_ordinal,
+        attempt_ordinal=attempt_ordinal,
+        event_kind=event_kind,
+        start_event=start_event,
+        configuration_hash=configuration_hash,
+        request_hash=request_hash,
+        started_at_utc=started_at_utc,
+        completed_at_utc=completed_at_utc,
+        http_status=http_status,
+        disposition=disposition,
+        error_code=error_code,
+        credential_echo=credential_echo,
+        body_complete=body_complete,
+        body_byte_count=body_byte_count,
+        body_hash=body_hash,
+        body_relative_path=body_relative_path,
+        observed_body_bytes_lower_bound=observed_body_bytes_lower_bound,
+        approved_header_names=approved_header_names,
+        schema_version=schema_version,
+        framing_observation=framing_observation,
+    )
+    if not _provider_attempt_disposition_matches_version(
+        schema_version=schema_version,
+        event_kind=event_kind,
+        disposition=disposition,
+    ):
+        raise ValueError("provider attempt disposition is invalid for schema version")
+    if schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V2" and (
+        type(credential_echo) is not bool
+        or not v2_event_metadata_matches(
+            {
+                "event_kind": event_kind,
+                "disposition": disposition,
+                "credential_echo": credential_echo,
+                "error_code": error_code,
+            }
+        )
+    ):
+        raise ValueError("V2 event metadata differs from canonical topology")
+    slot = {"START": 0, "TERMINAL": 1, "RECOVERY": 1}.get(event_kind)
+    if slot is None:
+        raise ValueError("provider attempt event kind is invalid")
+    if (event_kind == "START") != (start_event is None):
+        raise ValueError("closure must bind one exact START event")
+    if start_event is not None and (
+        start_event.event_kind != "START"
+        or start_event.provider_run_id != provider_run_id
+        or start_event.case_id != case_id
+        or start_event.case_ordinal != case_ordinal
+        or start_event.attempt_ordinal != attempt_ordinal
+        or start_event.configuration_hash != configuration_hash
+        or start_event.request_hash != request_hash
+        or start_event.schema_version != schema_version
+    ):
+        raise ValueError("closure differs from exact START binding")
+    framing: dict[str, object] = {name: None for name in _PROVIDER_V2_FIELDS}
+    if schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V1":
+        if framing_observation is not None:
+            raise ValueError("V1 provider attempt event cannot reinterpret V2 framing facts")
+    elif schema_version == "M3_PROVIDER_ATTEMPT_EVENT_V2":
+        if framing_observation is not None:
+            if event_kind != "TERMINAL":
+                raise ValueError("only a terminal event may bind a framing observation")
+            projection = canonical_observation_projection(framing_observation)
+            if projection["disposition"] != disposition or projection["http_status"] != http_status:
+                raise ValueError("framing observation differs from terminal event")
+            if (
+                any(
+                    value is not None
+                    for value in (
+                        body_complete,
+                        body_byte_count,
+                        body_hash,
+                        body_relative_path,
+                    )
+                )
+                or approved_header_names
+            ):
+                raise ValueError("V2 raw/header facts must derive only from framing observation")
+            framing.update({name: projection.get(name) for name in _PROVIDER_V2_FIELDS})
+            legacy = legacy_v2_raw_projection(framing_observation)
+            body_byte_count = cast(int | None, legacy["body_byte_count"])
+            body_hash = cast(str | None, legacy["body_hash"])
+            body_relative_path = cast(str | None, legacy["body_relative_path"])
+            observed_body_bytes_lower_bound = cast(
+                int | None,
+                legacy["observed_body_bytes_lower_bound"],
+            )
+            if type(framing_observation) is FramingObservation:
+                body_complete = framing_observation.body_complete
+                framing["raw_body_hash"] = framing_observation.raw_body_hash
+                framing["raw_relative_path"] = framing_observation.raw_relative_path
+            else:
+                credential_echo = disposition == "credential_echo"
+            approved_header_names = cast(tuple[str, ...], projection["approved_header_names"])
+        else:
+            expected = canonical_fact_free_v2_event_projection(
+                event_kind=event_kind,
+                disposition=disposition,
+            )
+            supplied = {
+                "schema_version": schema_version,
+                "event_kind": event_kind,
+                "disposition": disposition,
+                "error_code": error_code,
+                "http_status": http_status,
+                "credential_echo": credential_echo,
+                "body_complete": body_complete,
+                "body_byte_count": body_byte_count,
+                "body_hash": body_hash,
+                "body_relative_path": body_relative_path,
+                "observed_body_bytes_lower_bound": observed_body_bytes_lower_bound,
+                "approved_header_names": approved_header_names,
+                **framing,
+            }
+            if supplied != expected:
+                raise ValueError("V2 fact-free event differs from canonical topology")
+    else:
+        raise ValueError("provider attempt schema version is invalid")
+    payload: dict[str, object] = {
+        "schema_version": schema_version,
+        "provider_run_id": provider_run_id,
+        "case_id": case_id,
+        "case_ordinal": case_ordinal,
+        "attempt_ordinal": attempt_ordinal,
+        "event_kind": event_kind,
+        "event_slot": slot,
+        "start_event_id": start_event.event_id if start_event is not None else None,
+        "start_event_kind": "START" if start_event is not None else None,
+        "provider": "DeepSeek API",
+        "endpoint": "https://api.deepseek.com/responses",
+        "model": "deepseek-v4-pro",
+        "configuration_hash": configuration_hash,
+        "request_hash": request_hash,
+        "started_at_utc": started_at_utc,
+        "completed_at_utc": completed_at_utc,
+        "http_status": http_status,
+        "disposition": disposition,
+        "error_code": error_code,
+        "credential_echo": credential_echo,
+        "body_complete": body_complete,
+        "body_byte_count": body_byte_count,
+        "body_hash": body_hash,
+        "body_relative_path": body_relative_path,
+        "observed_body_bytes_lower_bound": observed_body_bytes_lower_bound,
+        "approved_header_names": approved_header_names,
+    }
+    identity_payload = payload if schema_version.endswith("_V1") else {**payload, **framing}
+    event = ProviderAttemptEvent(
+        event_id="provider-attempt-event:sha256:" + "0" * 64,
+        **payload,  # type: ignore[arg-type]
+        **framing,  # type: ignore[arg-type]
+    )
+    _validate_provider_attempt_event_primitives(event)
+    event = replace(
+        event,
+        event_id=canonical_provider_attempt_event_id(identity_payload),
+    )
+    return validate_provider_attempt_event(event)
+
+
+def _provider_event_from_row(row: Mapping[str, object]) -> ProviderAttemptEvent:
+    values = {name: row[name] for name in _PROVIDER_EVENT_FIELDS}
+    values["approved_header_names"] = tuple(cast(Sequence[str], values["approved_header_names"]))
+    normalized_names = values["normalized_header_names"]
+    if normalized_names is not None:
+        values["normalized_header_names"] = tuple(cast(Sequence[str], normalized_names))
+    for name in (
+        "normalized_content_encoding_values",
+        "normalized_content_length_values",
+        "normalized_content_type_values",
+        "normalized_transfer_encoding_values",
+        "normalized_x_request_id_values",
+    ):
+        item = values[name]
+        if item is not None:
+            values[name] = tuple(cast(Sequence[str], item))
+    try:
+        return validate_provider_attempt_event(ProviderAttemptEvent(**values))  # type: ignore[arg-type]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProviderAttemptLedgerError("stored provider attempt event is invalid") from error
+
+
+class ReviewExportRepository(PersistenceRepository):
+    """Bounded PostgreSQL operations for document, review, and export records."""
+
+    def _save_immutable(self, table_name: str, values: Mapping[str, object]) -> dict[str, object]:
+        spec = _SPECS[table_name]
+        with self._engine.begin() as connection:
+            return self._insert_or_verify(connection, spec, values, method=f"save_{table_name}")
+
+    def save_document(self, values: Mapping[str, object]) -> dict[str, object]:
+        return self._save_immutable("m3_report_documents", values)
+
+    def load_document(self, report_id: str, report_content_hash: str) -> dict[str, object] | None:
+        if (
+            type(report_id) is not str
+            or _VALIDATION_REPORT_ID.fullmatch(report_id) is None
+            or type(report_content_hash) is not str
+            or _SHA256_DIGEST.fullmatch(report_content_hash) is None
+        ):
+            raise ValueError("document lookup requires exact report identity and hash")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m3_report_documents).where(
+                        models.m3_report_documents.c.report_id == report_id,
+                        models.m3_report_documents.c.report_content_hash == report_content_hash,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return None if row is None else dict(row)
+
+    def save_pending_draft(self, values: Mapping[str, object]) -> dict[str, object]:
+        return self._save_immutable("m3_pending_drafts", values)
+
+    def load_pending_draft(self, persistence_id: str) -> dict[str, object] | None:
+        if type(persistence_id) is not str or not persistence_id.startswith(
+            "pending-draft:sha256:"
+        ):
+            raise ValueError("pending draft identity is invalid")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m3_pending_drafts).where(
+                        models.m3_pending_drafts.c.persistence_id == persistence_id
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return None if row is None else dict(row)
+
+    def save_review(self, values: Mapping[str, object]) -> dict[str, object]:
+        return self._save_immutable("m3_review_records", values)
+
+    def load_review(self, pending_id: str, destination_id: str) -> dict[str, object] | None:
+        if type(pending_id) is not str or type(destination_id) is not str:
+            raise ValueError("review lookup identity is invalid")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m3_review_records).where(
+                        models.m3_review_records.c.pending_draft_persistence_id == pending_id,
+                        models.m3_review_records.c.destination_id == destination_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return None if row is None else dict(row)
+
+    def prepare_export(self, values: Mapping[str, object]) -> dict[str, object]:
+        """Reserve one logical export before filesystem work."""
+
+        table = models.m3_exports
+        immutable = frozenset(table.c.keys()) - {"status", "prepared_at_utc", "exported_at_utc"}
+        if set(values) != immutable:
+            raise ValueError("export preparation requires exact immutable fields")
+        with self._engine.begin() as connection:
+            connection.execute(
+                sa.text('LOCK TABLE "medevidence"."m3_exports" IN SHARE ROW EXCLUSIVE MODE')
+            )
+            existing = (
+                connection.execute(
+                    sa.select(table).where(table.c.idempotency_key == values["idempotency_key"])
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                row = dict(existing)
+                if any(
+                    _normalize(row.get(name)) != _normalize(value) for name, value in values.items()
+                ):
+                    raise PersistenceConflict("m3_exports", "uq_m3_export_idempotency")
+                return row
+            count = connection.scalar(sa.select(sa.func.count()).select_from(table))
+            if count is None or count >= 1_000:
+                raise PersistenceCapacityError("frozen capacity reached for m3_exports: 1000")
+            prepared = {
+                **values,
+                "status": "prepared",
+                "prepared_at_utc": datetime.now(UTC),
+                "exported_at_utc": None,
+            }
+            try:
+                connection.execute(table.insert().values(**prepared))
+            except IntegrityError as error:
+                if _is_unique_violation(error):
+                    raise PersistenceConflict("m3_exports", _constraint_name(error)) from None
+                raise
+            return prepared
+
+    def load_export(self, idempotency_key: str) -> dict[str, object] | None:
+        if type(idempotency_key) is not str or _SHA256_DIGEST.fullmatch(idempotency_key) is None:
+            raise ValueError("export idempotency key is invalid")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    sa.select(models.m3_exports).where(
+                        models.m3_exports.c.idempotency_key == idempotency_key
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return None if row is None else dict(row)
+
+    def commit_export(
+        self, idempotency_key: str, values: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Advance a verified prepared row to committed exactly once."""
+
+        table = models.m3_exports
+        immutable = frozenset(table.c.keys()) - {"status", "prepared_at_utc", "exported_at_utc"}
+        if set(values) != immutable or values.get("idempotency_key") != idempotency_key:
+            raise ValueError("export commit requires exact immutable fields")
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    sa.select(table)
+                    .where(table.c.idempotency_key == idempotency_key)
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise PersistenceIntegrityError("prepared export is missing")
+            stored = dict(row)
+            if any(
+                _normalize(stored.get(name)) != _normalize(value) for name, value in values.items()
+            ):
+                raise PersistenceIntegrityError("prepared export binding drift")
+            if stored["status"] == "committed":
+                return stored
+            if stored["status"] != "prepared" or stored["exported_at_utc"] is not None:
+                raise PersistenceIntegrityError("prepared export status drift")
+            exported_at = datetime.now(UTC)
+            connection.execute(
+                table.update()
+                .where(table.c.idempotency_key == idempotency_key, table.c.status == "prepared")
+                .values(status="committed", exported_at_utc=exported_at)
+            )
+            return {**stored, "status": "committed", "exported_at_utc": exported_at}

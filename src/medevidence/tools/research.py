@@ -16,7 +16,6 @@ from medevidence.domain import (
     CoverageStatus,
     DomainWarning,
     EvidenceClaim,
-    ExecutionBounds,
     ExecutionStatus,
     FailureCode,
     PlanningStatus,
@@ -37,6 +36,7 @@ from medevidence.domain import (
     UtcDateTime,
     derive_identity,
 )
+from medevidence.domain.catalogs import LOCAL_RESEARCH_CATALOG_HASH
 from medevidence.domain.identifiers import RunIntentId
 
 from .contracts import (
@@ -64,6 +64,15 @@ from .ports import (
     RuntimePort,
 )
 from .pubmed import build_pubmed_query, query_identity, validate_query_terms
+from .pubmed_local import (
+    LocalFetchPubMedArticleRequest,
+    LocalResearchPubMedRequest,
+    PubMedBoundsPolicy,
+    reconstruct_pubmed_request,
+)
+from .pubmed_local import (
+    pubmed_execution_bounds as _execution_bounds,
+)
 
 
 class _PubMedCollectionModel(BaseModel):
@@ -78,7 +87,7 @@ class _PubMedCollectionModel(BaseModel):
 class PubMedCollectionPreparation(_PubMedCollectionModel):
     """Canonical PubMed query context prepared before acquisition effects."""
 
-    request: ResearchPubMedRequest
+    request: ResearchPubMedRequest | LocalResearchPubMedRequest
     catalog: ResolvedConceptCatalog
     query: str
     query_id: str
@@ -98,7 +107,7 @@ class PubMedCollectionPreparation(_PubMedCollectionModel):
 class PubMedSearchCollection(_PubMedCollectionModel):
     """Persisted search boundary returned before any selected PMID fetch."""
 
-    request: ResearchPubMedRequest
+    request: ResearchPubMedRequest | LocalResearchPubMedRequest
     catalog: ResolvedConceptCatalog
     query: str
     query_id: str
@@ -221,7 +230,8 @@ class PubMedResearchService:
     _execution: PubMedExecutionPort
     _runs: RunPersistencePort
     _runtime: RuntimePort
-    __slots__ = ("_acquisitions", "_catalog", "_execution", "_runs", "_runtime")
+    _bounds_policy: PubMedBoundsPolicy
+    __slots__ = ("_acquisitions", "_bounds_policy", "_catalog", "_execution", "_runs", "_runtime")
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
@@ -239,7 +249,11 @@ class PubMedResearchService:
         acquisitions: AcquisitionPersistencePort,
         runs: RunPersistencePort,
         runtime: RuntimePort,
+        bounds_policy: PubMedBoundsPolicy = PubMedBoundsPolicy.EXACT_SCOPE,
     ) -> None:
+        if type(bounds_policy) is not PubMedBoundsPolicy:
+            raise TypeError("PubMed bounds policy must be an explicit admitted enum")
+        object.__setattr__(self, "_bounds_policy", bounds_policy)
         object.__setattr__(self, "_catalog", catalog)
         object.__setattr__(self, "_execution", execution)
         object.__setattr__(self, "_acquisitions", acquisitions)
@@ -276,7 +290,7 @@ class PubMedResearchService:
     ) -> PubMedCollectionPreparation:
         """Resolve the exact bounded query without acquisition side effects."""
 
-        request = ResearchPubMedRequest.model_validate(request.model_dump(mode="python"))
+        request = reconstruct_pubmed_request(request)
         catalog, query, query_id = self._prepare_query(request.scope)
         run_intent = self._run_intent(request, catalog, query)
         return PubMedCollectionPreparation(
@@ -296,6 +310,7 @@ class PubMedResearchService:
         prepared = PubMedCollectionPreparation.model_validate(prepared.model_dump(mode="python"))
         request = prepared.request
         catalog = prepared.catalog
+        self._validate_profile(request.scope, catalog)
         query = prepared.query
         query_id = prepared.query_id
         run_intent = self._run_intent(request, catalog, query)
@@ -419,6 +434,7 @@ class PubMedResearchService:
             search=searched.response,
             children=child_outcomes,
             valid_publications=len(stage.publications),
+            bounds_policy=self._bounds_policy,
         )
         retrieval_as_of = max(
             (searched.completed_at_utc, *(fetch.completed_at_utc for fetch in stage.fetches))
@@ -446,11 +462,16 @@ class PubMedResearchService:
         """Persist only the fetch suffix reconstructed from checkpointed search state."""
 
         prepared = PubMedCollectionPreparation.model_validate(prepared.model_dump(mode="python"))
+        self._validate_profile(prepared.request.scope, prepared.catalog)
         search_response = SearchPubMedResponse.model_validate(
             search_response.model_dump(mode="python")
         )
         if search_response.query != prepared.query or search_response.query_id != prepared.query_id:
             raise ValueError("PubMed fetch stage must bind the exact prepared query")
+        if search_response.source_outcome.configured_bounds != _execution_bounds(
+            prepared.request.scope, self._bounds_policy
+        ):
+            raise ValueError("checkpointed PubMed search changed its execution bounds")
         request = prepared.request
         persisted: list[PersistedAcquisition] = []
         publications: list[PublicationRecord] = []
@@ -465,8 +486,13 @@ class PubMedResearchService:
                 pmid=pmid,
             )
             fetch_execution = self._execution.fetch(pmid=pmid, query_id=prepared.query_id)
+            request_type = (
+                LocalFetchPubMedArticleRequest
+                if self._bounds_policy is PubMedBoundsPolicy.LOCAL_PUBLIC_V1
+                else FetchPubMedArticleRequest
+            )
             fetch_response = self._fetch_response(
-                FetchPubMedArticleRequest(
+                request_type(
                     scope=request.scope,
                     pmid=pmid,
                     query_id=prepared.query_id,
@@ -545,6 +571,7 @@ class PubMedResearchService:
         report = ResearchReport.create(
             run_id=request.run_id,
             catalog_content_hash=catalog.catalog_content_hash,
+            catalog_version=catalog.catalog_version,
             run_intent_id=run_intent_id,
             acquisition_snapshot_ids=tuple(item.snapshot_id for item in persisted),
             acquisition_manifest_ids=tuple(item.manifest_id for item in persisted),
@@ -582,11 +609,24 @@ class PubMedResearchService:
     ) -> tuple[ResolvedConceptCatalog, str, str]:
         validate_query_terms(scope)
         catalog = self._catalog.resolve(scope.scope_id)
+        self._validate_profile(scope, catalog)
         query = build_pubmed_query(scope, catalog)
         return catalog, query, query_identity(scope, query)
 
-    @staticmethod
+    def _validate_profile(self, scope: ResearchScope, catalog: ResolvedConceptCatalog) -> None:
+        bounds = _execution_bounds(scope, self._bounds_policy)
+        if self._bounds_policy is PubMedBoundsPolicy.LOCAL_PUBLIC_V1 and (
+            catalog.catalog_version != "m3.local-research-input.v1"
+            or catalog.catalog_content_hash != LOCAL_RESEARCH_CATALOG_HASH
+        ):
+            raise ValueError("local PubMed profile requires the exact local research catalog")
+        if self._bounds_policy is PubMedBoundsPolicy.LOCAL_PUBLIC_V1 and (
+            len(build_pubmed_query(scope, catalog)) > bounds.max_query_characters
+        ):
+            raise ValueError("query exceeds the fixed PubMed execution profile")
+
     def _validate_search_execution(
+        self,
         scope: ResearchScope,
         query: str,
         query_id: str,
@@ -595,17 +635,21 @@ class PubMedResearchService:
         response = execution.response
         if response.query != query or response.query_id != query_id:
             raise ValueError("search execution returned a different query identity")
-        if response.source_outcome.configured_bounds != ExecutionBounds.from_scope(scope):
+        if response.source_outcome.configured_bounds != _execution_bounds(
+            scope, self._bounds_policy
+        ):
             raise ValueError("search outcome bounds differ from the requested scope")
 
-    @staticmethod
     def _fetch_response(
+        self,
         request: FetchPubMedArticleRequest,
         execution: PubMedFetchExecution,
     ) -> FetchPubMedArticleResponse:
         if execution.requested_pmid != request.pmid or execution.query_id != request.query_id:
             raise ValueError("fetch execution returned a different request identity")
-        if execution.source_outcome.configured_bounds != ExecutionBounds.from_scope(request.scope):
+        if execution.source_outcome.configured_bounds != _execution_bounds(
+            request.scope, self._bounds_policy
+        ):
             raise ValueError("fetch outcome bounds differ from the requested scope")
         return FetchPubMedArticleResponse(
             requested_pmid=request.pmid,
@@ -704,7 +748,13 @@ def _composite_outcome(
     search: SearchPubMedResponse,
     children: tuple[SourceOutcome, ...],
     valid_publications: int,
+    bounds_policy: PubMedBoundsPolicy = PubMedBoundsPolicy.EXACT_SCOPE,
 ) -> SourceOutcome:
+    effective_bounds = _execution_bounds(scope, bounds_policy)
+    if bounds_policy is PubMedBoundsPolicy.LOCAL_PUBLIC_V1 and any(
+        child.configured_bounds != effective_bounds for child in (search.source_outcome, *children)
+    ):
+        raise ValueError("PubMed aggregate cannot relabel child execution bounds")
     failed = any(item.execution_status is ExecutionStatus.FAILED for item in children)
     all_fetches_valid = valid_publications == len(search.pmids)
     complete = (
@@ -735,7 +785,7 @@ def _composite_outcome(
         execution_status=ExecutionStatus.FAILED if failed else ExecutionStatus.SUCCEEDED,
         coverage_status=coverage,
         result_status=result,
-        configured_bounds=ExecutionBounds.from_scope(scope),
+        configured_bounds=effective_bounds,
         valid_result_count=valid_publications,
         pages_completed=search.source_outcome.pages_completed,
         truncated=any(item.truncated for item in children),

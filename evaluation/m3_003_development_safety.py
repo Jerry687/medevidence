@@ -652,9 +652,9 @@ def _expected_exception(trajectory: str) -> dict[str, object] | None:
                         "input": {
                             "type_tag": "builtins.dict",
                             "encoding": "redacted_canonical_sha256",
-                            "canonical_bytes": 42188,
+                            "canonical_bytes": 42307,
                             "sha256": (
-                                "2f1e6c49b116b85f6e963b6464aea1fe794da0563348cf396e64218716c9715b"
+                                "9f46305561e3daa030ed4fc63264aa391d3e28427790bc7e9e14b0c7e92302ee"
                             ),
                         },
                     }
@@ -1638,10 +1638,11 @@ class _Synthesis:
         run_id: str,
         report_id: str,
         scope: ResearchScope,
+        source_plan: tuple[M1BSourcePlanEntryV1, ...],
         source_tasks: tuple[SourceTaskState, ...],
         prior_report_content_hash: str | None,
     ) -> SynthesisState:
-        del run_id, report_id, prior_report_content_hash
+        del run_id, report_id, prior_report_content_hash, source_plan
         self._counters.record("synthesis")
         provisional = SynthesisState(
             report_content_hash="sha256:" + "0" * 64,
